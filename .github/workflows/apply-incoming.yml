@@ -1,0 +1,87 @@
+name: Apply _incoming repository replacement
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type REPLACE REPOSITORY to confirm full replacement'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-incoming-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  replace:
+    if: ${{ inputs.confirmation == 'REPLACE REPOSITORY' }}
+    runs-on: ubuntu-latest
+    env:
+      REPO_WRITE_TOKEN: ${{ secrets.REPO_WRITE_TOKEN }}
+    steps:
+      - name: Require write token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${REPO_WRITE_TOKEN}" ]]; then
+            echo "Repository secret REPO_WRITE_TOKEN is required."
+            echo "Use a fine-grained PAT with Contents: read/write and Workflows: read/write."
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REPO_WRITE_TOKEN }}
+
+      - name: Validate incoming tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f _incoming/.replace-root
+          test -f _incoming/README.md
+          test -f _incoming/router/preflight.sh
+          test -f _incoming/router/flash-stock-layout.sh
+          test -f _incoming/tools/prepare_env.py
+
+          if find _incoming -type l -print -quit | grep -q .; then
+            echo "Symlinks are not allowed in _incoming."
+            exit 1
+          fi
+
+      - name: Replace repository root
+        shell: bash
+        run: |
+          set -euo pipefail
+          new_root="${RUNNER_TEMP}/nokia-new-root"
+          rm -rf "${new_root}"
+          mkdir -p "${new_root}"
+
+          rsync -a --exclude='.replace-root' _incoming/ "${new_root}/"
+
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf -- {} +
+          cp -a "${new_root}/." .
+
+          test -f README.md
+          test -f router/preflight.sh
+          test -f tools/prepare_env.py
+
+      - name: Commit replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Replace upstream installer with Nokia XG-040G-MD stock installer"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

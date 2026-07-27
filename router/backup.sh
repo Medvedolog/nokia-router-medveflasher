@@ -1,7 +1,8 @@
 #!/bin/ash
 set -eu
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=router/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
 FORCE=0
@@ -54,7 +55,7 @@ for file in *; do
     sha256sum "$file"
 done > .SHA256SUMS.tmp
 mv .SHA256SUMS.tmp SHA256SUMS.txt
-ls -lh | grep -v 'files_lh.txt' > .files_lh.tmp
+ls -lh > .files_lh.tmp
 mv .files_lh.tmp files_lh.txt
 sync
 

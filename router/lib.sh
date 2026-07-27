@@ -114,8 +114,10 @@ verify_bundle() {
     rootfs_size="$(file_size "$bundle/factory-rootfs.bin")"
     env_size="$(file_size "$bundle/OpenWrt.mtd2.u-boot-env.bin")"
 
-    [ "$kernel_size" -gt 0 ] && [ "$kernel_size" -le 8388608 ] || die 'invalid factory kernel size'
-    [ "$rootfs_size" -gt 0 ] && [ "$rootfs_size" -le 135135232 ] || die 'invalid factory rootfs size'
+    [ "$kernel_size" -gt 0 ] || die 'factory kernel is empty'
+    [ "$kernel_size" -le 8388608 ] || die 'factory kernel exceeds the 0x800000-byte limit'
+    [ "$rootfs_size" -gt 0 ] || die 'factory rootfs is empty'
+    [ "$rootfs_size" -le 135135232 ] || die 'factory rootfs exceeds the 0x80e0000-byte limit'
     [ "$env_size" -eq 131072 ] || die 'U-Boot env partition must be exactly 131072 bytes'
 
     verify_magic "$bundle/factory-kernel.bin" d00dfeed

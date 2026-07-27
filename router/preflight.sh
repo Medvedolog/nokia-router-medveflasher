@@ -1,7 +1,8 @@
 #!/bin/ash
 set -eu
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=router/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
 BUNDLE="${1:-}"

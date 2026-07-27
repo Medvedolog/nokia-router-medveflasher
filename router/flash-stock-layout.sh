@@ -1,7 +1,8 @@
 #!/bin/ash
 set -eu
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=router/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
 MODE="${1:-}"
@@ -24,14 +25,14 @@ if [ "$MODE" = '--dry-run' ]; then
     exit 0
 fi
 
-cat <<'EOF'
+cat <<'EOF_DANGER'
 
 DANGER: this operation overwrites parts of the SPI-NAND flash.
 It is experimental and can brick the device. XG-PON is unsupported by OpenWrt.
 Disconnect fiber. Use stable power. Do not continue without UART recovery access.
 
 Type exactly: FLASH NOKIA XG-040G-MD
-EOF
+EOF_DANGER
 printf '> '
 IFS= read -r confirmation
 [ "$confirmation" = 'FLASH NOKIA XG-040G-MD' ] || die 'confirmation did not match'

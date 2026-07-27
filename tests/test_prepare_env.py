@@ -45,12 +45,19 @@ class PrepareEnvTests(unittest.TestCase):
         stored = struct.unpack_from("<I", block, 0)[0]
         self.assertEqual(stored, zlib.crc32(block[4:]) & 0xFFFFFFFF)
         self.assertEqual(report["old_bootcmd"], "run vendor_boot")
+        original_partition = source[ENV_PARTITION_OFFSET:ENV_PARTITION_OFFSET + ENV_PARTITION_SIZE]
+        self.assertEqual(output[:ENV_BLOCK_OFFSET], original_partition[:ENV_BLOCK_OFFSET])
+        self.assertEqual(output[ENV_BLOCK_OFFSET + ENV_BLOCK_SIZE:], original_partition[ENV_BLOCK_OFFSET + ENV_BLOCK_SIZE:])
 
     def test_rejects_bad_crc(self) -> None:
         source = bytearray(self.synthetic_bootloader())
         source[ENV_PARTITION_OFFSET + ENV_BLOCK_OFFSET] ^= 0x01
         with self.assertRaises(EnvError):
             build_partition(bytes(source), DEFAULT_BOOTCMD)
+
+    def test_rejects_invalid_bootcmd(self) -> None:
+        with self.assertRaises(EnvError):
+            build_partition(self.synthetic_bootloader(), "bad\nboot")
 
     def test_rejects_wrong_input_size(self) -> None:
         with self.assertRaises(EnvError):

@@ -116,7 +116,14 @@ def replace_variable(
 def build_env_block(entries: Iterable[tuple[str, str]]) -> bytes:
     encoded_items = []
     for key, value in entries:
-        if not key or "=" in key or "\x00" in key or "\x00" in value:
+        if (
+            not key
+            or "=" in key
+            or "\x00" in key
+            or "\x00" in value
+            or "\r" in value
+            or "\n" in value
+        ):
             raise EnvError(f"invalid environment variable {key!r}")
         encoded_items.append(f"{key}={value}".encode("utf-8"))
 
@@ -131,7 +138,11 @@ def build_env_block(entries: Iterable[tuple[str, str]]) -> bytes:
 
 
 def build_partition(source: bytes, bootcmd: str) -> tuple[bytes, dict[str, object]]:
+    if not bootcmd or "\x00" in bootcmd or "\r" in bootcmd or "\n" in bootcmd:
+        raise EnvError("bootcmd contains invalid characters")
+
     partition = extract_partition(source)
+    original_partition = bytes(partition)
     start = ENV_BLOCK_OFFSET
     end = start + ENV_BLOCK_SIZE
     original_block = bytes(partition[start:end])
@@ -139,8 +150,11 @@ def build_partition(source: bytes, bootcmd: str) -> tuple[bytes, dict[str, objec
     old_bootcmd = next((value for key, value in entries if key == "bootcmd"), None)
     updated = replace_variable(entries, "bootcmd", bootcmd)
     new_block = build_env_block(updated)
-    parse_env_block(new_block)  # post-build verification
+    parse_env_block(new_block)
     partition[start:end] = new_block
+
+    if partition[:start] != original_partition[:start] or partition[end:] != original_partition[end:]:
+        raise EnvError("internal error: bytes outside the environment block changed")
 
     report = {
         "partition_size": len(partition),
@@ -150,9 +164,33 @@ def build_partition(source: bytes, bootcmd: str) -> tuple[bytes, dict[str, objec
         "old_bootcmd": old_bootcmd,
         "new_bootcmd": bootcmd,
         "env_crc32": f"{struct.unpack_from('<I', new_block, 0)[0]:08x}",
+        "source_partition_sha256": hashlib.sha256(original_partition).hexdigest(),
         "sha256": hashlib.sha256(partition).hexdigest(),
     }
     return bytes(partition), report
+
+
+def generate_env_image(
+    input_path: Path,
+    output_path: Path,
+    *,
+    bootcmd: str = DEFAULT_BOOTCMD,
+    report_json: Path | None = None,
+    force: bool = False,
+) -> dict[str, object]:
+    if output_path.exists() and not force:
+        raise EnvError(f"output already exists: {output_path}; use --force")
+    source = read_maybe_gzip(input_path)
+    output, report = build_partition(source, bootcmd)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(output)
+    if report_json:
+        report_json.parent.mkdir(parents=True, exist_ok=True)
+        report_json.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    return report
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -175,18 +213,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        if args.output.exists() and not args.force:
-            raise EnvError(f"output already exists: {args.output}; use --force")
-        source = read_maybe_gzip(args.input)
-        output, report = build_partition(source, args.bootcmd)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_bytes(output)
-        if args.report_json:
-            args.report_json.parent.mkdir(parents=True, exist_ok=True)
-            args.report_json.write_text(
-                json.dumps(report, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
+        report = generate_env_image(
+            args.input,
+            args.output,
+            bootcmd=args.bootcmd,
+            report_json=args.report_json,
+            force=args.force,
+        )
     except (OSError, EnvError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

@@ -4,8 +4,10 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"
 
-BUNDLE="${1:-$SCRIPT_DIR}"
+BUNDLE="${1:-}"
 BACKUP="${2:-}"
+[ -n "$BUNDLE" ] || die "usage: ash $0 BUNDLE_DIR BACKUP_DIR"
+[ -n "$BACKUP" ] || die "usage: ash $0 BUNDLE_DIR BACKUP_DIR"
 
 log '== Nokia XG-040G-MD stock-layout preflight =='
 log 'No flash writes are performed by this script.'
@@ -29,23 +31,14 @@ done
 
 log '[4/7] NAND guard'
 reject_fudan_if_detected
-log 'No FudanMicro signature detected. Physical SkyHigh confirmation is still required by the bundle marker.'
+report_nand_detection
 
 log '[5/7] Installation bundle'
 verify_bundle "$BUNDLE"
 
-log '[6/7] Backup presence'
-if [ -n "$BACKUP" ]; then
-    [ -f "$BACKUP/mtd0_bootloader.bin.gz" ] || die 'missing bootloader backup'
-    [ -f "$BACKUP/mtd16_all_flash.bin.gz" ] || die 'missing all_flash backup'
-    [ -f "$BACKUP/bosa.bin" ] || die 'missing bosa.bin'
-    [ -f "$BACKUP/ri.bin" ] || die 'missing ri.bin'
-    [ "$(file_size "$BACKUP/bosa.bin")" -eq 262144 ] || die 'bosa.bin has an unexpected size'
-    [ "$(file_size "$BACKUP/ri.bin")" -eq 262144 ] || die 'ri.bin has an unexpected size'
-    log "Backup directory accepted: $BACKUP"
-else
-    log 'WARNING: backup directory was not supplied to preflight.'
-fi
+log '[6/7] Full backup integrity'
+verify_backup_dir "$BACKUP"
+log "Backup verified: $BACKUP"
 
 log '[7/7] Required writer'
 command_exists mtd_debug || die 'mtd_debug is not installed on the stock firmware'
@@ -53,4 +46,4 @@ command_exists mtd_debug || die 'mtd_debug is not installed on the stock firmwar
 log ''
 log 'PREFLIGHT PASSED.'
 log 'Before installation: disconnect fiber, use stable power, keep UART recovery available.'
-log 'The destructive script writes env to mtd0+0x60000, kernel to mtd14, rootfs to mtd11.'
+log 'The destructive script writes rootfs to mtd11, kernel to mtd14, and env to mtd0+0x60000 last.'

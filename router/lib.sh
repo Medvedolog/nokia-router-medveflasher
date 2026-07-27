@@ -15,10 +15,6 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-mtd_line() {
-    awk -v wanted="$1" '$4 == "\"" wanted "\"" { print; exit }' /proc/mtd
-}
-
 mtd_index() {
     awk -v wanted="$1" '$4 == "\"" wanted "\"" { sub(":", "", $1); print $1; exit }' /proc/mtd
 }
@@ -70,7 +66,8 @@ readback_sha() {
     device="$1"
     length="$2"
     blocks=$(( (length + 4095) / 4096 ))
-    dd if="$device" bs=4096 count="$blocks" 2>/dev/null | head -c "$length" | sha256sum | awk '{print $1}'
+    dd if="$device" bs=4096 count="$blocks" 2>/dev/null | \
+        head -c "$length" | sha256sum | awk '{print $1}'
 }
 
 verify_magic() {
@@ -80,10 +77,27 @@ verify_magic() {
     [ "$actual" = "$expected" ] || die "$file magic is $actual, expected $expected"
 }
 
+verify_env_bootcmd() {
+    env_file="$1"
+    count="$(
+        dd if="$env_file" bs=16384 skip=7 count=1 2>/dev/null | \
+            tr '\000' '\n' | \
+            awk -v expected="bootcmd=$EXPECTED_BOOTCMD" '$0 == expected { count++ } END { print count + 0 }'
+    )"
+    [ "$count" -eq 1 ] || die 'U-Boot env must contain exactly one expected OpenWrt bootcmd'
+}
+
 verify_bundle() {
     bundle="$1"
     [ -d "$bundle" ] || die "bundle directory not found: $bundle"
-    for file in factory-kernel.bin factory-rootfs.bin OpenWrt.mtd2.u-boot-env.bin SHA256SUMS SKYHIGH_NAND_CONFIRMED.txt; do
+    for file in \
+        factory-kernel.bin \
+        factory-rootfs.bin \
+        OpenWrt.mtd2.u-boot-env.bin \
+        OPENWRT_SHA256SUMS.txt \
+        BUNDLE_INFO.txt \
+        SHA256SUMS \
+        SKYHIGH_NAND_CONFIRMED.txt; do
         [ -f "$bundle/$file" ] || die "missing bundle file: $file"
     done
 
@@ -106,10 +120,53 @@ verify_bundle() {
 
     verify_magic "$bundle/factory-kernel.bin" d00dfeed
     verify_magic "$bundle/factory-rootfs.bin" 55424923
+    verify_env_bootcmd "$bundle/OpenWrt.mtd2.u-boot-env.bin"
+}
+
+verify_backup_dir() {
+    backup="$1"
+    [ -d "$backup" ] || die "backup directory not found: $backup"
+    for file in \
+        proc_mtd.txt \
+        SHA256SUMS.txt \
+        mtd0_bootloader.bin.gz \
+        mtd16_all_flash.bin.gz \
+        bosa.bin \
+        ri.bin; do
+        [ -f "$backup/$file" ] || die "missing backup file: $file"
+    done
+
+    [ "$(file_size "$backup/bosa.bin")" -eq 262144 ] || die 'bosa.bin has an unexpected size'
+    [ "$(file_size "$backup/ri.bin")" -eq 262144 ] || die 'ri.bin has an unexpected size'
+
+    command_exists gzip || die 'gzip is required to verify backup archives'
+    command_exists sha256sum || die 'sha256sum is required to verify backup files'
+
+    (
+        cd "$backup" || exit 1
+        sha256sum -c SHA256SUMS.txt
+    ) || die 'backup SHA-256 verification failed'
+
+    gzip -t "$backup/mtd0_bootloader.bin.gz" || die 'bootloader backup gzip test failed'
+    gzip -t "$backup/mtd16_all_flash.bin.gz" || die 'all_flash backup gzip test failed'
+
+    bootloader_size="$(gzip -dc "$backup/mtd0_bootloader.bin.gz" | wc -c | tr -d ' ')"
+    all_flash_size="$(gzip -dc "$backup/mtd16_all_flash.bin.gz" | wc -c | tr -d ' ')"
+    [ "$bootloader_size" -eq 524288 ] || die 'bootloader backup has an unexpected decompressed size'
+    [ "$all_flash_size" -eq 247070720 ] || die 'all_flash backup has an unexpected decompressed size'
 }
 
 reject_fudan_if_detected() {
     if dmesg 2>/dev/null | grep -qi -E 'fudan|fm25g02b'; then
         die 'FudanMicro NAND detected; this experimental installer supports only SkyHigh NAND'
+    fi
+}
+
+report_nand_detection() {
+    if dmesg 2>/dev/null | grep -qi -E 'skyhigh|ml02g300whi00'; then
+        log 'SkyHigh ML02G300WHI00 signature found in kernel log.'
+    else
+        log 'WARNING: kernel log does not positively identify SkyHigh NAND.'
+        log 'The physical chip marking and bundle confirmation remain mandatory.'
     fi
 }

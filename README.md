@@ -110,19 +110,21 @@ python3 tools/prepare_bundle.py \
   --kernel /path/to/openwrt-...-squashfs-factory-kernel.bin \
   --rootfs /path/to/openwrt-...-squashfs-factory-rootfs.bin \
   --env /tmp/OpenWrt.mtd2.u-boot-env.bin \
+  --sha256sums /path/to/openwrt-snapshot/sha256sums \
   --output /path/to/usb/nokia-install-bundle \
   --confirm-skyhigh
 ```
 
-The command validates FIT/UBI magic, sizes, environment CRC and boot command,
-then creates normalized filenames and `SHA256SUMS`.
+The command validates the official OpenWrt `sha256sums`, exact Nokia stock-layout
+filenames, FIT/UBI magic, sizes, environment CRC and boot command. Router scripts
+are normalized to LF before the USB bundle and `SHA256SUMS` are created.
 
 ## 4. Run read-only preflight on the stock router
 
 Disconnect fiber and use stable power:
 
 ```sh
-/mnt/BOOT/nokia-install-bundle/preflight.sh \
+ash /mnt/BOOT/nokia-install-bundle/flash-stock-layout.sh --dry-run \
   /mnt/BOOT/nokia-install-bundle \
   /mnt/BOOT/nokia-xg040gmd-backup
 ```
@@ -132,14 +134,27 @@ Do not proceed unless every check passes.
 ## 5. Experimental installation
 
 ```sh
-/mnt/BOOT/nokia-install-bundle/flash-stock-layout.sh --install \
+ash /mnt/BOOT/nokia-install-bundle/flash-stock-layout.sh --install \
   /mnt/BOOT/nokia-install-bundle \
   /mnt/BOOT/nokia-xg040gmd-backup
 ```
 
-The script requires the exact phrase `FLASH NOKIA XG-040G-MD`, writes the three
-images using `mtd_debug`, verifies read-back SHA-256 hashes, synchronizes, and
-reboots.
+The script requires the exact phrase `FLASH NOKIA XG-040G-MD`. It writes rootfs
+first, kernel second and the boot-switching U-Boot environment last, verifies
+read-back SHA-256 hashes, synchronizes, and reboots. Run scripts through `ash`
+when the bundle is stored on a Windows/FAT USB drive.
+
+## Windows 10/11
+
+No compilation is required when Python 3.12 is installed. The unified command is:
+
+```powershell
+py -3.12 tools\nokia_tools.py prepare-usb --help
+```
+
+A standalone Windows x64 EXE can be built locally with
+`windows\build-windows.ps1`, or from **Actions → Build Windows kit → Run
+workflow**. Detailed instructions are in `windows/README_WINDOWS_RU.md`.
 
 ## Recovery
 
@@ -149,7 +164,7 @@ automated in this experimental release.
 
 ## Project status
 
-`0.1.0-experimental`: backup, validation, personalized environment generation,
+`0.1.1-experimental`: backup, validation, personalized environment generation,
 and guarded stock-layout write path. Real-device review and testing are still
 required before treating the installer as generally safe.
 

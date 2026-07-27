@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+bundle/
+backup/
+*.bin
+*.bin.gz
+*.itb
+*.fip
+SHA256SUMS

@@ -1,5 +1,48 @@
 # Nokia Router MedveFlasher changelog
 
+## 1.0.0-rc6 — 6 August 2026
+
+- Fixed stage-2 monitoring: heartbeat lines no longer merge the current phase with the complete network-port list. Port state is emitted separately and only when it changes.
+- When the transition system disconnects, the wizard explicitly reports final transition work, handoff to the OpenWrt installer, and the expected reboot.
+- When network services return, the wizard reports production OpenWrt startup and performs final verification. SSH board/UBI verification is preferred over LuCI.
+- Removed the stale `6/8 readback verification` heartbeat after SSH disappears; a brief transition disconnect no longer leaves an obsolete phase displayed until installation ends.
+- Network status now uses the neutral label `Telnet 23` instead of `stock Telnet 23`, because port 23 may belong to stock, transition, or installed OpenWrt.
+- Extended console coloring to `[NET]`, `[STEP]`, `[READY]`, `[IMPORTANT]`, `[INFO]`, and `[TECH]`. Colors remain active in normal and diagnostic output, while log files remain ANSI-free.
+- Firmware payloads, standard/manual transition, recovery, preloader, and FIP are unchanged from rc5.
+
+## 1.0.0-rc5 — 6 August 2026
+
+- Fixed automatic Windows Samba password delivery. The wizard now uses the native `WNetAddConnection2W` API instead of `net use ... *` with a hidden password fed through stdin.
+- The `useradmin` password is passed directly in process memory to the Windows API and is absent from process arguments, OS password dialogs, console output, and logs.
+- If a stale guest session causes a credential conflict, only the Nokia share and its `IPC$` connection are removed before one retry.
+- If the password previously entered for Telnet is genuinely different from the Samba password, the wizard asks once for the label password and retries.
+- Firmware payloads, standard/manual transition, recovery, preloader, and FIP are unchanged from rc4.
+
+## 1.0.0-rc4 — 6 August 2026
+
+- Added an authenticated Windows connection to `\\<Nokia IP>\mnt` as `useradmin` before the first directory probe.
+- The first attempt reused the device password read from the Web UI or entered from the label for Telnet.
+- A rejected credential triggered one manual label-password retry.
+- The `net use ... *` implementation was incompatible with some Windows builds because the hidden prompt could read from the console instead of stdin. rc5 replaces it with the native API.
+
+
+## 1.0.0-rc3 — 6 August 2026
+
+- Added visible overall progress for FTP and Samba backup downloads: percentage, a 20-cell bar, transferred size, average speed, file count, and current file.
+- Added the same progress while uploading the personalized installation package to the Nokia USB drive through FTP or Samba.
+- Progress is emitted as normal lines without carriage-return animation, keeping `LATEST.log` readable.
+- If the FTP server does not support `SIZE`, the wizard still reports transferred bytes, speed, current file, and file count without inventing a percentage.
+- Firmware payloads, standard/manual transition, recovery, preloader, and FIP are unchanged from rc2.
+
+
+## 1.0.0-rc2 — 6 August 2026
+
+- Cleaned the return-to-stock workflow: internal `BOARD`, `STATE`, MTD listings, `TOOL_*`, U-Boot environment values, and the complete `ARMED_BOOTCMD` are now kept in `work/logs/LATEST.log` instead of the operator console.
+- Rewrote the introduction in user-facing language and removed legacy internal RC numbers from the current interface.
+- The transition from installed OpenWrt now shows only meaningful stages: device verification, temporary boot preparation, TFTP request, recovery-system startup, and selected transport.
+- A missing service state file is no longer shown as a warning when the exact recovery MTD layout is confirmed.
+- The RI warning is reduced to one actionable instruction: verify that the selected backup belongs to this router.
+
 ## 1.0.0-rc1 — 6 August 2026
 
 - Renamed the product to **Nokia Router MedveFlasher** and moved version/build

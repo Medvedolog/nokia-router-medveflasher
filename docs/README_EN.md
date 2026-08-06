@@ -1,6 +1,8 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc1
+**Version:** 1.0.0-rc6
+
+During stage 2, installation phase and network ports are reported separately. Ports are printed only when they change, while the wizard explicitly marks transition boot, installer handoff, reboot, and production OpenWrt verification.
 **Date:** 6 August 2026
 **Device:** Nokia XG-040G-MD only (Airoha AN7581) with the stock NAND layout
 
@@ -65,12 +67,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc1.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc6.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc1.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc6.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root
@@ -143,7 +145,8 @@ they are side by side:
 | Telnet password | password **from the router label** |
 | `UID 0 account [auto]` | Enter — the wizard finds the root account itself |
 | `UID 0 password [same]` | usually Enter — the same label password |
-| Samba / FTP | only if the share is password-protected |
+| Samba | `useradmin`; the wizard reuses the password obtained from the Web UI or label and connects through the native Windows WNet API without an OS password prompt |
+| FTP | credentials are read from the Web UI; manual mode asks separately |
 | Transition OpenWrt SSH | `root`, no password |
 
 The key distinction: **`CMCCAdmin` / `aDm8H%MdA` is only the web UI login**, used
@@ -289,11 +292,14 @@ wizard offers one of several transfer methods.
 
 - **USB drive only.** The image is written to the drive in the router; the
   computer barely participates. Needs a prepared drive (see above).
-- **USB + Samba.** The drive is mounted and the wizard pulls the image over the
-  Samba share.
+- **USB + Samba.** The drive is mounted, the wizard connects Windows to `\\<Nokia IP>\mnt` as `useradmin` through the native WNet API, and pulls the image over Samba. The password is not placed in process arguments or an OS dialog. If the Telnet and Samba passwords differ, it asks once for the label password.
 - **USB + FTP.** The same, over FTP.
 - **Direct TFTP.** No drive needed: the image goes straight to the computer over
   TFTP. The simplest option if the drive is troublesome.
+
+When a backup or installation package is copied through FTP or Samba, the wizard
+shows overall percentage, a `#` bar, transferred size, average speed, file count,
+and the current file. Progress remains line-oriented so the session log stays clean.
 
 ### Verifying the backup
 

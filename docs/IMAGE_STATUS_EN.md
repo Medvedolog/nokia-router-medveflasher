@@ -1,4 +1,4 @@
-# Nokia Router MedveFlasher 1.0.0-rc1 image status
+# Nokia Router MedveFlasher 1.0.0-rc6 image status
 
 ## Standard automatic transition
 
@@ -12,7 +12,7 @@
 - sysupgrade SHA256: `95fe315cedca64b5f5db39a5e03e75eb773b7c43e970d06fc3be6d0d8e1cbdc6`;
 - bundle offset: `0x800000`;
 - complete bundle size: `17956864` bytes;
-- bundle SHA256: `25bd0133d296a9522ea659a33e18915e3088b41e8afd9ff8b71f2f1828a32ebe`.
+- bundle SHA256: `e19ff00652a7a581f418badc998d21baed78949dd82c4f54764d993dbb39f8a0`.
 
 LuCI was confirmed by parsing SquashFS directly. `luci`,
 `luci-mod-admin-full`, `luci-theme-bootstrap`, `rpcd-mod-luci`, `uhttpd`, and
@@ -24,7 +24,7 @@ the main administration modules are present.
 sysupgrade. Automatic stage 2 is disabled. After boot, the transition brings up
 SSH and waits for the PC wizard to upload an image.
 
-- manual bundle SHA256: `902c34bf31c956a0403c2cb9cdc825d8d1089c295d7fe60bb31865c3d6812176`;
+- manual bundle SHA256: `3abf07adccff808f879649c8842fa96327ae2f9102294fe0f561dd7fc318c8f8`;
 - selected-image checks: FIT magic, size, local and remote SHA256,
   `nokia-ubi-installer check`, and `sysupgrade -T`;
 - `sysupgrade -F` is never used;

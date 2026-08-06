@@ -1,42 +1,288 @@
-# Nokia XG-040G-MD Stock Installer for OpenWrt
+<div align="center">
 
-[Русский](#русский) · [English](#english)
+# 🐻 Nokia Router MedveFlasher
+
+**Установка OpenWrt на Nokia XG-040G-MD без UART**  
+**Install OpenWrt on the Nokia XG-040G-MD without UART**
+
+![version](https://img.shields.io/badge/version-1.0.0--rc6-blue)
+![device](https://img.shields.io/badge/device-Nokia%20XG--040G--MD-orange)
+![soc](https://img.shields.io/badge/SoC-Airoha%20AN7581-lightgrey)
+![python](https://img.shields.io/badge/Python-3.x-3776AB?logo=python&logoColor=white)
+![dependencies](https://img.shields.io/badge/Python%20dependencies-stdlib%20only-green)
+![license](https://img.shields.io/badge/license-GPL--2.0--only-brightgreen)
+
+[Русский](#-русский) · [English](#-english)
+
+</div>
+
+> [!CAUTION]
+> **Release Candidate. Прошивка NAND всегда связана с риском получить нерабочее устройство.**  
+> До начала работ сохраните полный проверенный backup на компьютере, отключите оптический кабель и обеспечьте стабильное питание. Не отключайте питание во время записи. Для восстановления полностью не загружающегося устройства нужен USB-UART 3,3 В.
 
 ---
 
-<a id="русский"></a>
+# 🇷🇺 Русский
 
-# Русский
+## Что это
 
-> **Экспериментальный проект. Высокий риск получить «кирпич». Возможность восстановления через UART обязательна.**
+**Nokia Router MedveFlasher** — двуязычный Python-мастер для Nokia / Nokia Shanghai Bell **XG-040G-MD** на Airoha **AN7581**. Он выполняет полный цикл обслуживания по Ethernet:
 
-Проект автоматизирует официальный способ установки OpenWrt с сохранением **заводской разметки NAND** (`stock layout`) на Nokia / Nokia Shanghai Bell XG-040G-MD на базе Airoha AN7581.
+- снимает полный проверенный backup штатной NAND;
+- устанавливает OpenWrt + LuCI в схему **all-in-UBI** без UART;
+- умеет устанавливать выбранный пользователем UBI sysupgrade через отдельный ручной transition;
+- возвращает штатную прошивку из работающей OpenWrt без UART;
+- восстанавливает полностью не загружающееся устройство через BootROM и USB-UART;
+- сохраняет подробный журнал каждой операции.
 
-Установщик:
+Python-зависимостей нет: используется только стандартная библиотека. На Windows дополнительно нужен системный OpenSSH-клиент для связи с переходной OpenWrt.
 
-- не устанавливает `tcboot`;
-- не заменяет BL2/FIP;
-- не переводит устройство на схему OpenWrt U-Boot / all-in-UBI;
-- использует официальные OpenWrt-образы для заводской разметки;
-- формирует персональный U-Boot environment из бэкапа конкретного устройства.
+## Текущий статус
 
-Он рассчитан на точную заводскую таблицу разделов, обнаруженную на поддерживаемой версии устройства, и записывает:
+| Сценарий | Статус |
+|---|---|
+| Штатная прошивка → стандартный transition → комплектная OpenWrt | **Проверено на устройстве** |
+| Работающая OpenWrt → временная recovery в RAM → штатная прошивка | **Проверено на устройстве** |
+| BootROM → XMODEM → U-Boot в RAM → восстановление стока | **Проверено на устройстве** |
+| Отдельный manual transition → собственный sysupgrade | Статические и синтетические проверки пройдены; полный аппаратный цикл ещё требует подтверждения |
+| Автоматическое отклонение XG-040G-MF / AN7583 | Реализовано; аппаратная проверка на MF желательна |
 
-- персональный U-Boot environment в `mtd0` со смещения `0x60000`, длина `0x20000`;
-- factory kernel OpenWrt в `mtd14` (`nsb_master`);
-- factory rootfs OpenWrt в `mtd11` (`data`).
+## Что умеет
+
+| Возможность | Описание |
+|---|---|
+| 📦 **Полный backup** | Снимает `mtd0..mtd16`, сохраняет отдельные разделы и полный `all_flash`, проверяет размеры, gzip и SHA256, затем копирует backup на ПК |
+| 🔄 **Обычная установка** | Записывает переходный образ, загружает временную OpenWrt, форматирует NAND в all-in-UBI и устанавливает комплектный sysupgrade |
+| 🧪 **Свой sysupgrade** | Загружает отдельный manual transition без автопрошивки, принимает `.itb` с диска ПК, проверяет его и только затем запускает запись |
+| ⏮️ **Откат на сток** | Из работающей OpenWrt временно загружает recovery в RAM, восстанавливает NAND из полного backup и проверяет запись чтением |
+| 🧱 **Восстановление кирпича** | BootROM `C` → XMODEM preloader → U-Boot в RAM → TFTP recovery → восстановление полного stock NAND |
+| 🌐 **Транспорты** | USB/Samba, USB/FTP или прямой TFTP; копирование показывает проценты, объём, скорость, число файлов и текущий файл |
+| 🔐 **Защита** | Проверка модели, точной MTD-разметки и геометрии NAND, read-back SHA256, BL2 записывается последним |
+| 📝 **Диагностика** | Цветная операторская консоль, отдельные стадии установки, изменения портов и полный сырой журнал для разбора ошибок |
+
+## Поддерживаемое устройство
+
+Комплект предназначен **только для Nokia XG-040G-MD с Airoha AN7581** и поддерживаемой штатной таблицей NAND.
+
+Близкая модель **Nokia XG-040G-MF / AN7583 не поддерживается**. У неё может совпадать разметка, поэтому одной проверки MTD недостаточно. Автоматический режим определяет устройство через штатный Web UI и блокирует AN/EN7583.
+
+### NAND
+
+Основной подтверждённый вариант — **SkyHigh ML02G300WHI00**.
+
+- явно обнаруженная **FudanMicro FM25G02B блокируется**;
+- неопознанная NAND допускается только после точной проверки платы, MTD и геометрии и отдельного подтверждения оператора;
+- экспертный режим намеренно пропускает проверку модели роутера, поэтому ответственность за совместимость полностью лежит на операторе.
 
 ## Критические ограничения
 
-- **После установки OpenWrt интерфейс XG-PON не работает.**
-- Начальная поддержка ограничена SPI-NAND **SkyHigh ML02G300WHI00**.
-- При обнаружении FudanMicro FM25G02B установка блокируется.
-- Поддерживается только точная заводская MTD-разметка, указанная ниже.
-- Snapshot-образы OpenWrt часто меняются. Kernel и rootfs должны быть из одной сборки и пройти встроенную проверку.
-- Обновление не атомарное. Отключение питания во время записи может привести к нерабочему устройству.
-- Перед прошивкой обязательны полный проверенный NAND-бэкап, стабильное питание и готовый UART.
+- Установка не является атомарной: потеря питания во время записи может привести к кирпичу.
+- Полный backup должен быть сохранён **на ПК**, а не только на USB-флешке в роутере.
+- Backup содержит уникальные данные устройства: MAC-адреса, серийные номера, ONU/GPON-параметры, калибровку, учётные данные и настройки провайдера. **Не публикуйте его.**
+- Не используйте пакет на других моделях Nokia, даже если названия разделов похожи.
+- Проект не заявляет поддержку оптического интерфейса в OpenWrt; состояние сетевых функций конкретного образа смотрите в [docs/IMAGE_STATUS_RU.md](docs/IMAGE_STATUS_RU.md).
+- Для обычной установки и отката UART не нужен, но для восстановления полного кирпича он обязателен.
 
-## Поддерживаемая заводская разметка
+## Принципы безопасности
+
+MedveFlasher сохраняет следующие инварианты:
+
+1. **Fail closed.** Неоднозначная или ошибочная проверка останавливает обычный сценарий.
+2. **Модель проверяется до первой записи.** Автоматический путь подтверждает AN7581 через Web UI.
+3. **Полный backup обязателен.** Установка не продолжается, пока backup не создан и не проверен.
+4. **Персональный environment.** U-Boot environment формируется из `mtd0` конкретного устройства и привязывается к SHA256 исходного bootloader.
+5. **Read-back verification.** Критичные записи читаются обратно и проверяются SHA256.
+6. **BL2 записывается последним.** Сначала создаётся и проверяется UBI-среда, затем записывается полный раздел BL2.
+7. **Секреты не журналируются.** Пароли хранятся только в памяти процесса и фильтруются из session log.
+8. **Сырой вывод сохраняется отдельно.** Пользователь видит краткие события, а полный transition/SSH transcript остаётся в журнале.
+
+## Как проходит обычная установка
+
+```mermaid
+flowchart TD
+    A[Штатная прошивка Nokia] --> B[Проверка модели и доступа]
+    B --> C[Полный backup mtd0..mtd16]
+    C --> D[Копирование и проверка backup на ПК]
+    D --> E[Персональный U-Boot environment]
+    E --> F[Запись и read-back transition в mtd14]
+    F --> G[Запись environment в mtd0 последней]
+    G --> H[Перезагрузка в transition OpenWrt]
+    H --> I[Проверка платы, NAND и sysupgrade]
+    I --> J[Форматирование all-in-UBI]
+    J --> K[Запись bosa, ri, FIP и fallback FIT]
+    K --> L[Read-back SHA256]
+    L --> M[Запись BL2 последним]
+    M --> N[Установка production OpenWrt]
+    N --> O[Проверка основной OpenWrt по SSH/LuCI]
+```
+
+### Точки невозврата
+
+До ввода фразы:
+
+```text
+CONFIRM FORMAT AND FLASH
+```
+
+мастер выполняет только проверки, backup и подготовку. После подтверждения начинается запись переходного образа. Во втором этапе transition самостоятельно проверяет payload, форматирует UBI и устанавливает OpenWrt.
+
+## Экспертная установка собственного sysupgrade
+
+В меню доступа выберите:
+
+```text
+4 — Установить свой образ OpenWrt (экспертный режим)
+```
+
+Этот путь отличается от стандартного:
+
+1. проверка модели роутера пропускается;
+2. используется только прямой TFTP;
+3. записывается отдельный `transition-manual-bundle.bin` размером 8 МиБ;
+4. manual transition не содержит production sysupgrade и не запускает второй этап автоматически;
+5. после загрузки SSH мастер предлагает выбрать `.itb` на диске ПК;
+6. выполняются FIT magic/размер, локальный SHA256, удалённый SHA256, `nokia-ubi-installer check` и `sysupgrade -T`;
+7. `sysupgrade -F` не используется;
+8. форматирование начинается только после второго подтверждения `да/нет`.
+
+> [!WARNING]
+> Экспертный режим не делает неподходящий образ безопасным. Пользовательский файл должен быть корректным UBI sysupgrade для профиля `nokia_xg-040g-md-ubi`.
+
+## Требования
+
+### Обычная установка или откат
+
+- Nokia XG-040G-MD / AN7581;
+- компьютер с Windows 10/11 или Linux;
+- Python 3;
+- Ethernet-кабель напрямую или через надёжный коммутатор;
+- около 1 ГБ свободного места;
+- стабильное питание;
+- отключённый оптический кабель;
+- USB-флешка FAT32 от 2 ГБ для Samba/FTP **или** прямой TFTP без USB.
+
+### Восстановление кирпича
+
+Дополнительно:
+
+- USB-UART 3,3 В;
+- доступ к контактам UART на плате;
+- права на открытие COM/TTY и TFTP-порта;
+- проверенный полный backup именно этого устройства.
+
+## Быстрый старт
+
+### Windows
+
+1. Установите Python 3 и отметьте **Add Python to PATH**.
+2. Убедитесь, что доступен системный OpenSSH client.
+3. Распакуйте релиз в простой каталог, например `C:\Nokia\MedveFlasher`.
+4. Подключите ПК к LAN-порту Nokia.
+5. Запустите:
+
+```text
+START.cmd
+```
+
+### Linux
+
+```bash
+chmod +x START.sh RESTORE_STOCK.sh
+./START.sh
+```
+
+Для brick recovery с TFTP-портом 69 могут потребоваться права root:
+
+```bash
+sudo ./START.sh
+```
+
+### Основной путь
+
+1. Выберите язык.
+2. Выберите `1 — установить OpenWrt (со снятием backup)`.
+3. Используйте автоматическую настройку Web UI, если она работает.
+4. Выберите Samba, FTP или TFTP.
+5. Дождитесь сохранения полного backup на ПК.
+6. Скопируйте backup ещё в одно независимое место.
+7. После успешного preflight введите `CONFIRM FORMAT AND FLASH`.
+8. Не отключайте питание до сообщения об успешной установке.
+
+## Главное меню
+
+```text
+1 — установить OpenWrt (со снятием backup)
+2 — снять backup
+3 — подготовить пакет из своего backup
+4 — продолжить со 2 этапа
+5 — откатить на сток (без UART)
+6 — восстановить кирпич (нужен UART)
+7 — установить OpenWrt из готового backup
+8 — выход
+```
+
+- **1** — рекомендуемый полный сценарий со штатной прошивки.
+- **2** — только снять и проверить backup.
+- **3** — создать персональный установочный пакет без подключения к роутеру.
+- **4** — продолжить после загрузки transition или перезапуска мастера.
+- **5** — восстановить сток из работающей OpenWrt без UART.
+- **6** — восстановить полностью не загружающееся устройство через UART.
+- **7** — установить OpenWrt, используя ранее снятый backup.
+
+## Доступ к штатной прошивке
+
+Мастер предлагает четыре варианта:
+
+```text
+1 — Автоматическая настройка (рекомендуется)
+2 — Настроить Telnet вручную
+3 — Использовать уже включённый Telnet
+4 — Установить свой образ OpenWrt (экспертный режим)
+```
+
+### Автоматический режим
+
+Мастер входит в штатный Web UI, проверяет модель, читает реквизиты сервисов и включает нужный транспорт. На распространённой China Mobile прошивке типовой вход Web UI:
+
+```text
+Пользователь: CMCCAdmin
+Пароль:      aDm8H%MdA
+```
+
+Это **не** пароль Telnet/Samba конкретного устройства. Для `useradmin` обычно используется уникальный пароль с наклейки роутера.
+
+### Ручные режимы
+
+При ручном Telnet:
+
+- явный AN/EN7583 блокируется;
+- явный AN/EN7581 принимается;
+- неопределённая модель допускается только после предупреждения;
+- до записи всё равно проверяются UID 0, точная MTD-разметка и геометрия NAND.
+
+## Транспорты
+
+| Транспорт | USB | Назначение | Особенности |
+|---|---:|---|---|
+| **Samba** | Да | Backup и установочный пакет | Windows подключается через WNet API как `useradmin`; пароль не попадает в командную строку или журнал |
+| **FTP** | Да | Backup и установочный пакет | Учитывается chroot штатного FTP и варианты `/mnt/USB_disc1`, `/USB_disc1`, `/` |
+| **TFTP** | Нет | Прямой backup/передача пакета и expert sysupgrade | Одна здоровая root-Telnet сессия переиспользуется; переподключение только после реальной ошибки |
+
+Во время копирования отображаются общий процент, шкала, MiB, средняя скорость, число файлов и текущий файл.
+
+## Backup
+
+Backup включает:
+
+- отдельные gzip-дампы `mtd0..mtd16`;
+- полный `mtd16_all_flash.bin.gz`;
+- `SHA256SUMS.txt`;
+- диагностические сведения о MTD, ядре и системе;
+- маркер завершения.
+
+Статические разделы должны совпадать с соответствующими диапазонами `mtd16`. Изменяемые во время работы разделы (`flag`, `config`, `data`, `oopsfs`, `log`) проверяются по собственным размерам, gzip и SHA256, но могут отличаться от более позднего снимка `mtd16`.
+
+### Поддерживаемая штатная MTD-разметка
 
 ```text
 mtd0  00080000 bootloader
@@ -58,250 +304,318 @@ mtd15 02880000 nsb_slave
 mtd16 0eba0000 all_flash
 ```
 
-## Необходимые файлы OpenWrt
+## Возврат на штатную прошивку
 
-Скачайте из одной и той же snapshot-сборки `airoha/an7581`:
+Запустите `RESTORE_STOCK.cmd` / `RESTORE_STOCK.sh` либо пункт 5 главного меню.
 
-```text
-openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-kernel.bin
-openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-rootfs.bin
-sha256sums
-```
+Если работает обычная OpenWrt, мастер:
 
-С этим установщиком нельзя использовать:
+1. проверяет выбранный backup;
+2. временно загружает recovery через U-Boot TFTP **только в RAM**;
+3. не требует нажатия Reset;
+4. проверяет recovery и транспорт;
+5. восстанавливает IBU и BL2 с read-back SHA256;
+6. выполняет финальную проверку полного `all_flash` перед reboot.
 
-```text
-sysupgrade.bin
-initramfs-uImage.itb
-tcboot-образы
-nokia_xg-040g-md-ubi-*
-ubi-preloader.bin
-bl31-uboot.fip
-```
+Для восстановления используется канонический полный образ `mtd16`.
 
-## 1. Создание и проверка полного заводского бэкапа
+## Восстановление кирпича
 
-Скопируйте `router/backup.sh` и `router/lib.sh` на USB-накопитель, войдите в Telnet заводской прошивки, получите необходимые права и запустите:
+Пункт 6 предназначен для устройства, которое не загружает ни stock, ни OpenWrt.
 
-```sh
-ash /mnt/BOOT/backup.sh /mnt/BOOT/nokia-xg040gmd-backup
-```
-
-Скопируйте полученный каталог минимум в два независимых места хранения.
-
-Проверка на компьютере:
-
-```sh
-python3 tools/verify_backup.py /path/to/nokia-xg040gmd-backup
-```
-
-Не публикуйте созданные дампы. Они могут содержать MAC-адреса, серийные номера, ONU-идентификаторы, калибровочные данные, учётные данные и параметры провайдера.
-
-## 2. Создание персонального U-Boot environment
-
-Официальный OpenWrt upgrade hook меняет только переменную `bootcmd`.
-
-Инструмент:
-
-1. читает валидный environment из собственного бэкапа `mtd0` устройства;
-2. проверяет CRC32;
-3. сохраняет остальные переменные;
-4. меняет только `bootcmd`;
-5. пересчитывает CRC32;
-6. создаёт образ раздела размером `0x20000`.
-
-```sh
-python3 tools/prepare_env.py \
-  --input /path/to/nokia-xg040gmd-backup/mtd0_bootloader.bin.gz \
-  --output /tmp/OpenWrt.mtd2.u-boot-env.bin \
-  --report-json /tmp/env-report.json
-```
-
-Ожидаемая команда загрузки:
+Общий путь:
 
 ```text
-flash read 0xc0000 0x800000 0x85000000; bootm 0x85000000
+BootROM → символ C → XMODEM preloader → U-Boot/FIP в RAM
+→ TFTP recovery initramfs → SSH recovery → восстановление stock NAND
 ```
 
-Если CRC заводского environment неправильный, программа завершится с ошибкой. Она не создаёт универсальный donor env автоматически.
+Preloader и FIP на первом этапе работают из RAM. Запись NAND начинается только в recovery после проверок backup и аппаратной конфигурации.
 
-Проверенный donor-файл размером `0x20000` можно передать через `--input` только для контролируемого эксперимента. Он сохраняет переменные чужого устройства и не является рекомендуемым способом для массового применения. Не добавляйте такой бинарный файл в публичный репозиторий.
+## Журналы и диагностика
 
-## 3. Подготовка проверенного USB-пакета
-
-```sh
-python3 tools/prepare_bundle.py \
-  --kernel /path/to/openwrt-...-squashfs-factory-kernel.bin \
-  --rootfs /path/to/openwrt-...-squashfs-factory-rootfs.bin \
-  --env /tmp/OpenWrt.mtd2.u-boot-env.bin \
-  --sha256sums /path/to/openwrt-snapshot/sha256sums \
-  --output /path/to/usb/nokia-install-bundle \
-  --confirm-skyhigh
-```
-
-Команда проверяет:
-
-- официальный файл OpenWrt `sha256sums`;
-- точные имена stock-layout образов Nokia;
-- FIT/UBI magic;
-- размеры образов;
-- CRC environment;
-- ожидаемый `bootcmd`;
-- наличие скриптов для роутера.
-
-Перед созданием пакета роутерные скрипты нормализуются в LF. Затем формируется собственный `SHA256SUMS` для USB-пакета.
-
-## 4. Безопасная предварительная проверка на заводской прошивке
-
-Отключите оптический кабель и используйте стабильное питание.
-
-Сначала запускается только `dry-run`:
-
-```sh
-ash /mnt/BOOT/nokia-install-bundle/flash-stock-layout.sh --dry-run \
-  /mnt/BOOT/nokia-install-bundle \
-  /mnt/BOOT/nokia-xg040gmd-backup
-```
-
-`dry-run` не должен записывать данные во flash. Он проверяет разметку, права доступа, NAND, комплект образов и наличие бэкапа.
-
-Не продолжайте, если хотя бы одна проверка завершилась ошибкой.
-
-## 5. Экспериментальная установка
-
-```sh
-ash /mnt/BOOT/nokia-install-bundle/flash-stock-layout.sh --install \
-  /mnt/BOOT/nokia-install-bundle \
-  /mnt/BOOT/nokia-xg040gmd-backup
-```
-
-Скрипт требует вручную ввести точную фразу:
+Основной журнал:
 
 ```text
-FLASH NOKIA XG-040G-MD
+work/logs/LATEST.log
 ```
 
-Порядок записи:
+Отдельный журнал каждого запуска:
 
-1. rootfs в `mtd11`;
-2. kernel в `mtd14`;
-3. переключающий загрузку U-Boot environment в `mtd0 + 0x60000` — последним.
+```text
+work/logs/session-YYYYMMDD-HHMMSS-PID.log
+```
 
-После каждого этапа выполняется чтение обратно и проверка SHA-256. Затем данные синхронизируются и устройство перезагружается.
+Консоль показывает только операторские события:
 
-При использовании USB-накопителя, подготовленного в Windows/FAT, запускайте скрипты явно через `ash`.
+- `[WAIT]` — ожидание;
+- `[TRANSFER]` — передача;
+- `[STEP n/8]` — стадия transition;
+- `[NET]` — изменение доступных портов;
+- `[OK]` — успешная проверка;
+- `[WARNING]` / `[ПРЕДУПРЕЖДЕНИЕ]` — условие, требующее внимания;
+- `[ERROR]` — остановка.
 
-## Windows 10/11
+Сырые SSH/Telnet/transition-данные сохраняются в журнале, но не засоряют обычную консоль. ANSI-цвета из файлов журналов удаляются.
 
-### Вариант 1: Python без сборки EXE
+При обращении за помощью приложите `LATEST.log`, предварительно проверив его на чувствительные данные. **Не прикладывайте backup.**
 
-Установите Python 3.12 x64 и проверьте интерфейс объединённого инструмента:
+## Проверка релиза
+
+### Архив
+
+```bash
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc6.zip.sha256
+```
 
 ```powershell
-py -3.12 tools\nokia_tools.py --help
-py -3.12 tools\nokia_tools.py prepare-usb --help
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc6.zip -Algorithm SHA256).Hash
 ```
 
-Пример подготовки USB-пакета:
+### Распакованный комплект
 
-```powershell
-py -3.12 tools\nokia_tools.py prepare-usb `
-  --backup "D:\Nokia\backup" `
-  --kernel "D:\Nokia\images\openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-kernel.bin" `
-  --rootfs "D:\Nokia\images\openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-rootfs.bin" `
-  --sha256sums "D:\Nokia\images\sha256sums" `
-  --output "E:\nokia-install-bundle" `
-  --confirm-skyhigh
+Из корня распакованного каталога:
+
+```bash
+sha256sum -c data/SHA256SUMS
 ```
 
-### Вариант 2: локальная сборка Windows x64 EXE
+`data/SHA256SUMS` использует пути относительно корня архива.
 
-Из корня репозитория откройте PowerShell:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\windows\build-windows.ps1 -Clean
-```
-
-Результат:
+## Структура релиза
 
 ```text
-build-windows\nokia-xg040gmd-windows-x64.zip
+START.cmd / START.sh                 запуск мастера
+RESTORE_STOCK.cmd / .sh              быстрый вход в возврат на сток
+data/master.py                       основной мастер
+data/stock_web.py                    автоматизация штатного Web UI
+data/transition-bundle.bin           стандартный transition + production image
+data/transition-manual-bundle.bin    manual transition без production image
+data/recovery/                       компоненты восстановления через UART/RAM
+data/SHA256SUMS                       контрольные суммы комплекта
+docs/README_RU.md                    полная русская инструкция
+docs/README_EN.md                    full English guide
+docs/IMAGE_STATUS_RU.md              статус комплектных образов
+docs/IMAGE_STATUS_EN.md              bundled image status
+docs/CHANGELOG_RU.md                 история изменений
+docs/CHANGELOG.md                    changelog
 ```
 
-### Вариант 3: сборка через GitHub Actions
+## Документация
 
-Откройте:
+- [Полная инструкция на русском](docs/README_RU.md)
+- [Full English guide](docs/README_EN.md)
+- [Статус образов](docs/IMAGE_STATUS_RU.md) · [Image status](docs/IMAGE_STATUS_EN.md)
+- [История изменений](docs/CHANGELOG_RU.md) · [Changelog](docs/CHANGELOG.md)
 
-```text
-Actions → Build Windows kit → Run workflow
-```
+## Сообщение об ошибке
 
-После успешного завершения скачайте артефакт:
+В issue укажите:
 
-```text
-nokia-xg040gmd-windows-x64.zip
-```
+1. версию MedveFlasher;
+2. операционную систему и версию Python;
+3. выбранный пункт меню и транспорт;
+4. точный последний пользовательский статус;
+5. обезличенный `work/logs/LATEST.log`;
+6. произошло ли отключение питания или сети.
 
-Подробная инструкция находится в `windows/README_WINDOWS_RU.md`.
-
-## Восстановление
-
-Храните полный `mtd16_all_flash.bin.gz` и остальные дампы в нескольких местах. Аппаратный UART должен быть доступен до начала эксперимента.
-
-Восстановление и возврат на заводскую прошивку перезаписывают boot flash и в текущей экспериментальной версии автоматически не выполняются.
-
-## Статус проекта
-
-`0.1.1-experimental`:
-
-- полный NAND-бэкап;
-- проверка заводской разметки;
-- персональная генерация U-Boot environment;
-- проверка OpenWrt factory-образов;
-- подготовка USB-пакета;
-- защищённый `dry-run`;
-- контролируемая stock-layout запись;
-- инструменты для Windows 10/11;
-- CI и сборка Windows-артефакта через GitHub Actions.
-
-Реальное тестирование на устройстве и независимый аудит destructive-части всё ещё обязательны до того, как установщик можно будет считать пригодным для широкого применения.
+Не публикуйте пароли, backup, `mtd0`, `romfile`, `ri`, `bosa`, серийные номера и ONU-данные.
 
 ---
 
-<a id="english"></a>
+# 🇬🇧 English
 
-# English
+## Overview
 
-> **Experimental project. High brick risk. UART recovery must be available.**
+**Nokia Router MedveFlasher** is a bilingual Python wizard for the Nokia / Nokia Shanghai Bell **XG-040G-MD** based on Airoha **AN7581**. Over a normal Ethernet connection it can:
 
-This project automates the official OpenWrt **stock-layout** installation path for the Nokia / Nokia Shanghai Bell XG-040G-MD based on Airoha AN7581.
+- create and verify a complete backup of the stock NAND;
+- install OpenWrt + LuCI using the **all-in-UBI** layout without UART;
+- install a user-selected UBI sysupgrade through a separate manual transition image;
+- restore stock firmware from a running OpenWrt without UART;
+- recover a non-booting device through BootROM and a 3.3 V USB-UART adapter;
+- keep a detailed diagnostic log for every operation.
 
-The installer:
+The Python code uses the standard library only. Windows additionally needs the built-in OpenSSH client to communicate with the transition OpenWrt.
 
-- does not install `tcboot`;
-- does not replace BL2/FIP;
-- does not convert the device to the OpenWrt U-Boot / all-in-UBI layout;
-- uses official OpenWrt images for the vendor flash layout;
-- builds a personalized U-Boot environment from the target device's own backup.
+## Hardware status
 
-It targets the exact stock partition table observed on the supported device and writes:
+| Flow | Status |
+|---|---|
+| Stock → standard transition → bundled OpenWrt | **Hardware confirmed** |
+| Running OpenWrt → RAM recovery → stock restore | **Hardware confirmed** |
+| BootROM → XMODEM → RAM U-Boot → stock restore | **Hardware confirmed** |
+| Manual transition → user-provided sysupgrade | Static and synthetic validation complete; full hardware cycle still pending |
+| Automatic XG-040G-MF / AN7583 rejection | Implemented; hardware confirmation on an MF unit remains desirable |
 
-- a personalized U-Boot environment to `mtd0` at offset `0x60000`, length `0x20000`;
-- the OpenWrt factory kernel to `mtd14` (`nsb_master`);
-- the OpenWrt factory rootfs to `mtd11` (`data`).
+## Supported hardware
+
+This project is for the **Nokia XG-040G-MD / Airoha AN7581 only**.
+
+The similar **Nokia XG-040G-MF / AN7583 is not supported**. Its NAND layout may look identical, so MTD names alone are not a sufficient model check. The recommended automatic flow reads the chipset from the stock Web UI and rejects AN/EN7583 before any write.
+
+The primary confirmed NAND is **SkyHigh ML02G300WHI00**. Explicitly detected **FudanMicro FM25G02B is rejected**. An unidentified NAND is accepted only after exact board, MTD and geometry checks plus an operator warning.
 
 ## Critical limitations
 
-- **XG-PON is unavailable after installing OpenWrt.**
-- Initial support is restricted to **SkyHigh ML02G300WHI00** SPI-NAND.
-- FudanMicro FM25G02B is rejected when detected.
-- Only the exact stock MTD layout documented below is accepted.
-- Snapshot firmware changes frequently. Kernel and rootfs must come from the same OpenWrt build and pass the provided validation.
-- This is not an atomic update. A power failure during a write can brick the device.
-- A verified full NAND backup, stable power and working UART recovery are mandatory.
+- NAND updates are not atomic. A power loss during a write can brick the router.
+- A complete verified backup must be stored on the PC, not only on the router USB drive.
+- Backups contain unique and sensitive device data. Never publish them.
+- Do not run the kit on another Nokia model even if the partition names appear identical.
+- The project does not claim optical-interface support in OpenWrt; check [docs/IMAGE_STATUS_EN.md](docs/IMAGE_STATUS_EN.md) for the bundled image status.
+- UART is not required for normal installation or rollback, but is required for full brick recovery.
 
-## Supported stock layout
+## Safety model
+
+The normal path is fail-closed and preserves these invariants:
+
+1. model verification happens before the first write;
+2. a complete backup is mandatory;
+3. the U-Boot environment is generated from the target router's own `mtd0`;
+4. critical writes are read back and checked with SHA256;
+5. the UBI layout and payloads are prepared and verified before BL2;
+6. the complete BL2 partition image is written last;
+7. secrets are kept out of console and session logs;
+8. raw protocol output is retained for diagnostics but hidden from the operator view.
+
+## Standard installation flow
+
+```mermaid
+flowchart TD
+    A[Stock Nokia firmware] --> B[Model and access checks]
+    B --> C[Complete mtd0..mtd16 backup]
+    C --> D[Copy and verify backup on PC]
+    D --> E[Personalized U-Boot environment]
+    E --> F[Write and read back transition to mtd14]
+    F --> G[Write environment to mtd0 last]
+    G --> H[Boot transition OpenWrt]
+    H --> I[Validate board, NAND and sysupgrade]
+    I --> J[Format the all-in-UBI region]
+    J --> K[Write bosa, ri, FIP and fallback FIT]
+    K --> L[Read-back SHA256 verification]
+    L --> M[Write BL2 last]
+    M --> N[Install production OpenWrt]
+    N --> O[Verify production OpenWrt over SSH/LuCI]
+```
+
+The destructive flow is authorized by the exact phrase:
+
+```text
+CONFIRM FORMAT AND FLASH
+```
+
+## Custom sysupgrade expert mode
+
+Select:
+
+```text
+4 — Install your own OpenWrt image (expert mode)
+```
+
+This path:
+
+- intentionally skips the router model probe;
+- forces direct TFTP;
+- writes a separate 8 MiB `transition-manual-bundle.bin`;
+- does not contain or automatically install a production image;
+- accepts a local `.itb` only after transition SSH is online;
+- validates FIT magic, size, local and remote SHA256, `nokia-ubi-installer check`, and `sysupgrade -T`;
+- never uses `sysupgrade -F`;
+- asks for a second confirmation after validation and before formatting.
+
+The selected image must be a valid UBI sysupgrade for the `nokia_xg-040g-md-ubi` profile.
+
+## Requirements
+
+- Nokia XG-040G-MD / AN7581;
+- Windows 10/11 or Linux;
+- Python 3;
+- Ethernet connection;
+- about 1 GB of free disk space;
+- stable power and disconnected fiber;
+- FAT32 USB drive of at least 2 GB for Samba/FTP, or direct TFTP without USB;
+- 3.3 V USB-UART only for brick recovery.
+
+## Quick start
+
+### Windows
+
+1. Install Python 3 with **Add Python to PATH** enabled.
+2. Ensure the Windows OpenSSH client is installed.
+3. Extract the release into a simple directory.
+4. Connect the PC to a Nokia LAN port.
+5. Run `START.cmd`.
+
+### Linux
+
+```bash
+chmod +x START.sh RESTORE_STOCK.sh
+./START.sh
+```
+
+Brick recovery may require:
+
+```bash
+sudo ./START.sh
+```
+
+### Recommended path
+
+1. Select a language.
+2. Choose `1 — install OpenWrt (with a backup first)`.
+3. Use automatic Web UI access when available.
+4. Select Samba, FTP or TFTP.
+5. Wait until the complete backup is stored and verified on the PC.
+6. Copy the backup to a second independent location.
+7. Enter `CONFIRM FORMAT AND FLASH` after the read-only preflight succeeds.
+8. Do not remove power until production OpenWrt is verified.
+
+## Main menu
+
+```text
+1 — install OpenWrt (with a backup first)
+2 — create a backup
+3 — prepare a package from your backup
+4 — resume from stage 2
+5 — restore stock (no UART)
+6 — recover a brick (UART required)
+7 — install OpenWrt from an existing backup
+8 — exit
+```
+
+## Stock access modes
+
+```text
+1 — Automatic setup (recommended)
+2 — Configure Telnet manually
+3 — Use Telnet that is already enabled
+4 — Install your own OpenWrt image (expert mode)
+```
+
+Automatic setup logs in to the stock Web UI, confirms AN7581, reads service credentials and enables the selected transport. Manual Telnet modes reject explicit AN/EN7583 and allow an inconclusive result only after a warning.
+
+The common China Mobile Web UI credentials are:
+
+```text
+Username: CMCCAdmin
+Password: aDm8H%MdA
+```
+
+These are not the device-specific Telnet/Samba credentials. `useradmin` normally uses the unique password printed on the router label.
+
+## Transports
+
+| Transport | USB | Notes |
+|---|---:|---|
+| **Samba** | Yes | Windows connects through the native WNet API; the password is not exposed in argv or logs |
+| **FTP** | Yes | Handles the stock FTP chroot and alternate USB path mappings |
+| **TFTP** | No | Reuses a healthy UID-0 Telnet session and reconnects only after an actual synchronization or transport failure |
+
+FTP and Samba copies report total percentage, progress bar, MiB transferred, average speed, file count and current file.
+
+## Backup and stock layout
+
+The backup contains separate compressed dumps for `mtd0..mtd16`, a complete `mtd16_all_flash.bin.gz`, checksums and diagnostics.
 
 ```text
 mtd0  00080000 bootloader
@@ -323,211 +637,56 @@ mtd15 02880000 nsb_slave
 mtd16 0eba0000 all_flash
 ```
 
-## Required OpenWrt files
+Live stock partitions may change between their individual dump and the later `mtd16` snapshot. They are validated by their own size, gzip stream and SHA256 rather than incorrectly requiring byte identity with the later full-flash snapshot.
 
-Download all files from one matching `airoha/an7581` snapshot build:
+## Restore stock
 
-```text
-openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-kernel.bin
-openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-rootfs.bin
-sha256sums
-```
+Run `RESTORE_STOCK.cmd`, `RESTORE_STOCK.sh`, or main-menu item 5.
 
-Do not use the following with this installer:
+From a normal running OpenWrt the wizard temporarily boots recovery over U-Boot TFTP into RAM, restores the canonical full backup, verifies IBU and BL2 by read-back SHA256, and performs a final monolithic `all_flash` SHA256 before rebooting.
+
+## Brick recovery
 
 ```text
-sysupgrade.bin
-initramfs-uImage.itb
-tcboot images
-nokia_xg-040g-md-ubi-*
-ubi-preloader.bin
-bl31-uboot.fip
+BootROM → C → XMODEM preloader → U-Boot/FIP in RAM
+→ TFTP recovery initramfs → SSH recovery → stock NAND restore
 ```
 
-## 1. Create and verify a complete stock backup
+The preloader and FIP run from RAM. NAND writes begin only after the recovery environment validates the hardware and the selected backup.
 
-Copy `router/backup.sh` and `router/lib.sh` to a USB drive, enter the stock firmware Telnet shell, elevate using the method appropriate for that firmware and run:
-
-```sh
-ash /mnt/BOOT/backup.sh /mnt/BOOT/nokia-xg040gmd-backup
-```
-
-Copy the resulting directory to at least two independent storage locations.
-
-Verify it on a PC:
-
-```sh
-python3 tools/verify_backup.py /path/to/nokia-xg040gmd-backup
-```
-
-Never publish generated dumps. They may contain MAC addresses, serial numbers, ONU identifiers, calibration data, credentials and ISP-specific settings.
-
-## 2. Generate a personalized U-Boot environment
-
-The official OpenWrt upgrade hook changes only `bootcmd`.
-
-The tool:
-
-1. reads the valid environment from the device's own `mtd0` backup;
-2. validates CRC32;
-3. preserves all other variables;
-4. changes only `bootcmd`;
-5. recalculates CRC32;
-6. creates the required `0x20000` partition image.
-
-```sh
-python3 tools/prepare_env.py \
-  --input /path/to/nokia-xg040gmd-backup/mtd0_bootloader.bin.gz \
-  --output /tmp/OpenWrt.mtd2.u-boot-env.bin \
-  --report-json /tmp/env-report.json
-```
-
-Expected boot command:
+## Logs
 
 ```text
-flash read 0xc0000 0x800000 0x85000000; bootm 0x85000000
+work/logs/LATEST.log
+work/logs/session-YYYYMMDD-HHMMSS-PID.log
 ```
 
-If the stock environment CRC is invalid, the tool stops. It does not silently construct a generic donor environment.
+The console presents operator-level events while the full SSH/Telnet/transition transcript remains in the log. ANSI color sequences are stripped from log files.
 
-A separately obtained and verified `0x20000` donor environment may be passed through `--input` only for controlled testing. It preserves donor-device variables and is not the recommended community workflow. Never commit that binary to a public repository.
+When opening an issue, attach a sanitized `LATEST.log`. Never attach a backup or raw device partitions.
 
-## 3. Prepare a validated USB bundle
+## Verify a release
 
-```sh
-python3 tools/prepare_bundle.py \
-  --kernel /path/to/openwrt-...-squashfs-factory-kernel.bin \
-  --rootfs /path/to/openwrt-...-squashfs-factory-rootfs.bin \
-  --env /tmp/OpenWrt.mtd2.u-boot-env.bin \
-  --sha256sums /path/to/openwrt-snapshot/sha256sums \
-  --output /path/to/usb/nokia-install-bundle \
-  --confirm-skyhigh
+```bash
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc6.zip.sha256
+sha256sum -c data/SHA256SUMS
 ```
-
-The command validates:
-
-- the official OpenWrt `sha256sums` file;
-- exact Nokia stock-layout image filenames;
-- FIT/UBI magic;
-- image sizes;
-- environment CRC;
-- expected `bootcmd`;
-- required router scripts.
-
-Router scripts are normalized to LF before the USB bundle and its own `SHA256SUMS` are created.
-
-## 4. Run a read-only preflight on the stock router
-
-Disconnect fiber and use stable power.
-
-Run `dry-run` first:
-
-```sh
-ash /mnt/BOOT/nokia-install-bundle/flash-stock-layout.sh --dry-run \
-  /mnt/BOOT/nokia-install-bundle \
-  /mnt/BOOT/nokia-xg040gmd-backup
-```
-
-`dry-run` must not write to flash. It checks the partition layout, access permissions, NAND guard, installation bundle and backup presence.
-
-Do not continue unless every check passes.
-
-## 5. Experimental installation
-
-```sh
-ash /mnt/BOOT/nokia-install-bundle/flash-stock-layout.sh --install \
-  /mnt/BOOT/nokia-install-bundle \
-  /mnt/BOOT/nokia-xg040gmd-backup
-```
-
-The script requires the exact confirmation phrase:
-
-```text
-FLASH NOKIA XG-040G-MD
-```
-
-Write order:
-
-1. rootfs to `mtd11`;
-2. kernel to `mtd14`;
-3. the boot-switching U-Boot environment to `mtd0 + 0x60000` last.
-
-Each stage is read back and verified with SHA-256. The script then synchronizes storage and reboots.
-
-Run scripts explicitly through `ash` when the bundle is stored on a Windows/FAT USB drive.
-
-## Windows 10/11
-
-### Option 1: Python without building an EXE
-
-Install Python 3.12 x64 and inspect the unified tool:
 
 ```powershell
-py -3.12 tools\nokia_tools.py --help
-py -3.12 tools\nokia_tools.py prepare-usb --help
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc6.zip -Algorithm SHA256).Hash
 ```
 
-Example USB bundle preparation:
+## Documentation
 
-```powershell
-py -3.12 tools\nokia_tools.py prepare-usb `
-  --backup "D:\Nokia\backup" `
-  --kernel "D:\Nokia\images\openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-kernel.bin" `
-  --rootfs "D:\Nokia\images\openwrt-airoha-an7581-nokia_xg-040g-md-squashfs-factory-rootfs.bin" `
-  --sha256sums "D:\Nokia\images\sha256sums" `
-  --output "E:\nokia-install-bundle" `
-  --confirm-skyhigh
-```
+- [Русская инструкция](docs/README_RU.md)
+- [English guide](docs/README_EN.md)
+- [Статус образов](docs/IMAGE_STATUS_RU.md) · [Image status](docs/IMAGE_STATUS_EN.md)
+- [История изменений](docs/CHANGELOG_RU.md) · [Changelog](docs/CHANGELOG.md)
 
-### Option 2: Build a standalone Windows x64 EXE locally
+## License and credits
 
-Open PowerShell in the repository root:
+License: **GPL-2.0-only**.
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\windows\build-windows.ps1 -Clean
-```
+The project works with [OpenWrt](https://openwrt.org/) and builds on community research around the Nokia XG-040G-MD, Airoha AN7581, the vendor boot chain and the OpenWrt all-in-UBI port.
 
-Result:
-
-```text
-build-windows\nokia-xg040gmd-windows-x64.zip
-```
-
-### Option 3: Build with GitHub Actions
-
-Open:
-
-```text
-Actions → Build Windows kit → Run workflow
-```
-
-After the workflow completes, download the artifact:
-
-```text
-nokia-xg040gmd-windows-x64.zip
-```
-
-Detailed instructions are available in `windows/README_WINDOWS_RU.md`.
-
-## Recovery
-
-Keep the complete `mtd16_all_flash.bin.gz` backup and all other dumps in multiple locations. Working UART recovery must be available before testing.
-
-Recovery and return-to-stock operations overwrite boot flash and are not automated in the current experimental release.
-
-## Project status
-
-`0.1.1-experimental` includes:
-
-- complete NAND backup;
-- strict stock-layout validation;
-- personalized U-Boot environment generation;
-- OpenWrt factory-image validation;
-- USB bundle preparation;
-- guarded `dry-run`;
-- controlled stock-layout write path;
-- Windows 10/11 tooling;
-- CI and Windows artifact builds through GitHub Actions.
-
-Real-device testing and independent review of the destructive path are still required before this installer can be considered suitable for broad use.
+OpenWrt and Nokia/Nokia Shanghai Bell are trademarks of their respective owners. This project is not affiliated with or endorsed by Nokia, Nokia Shanghai Bell, China Mobile or OpenWrt.

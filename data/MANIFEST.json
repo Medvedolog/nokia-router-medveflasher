@@ -1,0 +1,134 @@
+{
+  "version": "1.0.0-rc6",
+  "product": "Nokia Router MedveFlasher",
+  "supported_device": {
+    "model": "Nokia XG-040G-MD",
+    "soc": "Airoha AN7581",
+    "exclusive": true,
+    "unsupported_models": "All models other than Nokia XG-040G-MD"
+  },
+  "bundle": {
+    "file": "data/transition-bundle.bin",
+    "size": 17956864,
+    "sha256": "e19ff00652a7a581f418badc998d21baed78949dd82c4f54764d993dbb39f8a0",
+    "transition_window_size": 8388608,
+    "transition_fit_totalsize": 7509692,
+    "production_offset_in_bundle": 8388608,
+    "production_physical_offset_in_nand": 9175040,
+    "production_size": 9531670,
+    "production_sha256": "95fe315cedca64b5f5db39a5e03e75eb773b7c43e970d06fc3be6d0d8e1cbdc6"
+  },
+  "bootcmd": "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000",
+  "stock_web_automation": {
+    "module": "data/stock_web.py",
+    "login": "encrypted-first; explicit one-time plain HTTP retry remains available",
+    "reads": [
+      "device model (ModelName/chipset) — verified before any write",
+      "Telnet username/password/port",
+      "FTP username/password/port",
+      "service state"
+    ],
+    "writes": [
+      "enable Telnet",
+      "enable Samba only for USB/Samba",
+      "enable FTP only for USB/FTP"
+    ],
+    "ftp_enable": "POST /storage.cgi?ftp_config with ftp_en=true and fresh CSRF; re-read state and verify actual configured port",
+    "safety": "device_status.cgi remains the preferred model confirmation; manual choices 2/3 use a best-effort UID-0 Telnet probe that rejects explicit AN/EN7583, accepts AN/EN7581, and permits inconclusive output after one warning; explicit expert choice 4 skips the model probe and forces direct TFTP after an explicit y/N confirmation; passwords remain in process memory, registered secrets are filtered from session logs, and secrets are not passed through argv"
+  },
+  "transports": {
+    "usb_samba": "supported; Windows UNC authentication uses useradmin plus the already collected device/label password through WNetAddConnection2W; the secret stays in process memory, with one Nokia-share/IPC$ stale-session retry",
+    "usb_ftp": "supported with automatic FTP enablement and /mnt/USB chroot path resolution",
+    "direct_tftp": {
+      "supported": true,
+      "default_udp_port": 1069,
+      "block_size": 4096,
+      "retry_policy": "reuse one healthy UID-0 Telnet session across successful partitions; reconnect only after timeout, socket/Telnet error, or missing completion marker; validated files retained; Windows UDP connection-reset suppression"
+    }
+  },
+  "telnet": {
+    "device": "MD only",
+    "reconnect_policy": "up to 3 independent root sessions, each with up to 3 fresh TCP login attempts",
+    "root_gate": "id -u must return 0"
+  },
+  "recovery": {
+    "preloader": {
+      "file": "data/recovery/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin",
+      "sha256": "6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808"
+    },
+    "fip": {
+      "file": "data/recovery/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot-ethfix.fip",
+      "sha256": "9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b"
+    },
+    "initramfs": {
+      "file": "data/recovery/nokia-xg040gmd-stock-recovery-initramfs.itb",
+      "sha256": "5fe4a4508da8107c7a10a670d120a01eb9f2aec677514bc650f9dc809013e088"
+    },
+    "verification": {
+      "ram_uboot": "complete logical coverage by per-chunk IBU readback SHA256 plus BL2 readback SHA256; no monolithic all_flash SHA256 is computed in U-Boot",
+      "ram_recovery_ssh": "IBU and BL2 readback SHA256 plus a final monolithic all_flash SHA256 before reboot"
+    }
+  },
+  "documentation": {
+    "readme_ru": "docs/README_RU.md",
+    "readme_en": "docs/README_EN.md",
+    "image_status_ru": "docs/IMAGE_STATUS_RU.md",
+    "image_status_en": "docs/IMAGE_STATUS_EN.md",
+    "changelog_ru": "docs/CHANGELOG_RU.md",
+    "changelog_en": "docs/CHANGELOG.md"
+  },
+  "release_layout": {
+    "root_files": [
+      "START.cmd",
+      "START.sh",
+      "RESTORE_STOCK.cmd",
+      "RESTORE_STOCK.sh"
+    ],
+    "master": "data/master.py",
+    "checksums": "data/SHA256SUMS",
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc6"
+  },
+  "hardware_status": {
+    "md_transition_install": "hardware-confirmed",
+    "md_full_brick_stock_restore": "hardware-confirmed",
+    "md_production_to_ram_recovery": "hardware-confirmed",
+    "automatic_ftp_enable": "code/synthetic validation; controlled hardware confirmation still required if not yet reported",
+    "manual_telnet_model_gate": "MD evidence confirmed from stock dmesg/U-Boot logs; choices 2/3 are best-effort and expert choice 4 intentionally bypasses the probe; MF rejection remains to be hardware-confirmed",
+    "manual_transition_custom_sysupgrade": "static/synthetic validated; full hardware cycle pending"
+  },
+  "build_tag": "medveflasher-1.0.0-rc6",
+  "operator_progress": {
+    "telnet_console": "command echo and protocol markers suppressed; preflight runtime messages retained",
+    "transition_stage": "SSH-derived state, steps 1/8..8/8, port changes, and phase-aware 30-second heartbeat",
+    "diagnostics": "complete raw /tmp/nokia-autoflash.log appended to PC session logs only",
+    "usb_network_transfers": "FTP and Samba backup/package copies show overall byte percentage, a 20-cell bar, MiB transferred, average speed, file count, and current file; output is line-oriented for clean LATEST.log diagnostics"
+  },
+  "manual_bundle": {
+    "file": "data/transition-manual-bundle.bin",
+    "size": 8388608,
+    "sha256": "3abf07adccff808f879649c8842fa96327ae2f9102294fe0f561dd7fc318c8f8",
+    "transition_window_size": 8388608,
+    "transition_fit_totalsize": 7509016,
+    "production_offset_in_bundle": 8388608,
+    "production_physical_offset_in_nand": null,
+    "production_size": 0,
+    "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "behavior": "8 MiB manual transition only; no embedded production image and no autonomous stage 2"
+  },
+  "expert_custom_sysupgrade": {
+    "access_menu_item": 4,
+    "transport": "TFTP only",
+    "transition": "separate manual FIT with no autoflash service",
+    "validation": [
+      "local FIT magic/size/SHA256",
+      "TFTP readback SHA256",
+      "nokia-ubi-installer check",
+      "sysupgrade -T"
+    ],
+    "destructive_gate": "second y/N confirmation after remote validation",
+    "fallback": "manual transition FIT stored in UBI fit volume"
+  },
+  "release": {
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc6"
+  }
+}

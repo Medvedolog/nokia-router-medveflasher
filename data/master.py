@@ -27,8 +27,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc6"
-BUILD_TAG = "medveflasher-1.0.0-rc6"
+APP_VERSION = "1.0.0-rc7"
+BUILD_TAG = "medveflasher-1.0.0-rc7"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -77,7 +77,7 @@ STOCK_STABLE_RAW_SLICES = frozenset((0, 1, 6, 7, 14, 15))
 STOCK_LIVE_RAW_SLICES = frozenset(STOCK_RAW_SLICES) - STOCK_STABLE_RAW_SLICES
 EXPECTED_BUNDLE_SHA = "e19ff00652a7a581f418badc998d21baed78949dd82c4f54764d993dbb39f8a0"
 EXPECTED_BUNDLE_SIZE = 17_956_864
-EXPECTED_MANUAL_BUNDLE_SHA = "3abf07adccff808f879649c8842fa96327ae2f9102294fe0f561dd7fc318c8f8"
+EXPECTED_MANUAL_BUNDLE_SHA = "3b7b89508da309a45d02002a972a3a554231b12d5839bb1f812d655c29ef347f"
 EXPECTED_MANUAL_BUNDLE_SIZE = 8_388_608
 EXPECTED_PROD_SHA = "95fe315cedca64b5f5db39a5e03e75eb773b7c43e970d06fc3be6d0d8e1cbdc6"
 FIXED_EXPECTED = {
@@ -3094,7 +3094,7 @@ def ssh_executable() -> str:
 
 def ssh_run(host: str, command: str, input_text: str | None = None, timeout: int = 900,
             allow_disconnect: bool = False, quiet: bool = False,
-            batch_mode: bool = False) -> tuple[int, str]:
+            batch_mode: bool = False, minimal_auth: bool = False) -> tuple[int, str]:
     ssh = ssh_executable()
     null = "NUL" if os.name == "nt" else "/dev/null"
     argv = [
@@ -3104,11 +3104,29 @@ def ssh_run(host: str, command: str, input_text: str | None = None, timeout: int
     ]
     if batch_mode:
         argv.extend(["-o", "BatchMode=yes"])
+    if minimal_auth:
+        # The corrected rc7 manual transition starts Dropbear with -B because
+        # its root shadow password is intentionally empty. OpenSSH always sends
+        # the protocol-level "none" request first; Dropbear may then accept the
+        # blank-password account without an interactive prompt. Avoid local keys,
+        # agents and password prompts so the detector stays deterministic.
+        argv.extend([
+            "-o", "ConnectionAttempts=1",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "PasswordAuthentication=no",
+        ])
     argv.extend([f"root@{host}", command])
-    # Inherit the console when no stdin payload is supplied so stock/production
-    # OpenWrt may ask for its root password. Recovery initramfs accepts root with no password.
+    # Interactive calls inherit the console so production OpenWrt may ask for a
+    # password. Batch/minimal probes must never inherit console input: a detector
+    # must either succeed or fail, not wait invisibly for user interaction.
+    if input_text is not None:
+        stdin_target = subprocess.PIPE
+    elif batch_mode or minimal_auth:
+        stdin_target = subprocess.DEVNULL
+    else:
+        stdin_target = None
     proc = subprocess.Popen(
-        argv, stdin=subprocess.PIPE if input_text is not None else None,
+        argv, stdin=stdin_target,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
     )
     try:
@@ -3351,7 +3369,7 @@ def send_custom_sysupgrade_tftp(host: str, source: Path, local_ip: str | None, p
     )
     holder: dict[str, object] = {}
     def run_ssh():
-        try: holder["value"] = ssh_run(host, command, timeout=3600, quiet=True, batch_mode=True)
+        try: holder["value"] = _manual_ssh_run(host, command, timeout=3600, quiet=True)
         except Exception as exc: holder["error"] = exc
     ssh_thread = threading.Thread(target=run_ssh, daemon=True); ssh_thread.start()
     started=time.time(); last=-15
@@ -3362,6 +3380,15 @@ def send_custom_sysupgrade_tftp(host: str, source: Path, local_ip: str | None, p
             print(tr(f"[TRANSFER] sysupgrade: {done/1048576:.1f}/{source.stat().st_size/1048576:.1f} MiB, {elapsed}s", f"[TRANSFER] sysupgrade: {done/1048576:.1f}/{source.stat().st_size/1048576:.1f} MiB, {elapsed}s"))
             last=elapsed
         thread.join(1); ssh_thread.join(0)
+        if not ssh_thread.is_alive() and int(result.bytes_transferred) == 0:
+            if "error" in holder:
+                raise holder["error"]  # type: ignore[misc]
+            early_rc, early_output = holder.get("value", (0, ""))  # type: ignore[assignment]
+            if early_rc:
+                raise Error(tr(
+                    f"удалённая TFTP-команда завершилась до начала передачи: {str(early_output)[-1200:]}",
+                    f"remote TFTP command exited before transfer started: {str(early_output)[-1200:]}",
+                ))
         if elapsed > 3600: raise Error("TFTP sysupgrade timeout")
     if result.error: raise Error(tr(f"ошибка TFTP: {result.error}", f"TFTP error: {result.error}"))
     if "error" in holder: raise holder["error"]  # type: ignore[misc]
@@ -3371,28 +3398,330 @@ def send_custom_sysupgrade_tftp(host: str, source: Path, local_ip: str | None, p
     return expected, source.stat().st_size
 
 
+def _manual_auth_mode(host: str) -> bool:
+    minimal = _MANUAL_SSH_MINIMAL_AUTH.get(host)
+    if minimal is None:
+        ready, _, _, detail = _manual_transition_probe(host, timeout=8)
+        if not ready:
+            raise Error(tr(
+                f"ручной transition не подтверждён перед передачей файла: {detail or 'служебная метка/состояние не прочитаны'}",
+                f"manual transition was not confirmed before file transfer: {detail or 'marker/state not readable'}",
+            ))
+        minimal = _MANUAL_SSH_MINIMAL_AUTH.get(host, True)
+    return bool(minimal)
+
+
+def _manual_remote_has(host: str, command: str) -> bool:
+    quoted = shlex.quote(command)
+    _, out = _manual_ssh_run(
+        host,
+        f"if command -v {quoted} >/dev/null 2>&1; then echo NOKIA_HAVE=1; else echo NOKIA_HAVE=0; fi",
+        timeout=20,
+        quiet=True,
+    )
+    return "NOKIA_HAVE=1" in out
+
+
+def _manual_scp_argv(host: str, source: Path, remote_path: str) -> list[str]:
+    scp = scp_executable()
+    null = "NUL" if os.name == "nt" else "/dev/null"
+    argv = [
+        scp, "-O",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", f"UserKnownHostsFile={null}",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=8",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=4",
+        "-o", "NumberOfPasswordPrompts=1",
+        "-o", "BatchMode=yes",
+    ]
+    if _manual_auth_mode(host):
+        argv.extend([
+            "-o", "ConnectionAttempts=1",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "PasswordAuthentication=no",
+        ])
+    argv.extend([str(source), f"root@{host}:{remote_path}"])
+    return argv
+
+
+def send_custom_sysupgrade_scp(host: str, source: Path) -> tuple[str, int]:
+    remote = "/tmp/nokia-custom-sysupgrade.itb"
+    partial = remote + ".part"
+    expected = sha_file(source)
+    _manual_ssh_run(host, f"rm -f {shlex.quote(partial)} {shlex.quote(remote)}", timeout=30, quiet=True)
+    argv = _manual_scp_argv(host, source, partial)
+    print(tr(
+        f"[SCP] sysupgrade: {source.stat().st_size/1048576:.1f} MiB → RAM transition.",
+        f"[SCP] sysupgrade: {source.stat().st_size/1048576:.1f} MiB → transition RAM.",
+    ))
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    started = time.time(); last = -15
+    while proc.poll() is None:
+        elapsed = int(time.time() - started)
+        if elapsed >= last + 15:
+            print(tr(
+                f"[SCP] Передача продолжается, прошло {elapsed}s...",
+                f"[SCP] Transfer still active, elapsed {elapsed}s...",
+            ))
+            last = elapsed
+        if elapsed > 1800:
+            proc.kill()
+            raise Error("SCP sysupgrade timeout")
+        time.sleep(1)
+    output = proc.communicate()[0]
+    if output.strip():
+        _write_session_only(f"[SCP-RAW] host={host}\\n{output}")
+    if proc.returncode:
+        raise Error(tr(
+            f"SCP завершился с кодом {proc.returncode}: {output[-1200:].strip()}",
+            f"SCP exited with code {proc.returncode}: {output[-1200:].strip()}",
+        ))
+    _, out = _manual_ssh_run(
+        host,
+        f"mv {shlex.quote(partial)} {shlex.quote(remote)} && "
+        f"wc -c < {shlex.quote(remote)}; sha256sum {shlex.quote(remote)}",
+        timeout=300,
+        quiet=True,
+    )
+    if expected not in out or str(source.stat().st_size) not in out:
+        raise Error(tr(
+            "размер или SHA256 sysupgrade после SCP не совпал",
+            "sysupgrade size or SHA256 did not match after SCP",
+        ))
+    print(tr("[OK] Sysupgrade передан по SCP и проверен SHA256.", "[OK] Sysupgrade transferred by SCP and SHA256 verified."))
+    return expected, source.stat().st_size
+
+
+def _manual_ssh_stream_argv(host: str, remote_command: str) -> list[str]:
+    ssh = ssh_executable()
+    null = "NUL" if os.name == "nt" else "/dev/null"
+    argv = [
+        ssh, "-T",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", f"UserKnownHostsFile={null}",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=8",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=4",
+        "-o", "NumberOfPasswordPrompts=1",
+        "-o", "BatchMode=yes",
+    ]
+    if _manual_auth_mode(host):
+        argv.extend([
+            "-o", "ConnectionAttempts=1",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "PasswordAuthentication=no",
+        ])
+    argv.extend([f"root@{host}", remote_command])
+    return argv
+
+
+def send_custom_sysupgrade_ssh_stream(host: str, source: Path) -> tuple[str, int]:
+    remote = "/tmp/nokia-custom-sysupgrade.itb"
+    partial = remote + ".part"
+    expected = sha_file(source)
+    command = (
+        f"rm -f {shlex.quote(partial)} {shlex.quote(remote)}; "
+        f"cat > {shlex.quote(partial)} && "
+        f"mv {shlex.quote(partial)} {shlex.quote(remote)} && "
+        f"wc -c < {shlex.quote(remote)}; sha256sum {shlex.quote(remote)}"
+    )
+    argv = _manual_ssh_stream_argv(host, command)
+    print(tr(
+        f"[SSH] sysupgrade: {source.stat().st_size/1048576:.1f} MiB → RAM transition.",
+        f"[SSH] sysupgrade: {source.stat().st_size/1048576:.1f} MiB → transition RAM.",
+    ))
+    with source.open("rb") as fh:
+        proc = subprocess.Popen(
+            argv, stdin=fh, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=False,
+        )
+        started = time.time(); last = -15
+        while proc.poll() is None:
+            elapsed = int(time.time() - started)
+            if elapsed >= last + 15:
+                print(tr(
+                    f"[SSH] Передача продолжается, прошло {elapsed}s...",
+                    f"[SSH] Transfer still active, elapsed {elapsed}s...",
+                ))
+                last = elapsed
+            if elapsed > 1800:
+                proc.kill()
+                raise Error("SSH-stream sysupgrade timeout")
+            time.sleep(1)
+        raw = proc.communicate()[0] or b""
+    output = raw.decode("utf-8", "replace")
+    if output.strip():
+        _write_session_only(f"[SSH-STREAM-RAW] host={host}\\n{output}")
+    if proc.returncode:
+        raise Error(tr(
+            f"SSH-stream завершился с кодом {proc.returncode}: {output[-1200:].strip()}",
+            f"SSH-stream exited with code {proc.returncode}: {output[-1200:].strip()}",
+        ))
+    if expected not in output or str(source.stat().st_size) not in output:
+        raise Error(tr(
+            "размер или SHA256 sysupgrade после SSH-stream не совпал",
+            "sysupgrade size or SHA256 did not match after SSH stream",
+        ))
+    print(tr("[OK] Sysupgrade передан через SSH и проверен SHA256.", "[OK] Sysupgrade transferred over SSH and SHA256 verified."))
+    return expected, source.stat().st_size
+
+
+def send_custom_sysupgrade(host: str, source: Path, local_ip: str | None, port: int, block_size: int) -> tuple[str, int]:
+    errors: list[str] = []
+
+    try:
+        have_tftp = _manual_remote_has(host, "tftp")
+    except Error as exc:
+        have_tftp = False
+        errors.append(f"TFTP preflight: {exc}")
+    if have_tftp:
+        try:
+            print(tr("[TFTP] На transition найден tftp; пробую прямую передачу.", "[TFTP] tftp is available on the transition; trying direct transfer."))
+            return send_custom_sysupgrade_tftp(host, source, local_ip, port, block_size)
+        except Error as exc:
+            errors.append(f"TFTP: {exc}")
+            print(tr(
+                f"[WARNING] TFTP не сработал: {str(exc)[-500:]}. Перехожу к SCP.",
+                f"[WARNING] TFTP failed: {str(exc)[-500:]}. Falling back to SCP.",
+            ))
+    else:
+        print(tr(
+            "[INFO] В manual transition нет команды tftp; TFTP пропущен, использую SCP.",
+            "[INFO] The manual transition has no tftp command; skipping TFTP and using SCP.",
+        ))
+
+    try:
+        have_scp = _manual_remote_has(host, "scp")
+    except Error as exc:
+        have_scp = False
+        errors.append(f"SCP preflight: {exc}")
+    if have_scp:
+        try:
+            return send_custom_sysupgrade_scp(host, source)
+        except Error as exc:
+            errors.append(f"SCP: {exc}")
+            print(tr(
+                f"[WARNING] SCP не сработал: {str(exc)[-500:]}. Перехожу к передаче через SSH.",
+                f"[WARNING] SCP failed: {str(exc)[-500:]}. Falling back to SSH streaming.",
+            ))
+    else:
+        print(tr(
+            "[INFO] В manual transition нет команды scp; использую передачу через уже подтверждённый SSH.",
+            "[INFO] The manual transition has no scp command; using the already-proven SSH connection.",
+        ))
+
+    try:
+        return send_custom_sysupgrade_ssh_stream(host, source)
+    except Error as exc:
+        errors.append(f"SSH-stream: {exc}")
+        raise Error(tr(
+            "не удалось передать sysupgrade ни одним безопасным транспортом: " + " | ".join(errors)[-1800:],
+            "failed to transfer sysupgrade with any safe transport: " + " | ".join(errors)[-1800:],
+        )) from exc
+
+
+_MANUAL_SSH_MINIMAL_AUTH: dict[str, bool] = {}
+
+
+def _manual_transition_probe(host: str, timeout: int = 8) -> tuple[bool, str, str, str]:
+    """Probe the manual initramfs without letting one SSH attempt stall the wizard.
+
+    The transition image has its own marker/state files. They are stronger evidence
+    than an HTTP port or a board-name string inherited from our own DTB. First try a
+    deterministic no-key/no-prompt OpenSSH path; if a platform needs the ordinary
+    BatchMode path, try it once with the same short command timeout.
+    """
+    command = (
+        "echo NOKIA_MANUAL_PROBE_BEGIN; "
+        "[ -f /tmp/NOKIA_MANUAL_TRANSITION_READY ] && echo MANUAL_READY; "
+        "printf 'STATE='; cat /tmp/NOKIA_MANUAL_STATE 2>/dev/null || true; echo; "
+        "[ -x /usr/sbin/nokia-ubi-installer ] && echo INSTALLER=1 || echo INSTALLER=0; "
+        "printf 'BOARD='; cat /tmp/sysinfo/board_name 2>/dev/null || true; echo; "
+        "echo NOKIA_MANUAL_PROBE_END"
+    )
+    errors: list[str] = []
+    for minimal in (True, False):
+        try:
+            _, out = ssh_run(
+                host, command, timeout=timeout, quiet=True, batch_mode=True, minimal_auth=minimal,
+            )
+        except Error as exc:
+            detail = str(exc).replace("\r", " ").replace("\n", " ").strip()
+            errors.append(("minimal" if minimal else "batch") + ": " + detail[-700:])
+            continue
+        if "NOKIA_MANUAL_PROBE_BEGIN" not in out or "NOKIA_MANUAL_PROBE_END" not in out:
+            errors.append(("minimal" if minimal else "batch") + ": incomplete probe output")
+            continue
+        state_match = re.search(r"(?:^|[\r\n])STATE=([^\r\n]*)", out)
+        board_match = re.search(r"(?:^|[\r\n])BOARD=([^\r\n]*)", out)
+        state = state_match.group(1).strip() if state_match else ""
+        board = board_match.group(1).strip() if board_match else ""
+        ready = "MANUAL_READY" in out and "INSTALLER=1" in out and bool(state)
+        if ready:
+            _MANUAL_SSH_MINIMAL_AUTH[host] = minimal
+        return ready, state, board, ""
+    return False, "", "", "; ".join(errors)[-1400:]
+
+
+def _manual_ssh_run(host: str, command: str, timeout: int = 900,
+                    allow_disconnect: bool = False, quiet: bool = True) -> tuple[int, str]:
+    minimal = _MANUAL_SSH_MINIMAL_AUTH.get(host)
+    if minimal is None:
+        ready, _, _, detail = _manual_transition_probe(host, timeout=min(8, timeout))
+        if not ready:
+            raise Error(tr(
+                f"ручной transition не подтверждён перед SSH-командой: {detail or 'служебная метка/состояние не прочитаны'}",
+                f"manual transition was not confirmed before the SSH command: {detail or 'marker/state not readable'}",
+            ))
+        minimal = _MANUAL_SSH_MINIMAL_AUTH.get(host, True)
+    return ssh_run(
+        host, command, timeout=timeout, allow_disconnect=allow_disconnect, quiet=quiet,
+        batch_mode=True, minimal_auth=minimal,
+    )
+
+
 def wait_manual_transition(host: str, timeout: int = 600) -> None:
     stage_header("6", "Ожидание ручного transition", "Waiting for the manual transition")
-    started=time.time(); next_report=started
+    started=time.time(); next_report=started; next_error_report=started
+    last_error = ""
     while time.time()-started < timeout:
         ports=(_tcp_open(host,22),_tcp_open(host,80),_tcp_open(host,443),_tcp_open(host,23))
         if ports[0]:
-            try:
-                _, out=ssh_run(host,
-                    "[ -f /tmp/NOKIA_MANUAL_TRANSITION_READY ] && echo READY; "
-                    "printf 'STATE='; cat /tmp/NOKIA_MANUAL_STATE 2>/dev/null || true; "
-                    "printf 'BOARD='; cat /tmp/sysinfo/board_name 2>/dev/null || true",
-                    timeout=30,quiet=True,batch_mode=True)
-                if "READY" in out and "BOARD=nokia,xg-040g-md-ubi" in out:
-                    print(tr("[OK] Ручной transition готов; автоматическая запись NAND не запущена.", "[OK] Manual transition is ready; no automatic NAND write has started."))
-                    return
-            except Error: pass
+            ready, state, board, detail = _manual_transition_probe(host, timeout=8)
+            if ready:
+                print(tr(
+                    f"[OK] Ручной transition готов; состояние {state}. Автоматическая запись NAND не запущена.",
+                    f"[OK] Manual transition is ready; state {state}. No automatic NAND write has started.",
+                ))
+                if board and board != "nokia,xg-040g-md-ubi":
+                    _write_session_only(f"[MANUAL-SSH] ready marker accepted; board_name={board!r}")
+                return
+            if detail:
+                last_error = detail
+                if time.time() >= next_error_report:
+                    short = detail[-500:]
+                    print(tr(
+                        f"[WAIT] SSH 22 открыт, но служебная метка ручного transition пока не прочитана: {short}",
+                        f"[WAIT] SSH 22 is open, but the transition marker is not readable yet: {short}",
+                    ))
+                    next_error_report = time.time() + 60
+                    _write_session_only(f"[MANUAL-SSH] probe failed: {detail}")
         if time.time() >= next_report:
             elapsed=int(time.time()-started)
             print(tr(f"[WAIT] {elapsed//60:02d}:{elapsed%60:02d} — {_port_summary(*ports)}.", f"[WAIT] {elapsed//60:02d}:{elapsed%60:02d} — {_port_summary(*ports)}."))
             next_report=time.time()+30
-        time.sleep(5)
-    raise Error(tr("ручной transition не появился по SSH", "manual transition did not become available over SSH"))
+        time.sleep(3)
+    suffix = f"; последняя ошибка SSH: {last_error[-700:]}" if last_error else ""
+    raise Error(tr(
+        "ручной transition не появился по SSH" + suffix,
+        "manual transition did not become available over SSH" + (f"; last SSH error: {last_error[-700:]}" if last_error else ""),
+    ))
 
 
 def run_custom_stage2(host: str, local_ip: str | None, port: int, block_size: int) -> str:
@@ -3400,13 +3729,13 @@ def run_custom_stage2(host: str, local_ip: str | None, port: int, block_size: in
     stage_header("7", "Выбор и проверка sysupgrade", "Selecting and validating sysupgrade")
     image=choose_custom_sysupgrade(); digest=sha_file(image); size=image.stat().st_size
     print(tr(f"[IMAGE] {image.name}; {size/1048576:.1f} MiB; SHA256 {digest}", f"[IMAGE] {image.name}; {size/1048576:.1f} MiB; SHA256 {digest}"))
-    digest, _ = send_custom_sysupgrade_tftp(host,image,local_ip,port,block_size)
+    digest, _ = send_custom_sysupgrade(host,image,local_ip,port,block_size)
     check_cmd=(
         f"printf '%s\\n' {shlex.quote(digest)} > /tmp/NOKIA_CUSTOM_SYSUPGRADE_SHA256; "
         f"NOKIA_EXPECTED_SYSUPGRADE_SHA={shlex.quote(digest)} "
         f"nokia-ubi-installer check /tmp/nokia-custom-sysupgrade.itb"
     )
-    _, out=ssh_run(host,check_cmd,timeout=900,quiet=True,batch_mode=True)
+    _, out=_manual_ssh_run(host,check_cmd,timeout=900,quiet=True)
     if "CHECK PASSED" not in out or "accepted" not in out:
         print(out)
         raise Error(tr("transition отклонил выбранный sysupgrade; NAND не форматировалась", "transition rejected the selected sysupgrade; NAND was not formatted"))
@@ -3423,7 +3752,7 @@ def run_custom_stage2(host: str, local_ip: str | None, port: int, block_size: in
         "rc=$?; echo FAILED > /tmp/NOKIA_MANUAL_STATE; echo $rc > /tmp/NOKIA_MANUAL_FLASH_FAILED ) "
         ">/tmp/nokia-manual-flash.log 2>&1 </dev/null & echo STARTED=$!"
     )
-    _, out=ssh_run(host,launch,timeout=60,quiet=True,batch_mode=True)
+    _, out=_manual_ssh_run(host,launch,timeout=60,quiet=True)
     if "STARTED=" not in out: raise Error(tr("не удалось запустить автономную запись", "failed to start autonomous flashing"))
     print(tr("[OK] Запись запущена. Не выключайте питание.", "[OK] Flashing started. Do not power off."))
     # The existing monitor understands the same installer milestones. Manual
@@ -3714,10 +4043,15 @@ def run_stage2(host: str, manual_mode: bool = False) -> str:
                     "ubinfo -a 2>/dev/null | awk '$1 == \"Name:\" {print \"VOL=\" $2}'; "
                     "grep -E 'DISTRIB_RELEASE|DISTRIB_REVISION' /etc/openwrt_release 2>/dev/null; fi"
                 )
-                _, output = ssh_run(
-                    host, probe_cmd,
-                    timeout=90, allow_disconnect=True, quiet=True, batch_mode=True,
-                )
+                if manual_mode:
+                    _, output = _manual_ssh_run(
+                        host, probe_cmd, timeout=20, allow_disconnect=True, quiet=True,
+                    )
+                else:
+                    _, output = ssh_run(
+                        host, probe_cmd,
+                        timeout=90, allow_disconnect=True, quiet=True, batch_mode=True,
+                    )
             except Error as exc:
                 output = f"SSH_PROBE_ERROR={exc}"
 
@@ -6073,8 +6407,8 @@ def choose_transport(
 ) -> tuple[str, dict]:
     if force_tftp:
         print(tr(
-            "\n[WARNING] ЭКСПЕРТНЫЙ РЕЖИМ: транспорт принудительно ограничен прямым TFTP.",
-            "\n[WARNING] EXPERT MODE: transport is forcibly restricted to direct TFTP.",
+            "\n[WARNING] ЭКСПЕРТНЫЙ РЕЖИМ: пакет на stock передаётся прямым TFTP. После загрузки ручного transition sysupgrade использует TFTP → SCP → SSH fallback.",
+            "\n[WARNING] EXPERT MODE: the stock-side package uses direct TFTP. After the manual transition boots, sysupgrade uses TFTP → SCP → SSH fallback.",
         ))
         local_ip = input(tr("IP этого ПК для Nokia [auto]: ", "This PC IP for Nokia [auto]: ")).strip() or None
         port_text = input(tr("UDP-порт TFTP [1069]: ", "TFTP UDP port [1069]: ")).strip()
@@ -6428,17 +6762,15 @@ def resume_stage2_wizard() -> None:
     manual = False
     manual_state = ""
     if _tcp_open(host, 22):
-        try:
-            _, probe = ssh_run(
-                host, "[ -f /tmp/NOKIA_MANUAL_TRANSITION_READY ] && echo MANUAL_READY; "
-                      "printf 'STATE='; cat /tmp/NOKIA_MANUAL_STATE 2>/dev/null || true",
-                timeout=30, quiet=True, batch_mode=True,
-            )
-            manual = "MANUAL_READY" in probe
-            match = re.search(r"STATE=([^\r\n]+)", probe)
-            manual_state = match.group(1).strip() if match else ""
-        except Error:
-            pass
+        manual, manual_state, board_name, probe_error = _manual_transition_probe(host, timeout=8)
+        if probe_error:
+            _write_session_only(f"[MANUAL-SSH] resume probe failed: {probe_error}")
+            raise Error(tr(
+                f"SSH 22 открыт, но режим transition определить не удалось: {probe_error[-500:]}",
+                f"SSH 22 is open, but the transition mode could not be identified: {probe_error[-500:]}",
+            ))
+        elif manual and board_name and board_name != "nokia,xg-040g-md-ubi":
+            _write_session_only(f"[MANUAL-SSH] resume marker accepted; board_name={board_name!r}")
     if manual:
         print(tr(f"[OK] Обнаружен ручной transition; состояние: {manual_state or 'unknown'}.", f"[OK] Manual transition detected; state: {manual_state or 'unknown'}."))
         if manual_state in ("STARTING", "CHECKING", "FORMATTING_AND_FLASHING", "WAITING_FOR_SYSTEM", "FAILED"):

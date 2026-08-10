@@ -1,4 +1,4 @@
-# Nokia Router MedveFlasher 1.0.0-rc6 image status
+# Nokia Router MedveFlasher 1.0.0-rc7 image status
 
 ## Standard automatic transition
 
@@ -21,10 +21,13 @@ the main administration modules are present.
 ## Manual transition for a user-selected sysupgrade
 
 `data/transition-manual-bundle.bin` is exactly 8 MiB and contains no production
-sysupgrade. Automatic stage 2 is disabled. After boot, the transition brings up
-SSH and waits for the PC wizard to upload an image.
+sysupgrade. Automatic stage 2 is disabled. After boot, the manual transition lets
+normal OpenWrt preinit finish, generating sysinfo, DSA/netdev labels and LAN,
+brings `br-lan` up at `192.168.1.1/24`, and starts SSH with the temporary blank
+`root` account explicitly allowed by Dropbear `-B`. The readiness marker is
+published only after LAN and SSH are verified.
 
-- manual bundle SHA256: `3abf07adccff808f879649c8842fa96327ae2f9102294fe0f561dd7fc318c8f8`;
+- manual bundle SHA256: `3b7b89508da309a45d02002a972a3a554231b12d5839bb1f812d655c29ef347f`;
 - selected-image checks: FIT magic, size, local and remote SHA256,
   `nokia-ubi-installer check`, and `sysupgrade -T`;
 - `sysupgrade -F` is never used;

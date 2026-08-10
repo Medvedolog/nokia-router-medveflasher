@@ -1,5 +1,20 @@
 # История изменений Nokia Router MedveFlasher
 
+## 1.0.0-rc7 — 10 августа 2026
+
+- Исправлена подтверждённая UART регрессия manual transition: `/lib/preinit/00_nokia_manual_installer` содержал `exit 0`, хотя OpenWrt подключает (`source`) все `/lib/preinit/*` в общий `/etc/preinit`. Из-за этого штатный preinit завершался до `02_sysinfo`, переименования сетевых интерфейсов и `82_config_generate`; `/tmp/sysinfo/board_name`, `/etc/board.json` и `/etc/config/network` отсутствовали, а LAN оставался administratively DOWN при наличии физического линка.
+- Manual preinit больше не завершает общий OpenWrt preinit. Штатные sysinfo, DSA/netdev labels, board detection и генерация LAN выполняются полностью.
+- Marker `/tmp/NOKIA_MANUAL_TRANSITION_READY` теперь создаётся только после проверки точного `board_name`, адреса `192.168.1.1/24` на `br-lan` и реально слушающего SSH/22. Если LAN/SSH не готовы, state становится `NETWORK_NOT_READY`, а ложная готовность не публикуется.
+- Исправлено зависание экспертного сценария после загрузки ручного transition: открытый TCP/22 больше не приводит к скрытому 30-секундному SSH-probe с проглатыванием ошибки.
+- Для ручного transition добавлен короткий детерминированный SSH-probe: сначала используется protocol-level passwordless login без перебора локальных ключей/agent и без интерактивных методов, затем при необходимости выполняется один короткий обычный `BatchMode` fallback.
+- Batch SSH-probe больше не наследует stdin консоли, поэтому мастер не может незаметно ждать пользовательского ввода.
+- Готовность ручного transition определяется по собственному marker `/tmp/NOKIA_MANUAL_TRANSITION_READY`, state-файлу и наличию `nokia-ubi-installer`; `board_name` остаётся диагностикой, а не ложной проверкой модели в экспертном режиме.
+- Ошибки SSH больше не скрываются: при открытом порте 22 мастер показывает краткую причину, а полная диагностика сохраняется в `LATEST.log`/session log.
+- Тот же подтверждённый SSH-режим используется для TFTP-загрузки выбранного `.itb`, `nokia-ubi-installer check`, запуска `fullflash` и мониторинга ручной установки.
+- `4 — продолжить со 2 этапа` использует тот же исправленный detector и может продолжить уже загруженный manual transition без повторной записи NAND.
+- Исправлена вторая часть той же регрессии: manual transition наследовал пустой пароль `root`, но Dropbear запускался без `-B`, поэтому TCP/22 был открыт, а OpenSSH завершался кодом 255 до выполнения probe-команды. В manual transition Dropbear теперь запускается с `-B`; это изменение не затрагивает standard transition.
+- Standard transition, recovery, production payload, preloader и FIP не изменены относительно rc6. Изменён только manual transition и PC-side SSH detector. Известные snapshot-initramfs kernel panic к этой правке не относятся.
+
 ## 1.0.0-rc6 — 6 августа 2026
 
 - Исправлен мониторинг второго этапа: heartbeat больше не объединяет текущую фазу с перечнем сетевых портов. Состояние портов выводится отдельной строкой только при изменении.

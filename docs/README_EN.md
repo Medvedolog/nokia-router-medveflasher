@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc6
+**Version:** 1.0.0-rc7
 
 During stage 2, installation phase and network ports are reported separately. Ports are printed only when they change, while the wizard explicitly marks transition boot, installer handoff, reboot, and production OpenWrt verification.
 **Date:** 6 August 2026
@@ -67,12 +67,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc6.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc7.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc6.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc7.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root

@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Версия:** 1.0.0-rc6
+**Версия:** 1.0.0-rc7
 
 Во время второго этапа фаза установки и сетевые порты показываются раздельно. Порты выводятся только при изменении, а мастер отдельно отмечает загрузку переходной системы, передачу управления установщику, перезагрузку и подтверждение основной OpenWrt.
 **Дата:** 6 августа 2026
@@ -67,12 +67,12 @@ Python 3, около 1 ГБ свободного места и полтора ч
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc6.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc7.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — из каталога с архивом
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc6.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc7.zip.sha256
 ```
 
 После распаковки контрольные суммы всех файлов комплекта можно проверить из

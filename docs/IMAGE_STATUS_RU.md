@@ -1,4 +1,4 @@
-# Статус образов Nokia Router MedveFlasher 1.0.0-rc6
+# Статус образов Nokia Router MedveFlasher 1.0.0-rc7
 
 ## Стандартный автоматический transition
 
@@ -21,10 +21,9 @@ LuCI подтверждена прямым разбором SquashFS: прису
 ## Ручной transition для собственного sysupgrade
 
 `data/transition-manual-bundle.bin` имеет размер ровно 8 МиБ и не содержит
-production sysupgrade. Автоматический второй этап отключён. После загрузки
-transition поднимает SSH и ждёт файл от PC-мастера.
+production sysupgrade. Автоматический второй этап отключён. После загрузки manual transition завершает штатный OpenWrt preinit, формирует sysinfo/DSA/LAN, поднимает `br-lan` на `192.168.1.1/24` и SSH с временным пустым паролем root (`dropbear -B`). Marker готовности создаётся только после проверки LAN и SSH.
 
-- SHA256 manual bundle: `3abf07adccff808f879649c8842fa96327ae2f9102294fe0f561dd7fc318c8f8`;
+- SHA256 manual bundle: `3b7b89508da309a45d02002a972a3a554231b12d5839bb1f812d655c29ef347f`;
 - проверки выбранного файла: FIT magic, размер, локальный и удалённый SHA256,
   `nokia-ubi-installer check`, `sysupgrade -T`;
 - `sysupgrade -F` не используется;

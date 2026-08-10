@@ -1,5 +1,20 @@
 # Nokia Router MedveFlasher changelog
 
+## 1.0.0-rc7 — 10 August 2026
+
+- Fixed a UART-confirmed manual-transition regression: `/lib/preinit/00_nokia_manual_installer` contained `exit 0` even though OpenWrt sources every `/lib/preinit/*` file into the shared `/etc/preinit` shell. This terminated normal preinit before `02_sysinfo`, netdev-label setup, and `82_config_generate`; `/tmp/sysinfo/board_name`, `/etc/board.json`, and `/etc/config/network` were missing and LAN stayed administratively DOWN despite physical carrier.
+- Manual mode no longer exits the shared OpenWrt preinit. Normal sysinfo, DSA/netdev labels, board detection, and LAN configuration are allowed to complete.
+- `/tmp/NOKIA_MANUAL_TRANSITION_READY` is now created only after the exact board name, `192.168.1.1/24` on `br-lan`, and a listening SSH/22 are verified. Failed LAN/SSH readiness sets `NETWORK_NOT_READY` instead of publishing a false ready marker.
+- Fixed the expert custom-sysupgrade workflow stalling after the manual transition had booted: an open TCP/22 no longer triggers a hidden 30-second SSH probe whose exception is discarded.
+- Added a short deterministic SSH probe for the manual transition: it first uses protocol-level passwordless login without local key/agent enumeration or interactive authentication methods, with one short ordinary `BatchMode` fallback when needed.
+- Batch SSH probes no longer inherit console stdin, so the detector cannot silently wait for user input.
+- Manual-transition readiness is identified by its own `/tmp/NOKIA_MANUAL_TRANSITION_READY` marker, state file, and `nokia-ubi-installer`; `board_name` is diagnostic only and is not treated as a model gate in expert mode.
+- SSH probe failures are no longer swallowed: a short cause is shown when port 22 is open, while full diagnostics are kept in `LATEST.log`/the session log.
+- The SSH mode proven by the readiness probe is reused for TFTP upload of the selected `.itb`, `nokia-ubi-installer check`, `fullflash` launch, and manual-install monitoring.
+- `4 — resume from stage 2` uses the same fixed detector and can continue an already booted manual transition without rewriting NAND.
+- Fixed the second half of the same regression: the manual transition inherited an empty `root` password while Dropbear was started without `-B`, so TCP/22 was open but OpenSSH exited with code 255 before the probe command could run. Dropbear now receives `-B` only in the manual transition; the standard transition is untouched.
+- Standard transition, recovery, production payload, preloader, and FIP are unchanged from rc6. Only the manual transition and PC-side SSH detector changed. Known snapshot-initramfs kernel panics are outside this fix.
+
 ## 1.0.0-rc6 — 6 August 2026
 
 - Fixed stage-2 monitoring: heartbeat lines no longer merge the current phase with the complete network-port list. Port state is emitted separately and only when it changes.

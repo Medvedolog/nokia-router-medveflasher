@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0-rc6",
+  "version": "1.0.0-rc7",
   "product": "Nokia Router MedveFlasher",
   "supported_device": {
     "model": "Nokia XG-040G-MD",
@@ -86,7 +86,7 @@
     ],
     "master": "data/master.py",
     "checksums": "data/SHA256SUMS",
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc6"
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc7"
   },
   "hardware_status": {
     "md_transition_install": "hardware-confirmed",
@@ -94,9 +94,9 @@
     "md_production_to_ram_recovery": "hardware-confirmed",
     "automatic_ftp_enable": "code/synthetic validation; controlled hardware confirmation still required if not yet reported",
     "manual_telnet_model_gate": "MD evidence confirmed from stock dmesg/U-Boot logs; choices 2/3 are best-effort and expert choice 4 intentionally bypasses the probe; MF rejection remains to be hardware-confirmed",
-    "manual_transition_custom_sysupgrade": "static/synthetic validated; full hardware cycle pending"
+    "manual_transition_custom_sysupgrade": "manual transition boot hardware-confirmed; preinit regression fixed; Stage 7 TFTP-only regression hardware-confirmed (manual initramfs has scp but no tftp) and fixed with TFTP capability preflight plus SCP/SSH-stream fallback; corrected end-to-end path requires hardware retest"
   },
-  "build_tag": "medveflasher-1.0.0-rc6",
+  "build_tag": "medveflasher-1.0.0-rc7",
   "operator_progress": {
     "telnet_console": "command echo and protocol markers suppressed; preflight runtime messages retained",
     "transition_stage": "SSH-derived state, steps 1/8..8/8, port changes, and phase-aware 30-second heartbeat",
@@ -106,29 +106,30 @@
   "manual_bundle": {
     "file": "data/transition-manual-bundle.bin",
     "size": 8388608,
-    "sha256": "3abf07adccff808f879649c8842fa96327ae2f9102294fe0f561dd7fc318c8f8",
+    "sha256": "3b7b89508da309a45d02002a972a3a554231b12d5839bb1f812d655c29ef347f",
     "transition_window_size": 8388608,
-    "transition_fit_totalsize": 7509016,
+    "transition_fit_totalsize": 7508680,
     "production_offset_in_bundle": 8388608,
     "production_physical_offset_in_nand": null,
     "production_size": 0,
     "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "behavior": "8 MiB manual transition only; no embedded production image and no autonomous stage 2"
+    "behavior": "8 MiB manual transition only; no embedded production image or autonomous stage 2; normal OpenWrt preinit is allowed to complete so sysinfo, netdev labels and LAN configuration are generated; Dropbear -B is enabled only here for the intentionally blank root account; readiness is published only after board_name=nokia,xg-040g-md-ubi, br-lan has 192.168.1.1/24, and SSH is listening"
   },
   "expert_custom_sysupgrade": {
     "access_menu_item": 4,
-    "transport": "TFTP only",
+    "transport": "TFTP when available -> legacy SCP -> raw SSH stdin fallback; all pre-validation writes stay in /tmp",
     "transition": "separate manual FIT with no autoflash service",
     "validation": [
       "local FIT magic/size/SHA256",
-      "TFTP readback SHA256",
+      "remote size + SHA256 after transport",
       "nokia-ubi-installer check",
       "sysupgrade -T"
     ],
     "destructive_gate": "second y/N confirmation after remote validation",
-    "fallback": "manual transition FIT stored in UBI fit volume"
+    "fallback": "manual transition FIT stored in UBI fit volume",
+    "ssh_control": "short readiness probe with deterministic passwordless minimal-auth path, one short BatchMode fallback, surfaced diagnostics, and reuse of the proven auth mode for upload/check/fullflash/monitoring"
   },
   "release": {
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc6"
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc7"
   }
 }

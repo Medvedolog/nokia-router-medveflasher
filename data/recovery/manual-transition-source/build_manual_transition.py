@@ -182,6 +182,21 @@ finish=finish.replace(
 ''',1)
 by['usr/sbin/nokia-ubi-finish'].data=finish.encode()
 
+# Manual transition is intentionally controlled by the PC wizard over SSH.
+# The inherited initramfs has root with an empty shadow password, but modern
+# Dropbear rejects blank-password/trivial authentication unless the server is
+# explicitly started with -B. Without it TCP/22 is open while OpenSSH exits 255.
+# Enable -B only in the manual transition; the standard transition is untouched.
+dropbear_init=by['etc/init.d/dropbear'].data.decode()
+dropbear_needle='\tprocd_set_param command "$PROG" -F -P "$pid_file"\n'
+assert dropbear_needle in dropbear_init
+dropbear_init=dropbear_init.replace(
+    dropbear_needle,
+    dropbear_needle + '\tprocd_append_param command -B\n',
+    1,
+)
+by['etc/init.d/dropbear'].data=dropbear_init.encode()
+
 # Manual readiness service; no autonomous flash service symlink.
 entries=[e for e in entries if e.name not in {'etc/rc.d/S99nokia-autoflash','etc/init.d/nokia-autoflash','usr/sbin/nokia-ubi-autoflash','installer/boot-autoflash.sh'}]
 maxino=max(e.ino for e in entries)+1
@@ -189,7 +204,7 @@ mtime=max(e.mtime for e in entries)
 def add(name,data,mode=0o100755,nlink=1):
     global maxino
     entries.append(CpioEntry(maxino,mode,0,0,nlink,mtime,data,0,0,0,0,name,0)); maxino+=1
-manual_init=b'''#!/bin/sh /etc/rc.common\nSTART=99\n\nstart() {\n    printf '%s\\n' WAITING_FOR_CUSTOM_IMAGE > /tmp/NOKIA_MANUAL_STATE\n    touch /tmp/NOKIA_MANUAL_TRANSITION_READY\n    printf '%s\\n' 'NOKIA-MANUAL: transition ready; waiting for a sysupgrade image from the PC wizard.' | dd of=/dev/kmsg bs=4096 count=1 2>/dev/null || true\n}\n'''
+manual_init=b'''#!/bin/sh /etc/rc.common\nSTART=99\n\nkmsg() {\n    printf '%s\\n' "$*" | dd of=/dev/kmsg bs=4096 count=1 2>/dev/null || true\n}\n\nmanual_network_ready() {\n    [ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "nokia,xg-040g-md-ubi" ] || return 1\n    ip -4 addr show dev br-lan 2>/dev/null | grep -q 'inet 192\\.168\\.1\\.1/24' || return 1\n    netstat -lnt 2>/dev/null | grep -qE '[:.]22[[:space:]]' || return 1\n    return 0\n}\n\nstart() {\n    local i\n    rm -f /tmp/NOKIA_MANUAL_TRANSITION_READY\n    printf '%s\\n' STARTING_NETWORK > /tmp/NOKIA_MANUAL_STATE\n\n    i=0\n    while [ "$i" -lt 20 ]; do\n        if manual_network_ready; then\n            printf '%s\\n' WAITING_FOR_CUSTOM_IMAGE > /tmp/NOKIA_MANUAL_STATE\n            touch /tmp/NOKIA_MANUAL_TRANSITION_READY\n            kmsg 'NOKIA-MANUAL: transition ready; LAN 192.168.1.1 and SSH are available; waiting for a sysupgrade image from the PC wizard.'\n            return 0\n        fi\n        i=$((i + 1))\n        sleep 1\n    done\n\n    printf '%s\\n' NETWORK_NOT_READY > /tmp/NOKIA_MANUAL_STATE\n    kmsg 'NOKIA-MANUAL: NOT READY: br-lan 192.168.1.1/24 or SSH is unavailable; readiness marker was not created.'\n    return 1\n}\n'''
 add('etc/init.d/nokia-manual-ready',manual_init)
 add('etc/rc.d/S99nokia-manual-ready',b'../init.d/nokia-manual-ready',0o120777)
 
@@ -201,7 +216,10 @@ if 'etc/motd' in by:
     motd='Nokia Router MedveFlasher manual transition for Nokia XG-040G-MD\n\nNo automatic NAND formatting or sysupgrade is scheduled.\nThe PC wizard will upload, validate and start the selected image.\n\n'
     by['etc/motd'].data=motd.encode()
 if 'lib/preinit/00_nokia_manual_installer' in by:
-    by['lib/preinit/00_nokia_manual_installer'].data=b'''#!/bin/ash\nprintf '%s\\n' 'NOKIA-MANUAL: automatic stage 2 disabled; waiting for normal init and PC wizard.' | dd of=/dev/kmsg bs=4096 count=1 2>/dev/null || true\nexit 0\n'''
+    # /etc/preinit sources every /lib/preinit/* file in the same shell. Do not
+    # exit here: that terminates OpenWrt preinit before sysinfo, netdev labels
+    # and config generation, leaving LAN down despite physical carrier.
+    by['lib/preinit/00_nokia_manual_installer'].data=b'''#!/bin/ash\nprintf '%s\\n' 'NOKIA-MANUAL: automatic stage 2 disabled; continuing normal OpenWrt preinit for board and LAN setup.' | dd of=/dev/kmsg bs=4096 count=1 2>/dev/null || true\n'''
 if 'installer/boot-manual.sh' in by:
     by['installer/boot-manual.sh'].data=b'''#!/bin/ash\nprintf '%s\\n' 'Manual transition: use the PC wizard to upload and validate sysupgrade.'\nexit 0\n'''
 if 'installer/MANIFEST.txt' in by:

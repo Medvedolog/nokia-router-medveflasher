@@ -197,8 +197,8 @@
     }
   },
   "documentation": {
-    "readme_ru": "docs/README_RU.md",
-    "readme_en": "docs/README_EN.md",
+    "instruction_ru": "docs/INSTRUCTION_RU.md",
+    "instruction_en": "docs/INSTRUCTION_EN.md",
     "image_status_ru": "docs/IMAGE_STATUS_RU.md",
     "image_status_en": "docs/IMAGE_STATUS_EN.md",
     "changelog_ru": "docs/CHANGELOG_RU.md",

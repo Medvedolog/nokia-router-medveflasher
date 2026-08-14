@@ -2,7 +2,7 @@
 
 Technical deep-dive for developers and the curious: how the install works, what
 carries each piece of data, and what makes the no-UART path tick. Users don't
-need this — the [guide](README_EN.md) is enough to install.
+need this — the [guide](INSTRUCTION_EN.md) is enough to install.
 
 ---
 

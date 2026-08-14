@@ -6,6 +6,17 @@
 
 `1.0.0-rc24` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
 
+[![Release](https://img.shields.io/badge/release-1.0.0--rc24-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
+[![Targets](https://img.shields.io/badge/SoC-AN7581%20%7C%20AN7583-8250df?style=flat-square)](#поддерживаемое-железо)
+[![OpenWrt](https://img.shields.io/badge/OpenWrt-all--in--UBI%20+%20LuCI-00b5e2?style=flat-square&logo=openwrt&logoColor=white)](https://openwrt.org/)
+[![Python](https://img.shields.io/badge/Python%203-stdlib%20only-3776ab?style=flat-square&logo=python&logoColor=white)](#ноль-зависимостей--ну-почти)
+[![UART](https://img.shields.io/badge/UART-не%20требуется-2da44e?style=flat-square)](#что-это-такое)
+[![License](https://img.shields.io/badge/license-MIT-6e7781?style=flat-square)](LICENSE)
+
+### 📖 [Инструкция по установке](docs/INSTRUCTION_RU.md) · 🇬🇧 [Installation guide (English)](docs/INSTRUCTION_EN.md)
+
+🏗 [Архитектура](docs/ARCHITECTURE_RU.md) · 📋 [Статус образов](docs/IMAGE_STATUS_RU.md) · 📝 [История изменений](docs/CHANGELOG_RU.md)
+
 </div>
 
 ---
@@ -93,7 +104,7 @@ flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000
 
 | | 🇷🇺 Русский | 🇬🇧 English |
 |---|---|---|
-| **Инструкция** — установка от и до | [README_RU](docs/README_RU.md) | [README_EN](docs/README_EN.md) |
+| **Инструкция** — установка от и до | [INSTRUCTION_RU](docs/INSTRUCTION_RU.md) | [INSTRUCTION_EN](docs/INSTRUCTION_EN.md) |
 | **Архитектура** — как это устроено внутри | [ARCHITECTURE_RU](docs/ARCHITECTURE_RU.md) | [ARCHITECTURE_EN](docs/ARCHITECTURE_EN.md) |
 | **История изменений** | [CHANGELOG_RU](docs/CHANGELOG_RU.md) | [CHANGELOG](docs/CHANGELOG.md) |
 | **Статус образов** — что подтверждено железом | [IMAGE_STATUS_RU](docs/IMAGE_STATUS_RU.md) | [IMAGE_STATUS_EN](docs/IMAGE_STATUS_EN.md) |

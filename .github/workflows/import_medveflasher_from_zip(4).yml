@@ -202,7 +202,7 @@ jobs:
             data/master.py data/stock_web.py data/env_patcher.py
             data/transition-bundle.bin data/transition-manual-bundle.bin
             data/mf-transition-bundle.bin data/mf-transition-manual-bundle.bin
-            docs/README_RU.md docs/README_EN.md
+            docs/INSTRUCTION_RU.md docs/INSTRUCTION_EN.md
             docs/CHANGELOG_RU.md docs/CHANGELOG.md
             docs/ARCHITECTURE_RU.md docs/ARCHITECTURE_EN.md
             docs/IMAGE_STATUS_RU.md docs/IMAGE_STATUS_EN.md
@@ -389,8 +389,8 @@ jobs:
           
           ## Documentation
           
-          - [README — Русский](docs/README_RU.md)
-          - [README — English](docs/README_EN.md)
+          - [README — Русский](docs/INSTRUCTION_RU.md)
+          - [README — English](docs/INSTRUCTION_EN.md)
           - [CHANGELOG — Русский](docs/CHANGELOG_RU.md)
           - [CHANGELOG — English](docs/CHANGELOG.md)
           - [ARCHITECTURE — Русский](docs/ARCHITECTURE_RU.md)

@@ -1,0 +1,476 @@
+name: import-medveflasher-from-zip
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_path:
+        description: "Logical ZIP path directly under _incoming/; split .part-NNN files are supported"
+        required: true
+        default: "_incoming/Nokia-Router-MedveFlasher-1.0.0-rc24-github24.zip"
+      commit_message:
+        description: "Commit message"
+        required: true
+        default: "Import Nokia Router MedveFlasher 1.0.0-rc24"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: medveflasher-zip-import-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    env:
+      ZIP_INPUT: ${{ inputs.zip_path }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare full ZIP or split ZIP parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$ZIP_INPUT"
+
+          case "$ZIP" in
+            _incoming/*.zip) ;;
+            *)
+              echo "ERROR: zip_path must be a logical .zip path directly under _incoming/"
+              exit 1
+              ;;
+          esac
+
+          REPO_ROOT="$(pwd -P)"
+          ZIP_PARENT_REAL="$(realpath -m "$(dirname "$ZIP")")"
+          if [ "$ZIP_PARENT_REAL" != "$REPO_ROOT/_incoming" ]; then
+            echo "ERROR: ZIP must resolve directly under _incoming/"
+            exit 1
+          fi
+
+          rm -rf _workzip
+          mkdir -p _workzip
+          : > _workzip/consumed-incoming.txt
+
+          mapfile -t PARTS < <(
+            find _incoming -maxdepth 1 -type f \
+              -name "$(basename "$ZIP").part-*" \
+              -printf '%p\n' | sort
+          )
+
+          # If the requested logical name is stale (for example rc24.zip while the
+          # uploaded web-safe parts are rc24-github24.zip.part-NNN), auto-select
+          # only when _incoming contains exactly one split ZIP set. Ambiguity is
+          # fail-closed so an unrelated upload can never be imported accidentally.
+          if [ ! -f "$ZIP" ] && [ "${#PARTS[@]}" -eq 0 ]; then
+            mapfile -t FIRST_PARTS < <(
+              find _incoming -maxdepth 1 -type f -name '*.zip.part-001' -printf '%p\n' | sort
+            )
+            if [ "${#FIRST_PARTS[@]}" -eq 1 ]; then
+              ZIP="${FIRST_PARTS[0]%.part-001}"
+              echo "Requested logical archive not found; auto-selected the only split set: $ZIP"
+              mapfile -t PARTS < <(
+                find _incoming -maxdepth 1 -type f \
+                  -name "$(basename "$ZIP").part-*" \
+                  -printf '%p\n' | sort
+              )
+            elif [ "${#FIRST_PARTS[@]}" -gt 1 ]; then
+              echo "ERROR: requested archive was not found and multiple split ZIP sets are present:"
+              printf '  %s\n' "${FIRST_PARTS[@]}"
+              echo "Set zip_path to the intended logical .zip name."
+              exit 1
+            fi
+          fi
+
+          if [ -f "$ZIP" ] && [ "${#PARTS[@]}" -gt 0 ]; then
+            echo "ERROR: both full ZIP and split parts are present"
+            exit 1
+          fi
+
+          EFFECTIVE="_workzip/input.zip"
+          if [ -f "$ZIP" ]; then
+            cp -- "$ZIP" "$EFFECTIVE"
+            printf '%s\n' "$ZIP" >> _workzip/consumed-incoming.txt
+          else
+            if [ "${#PARTS[@]}" -eq 0 ]; then
+              echo "ERROR: neither '$ZIP' nor '${ZIP}.part-NNN' files exist"
+              find _incoming -maxdepth 1 -type f -printf '  %p\n' | sort || true
+              exit 1
+            fi
+
+            python3 - "$ZIP" "${PARTS[@]}" <<'PY'
+          import pathlib, re, sys
+          logical = pathlib.Path(sys.argv[1])
+          parts = [pathlib.Path(p) for p in sys.argv[2:]]
+          pat = re.compile(re.escape(logical.name) + r"\.part-(\d{3})$")
+          nums = []
+          for p in parts:
+              m = pat.fullmatch(p.name)
+              if not m:
+                  raise SystemExit(f"ERROR: invalid split-part name: {p}")
+              if p.stat().st_size == 0:
+                  raise SystemExit(f"ERROR: empty split part: {p}")
+              nums.append(int(m.group(1)))
+          expected = list(range(1, len(nums) + 1))
+          if nums != expected:
+              raise SystemExit(f"ERROR: expected contiguous part-001..part-{len(nums):03d}; got {nums}")
+          PY
+
+            cat "${PARTS[@]}" > "$EFFECTIVE"
+            printf '%s\n' "${PARTS[@]}" >> _workzip/consumed-incoming.txt
+          fi
+
+          SIDE="${ZIP}.sha256"
+          if [ ! -f "$SIDE" ]; then
+            echo "ERROR: required outer SHA256 sidecar is missing: $SIDE"
+            exit 1
+          fi
+
+          EXPECTED_SHA="$(awk 'NF {print $1; exit}' "$SIDE" | tr '[:upper:]' '[:lower:]')"
+          ACTUAL_SHA="$(sha256sum "$EFFECTIVE" | awk '{print $1}')"
+          if ! [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "ERROR: invalid SHA256 in $SIDE"
+            exit 1
+          fi
+          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            echo "ERROR: assembled ZIP SHA256 mismatch"
+            echo "Expected: $EXPECTED_SHA"
+            echo "Actual:   $ACTUAL_SHA"
+            exit 1
+          fi
+          printf '%s\n' "$SIDE" >> _workzip/consumed-incoming.txt
+          echo "EFFECTIVE_ZIP=$EFFECTIVE" >> "$GITHUB_ENV"
+          echo "Outer ZIP SHA256 PASS: $ACTUAL_SHA"
+
+      - name: Reject unsafe ZIP paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$EFFECTIVE_ZIP" <<'PY'
+          import stat, sys, zipfile
+          from pathlib import PurePosixPath
+          path = sys.argv[1]
+          with zipfile.ZipFile(path) as zf:
+              bad = []
+              links = []
+              for info in zf.infolist():
+                  name = info.filename.replace('\\', '/')
+                  p = PurePosixPath(name)
+                  if p.is_absolute() or '..' in p.parts:
+                      bad.append(name)
+                  mode = (info.external_attr >> 16) & 0xFFFF
+                  if stat.S_ISLNK(mode):
+                      links.append(name)
+              if bad or links:
+                  if bad:
+                      print('ERROR: unsafe path(s):', *bad, sep='\n  ')
+                  if links:
+                      print('ERROR: symlink entries are not allowed:', *links, sep='\n  ')
+                  raise SystemExit(1)
+          PY
+
+      - name: Unpack and detect release root
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _workzip/unpacked
+          unzip -q "$EFFECTIVE_ZIP" -d _workzip/unpacked
+          mapfile -t TOP < <(find _workzip/unpacked -mindepth 1 -maxdepth 1 -print | sort)
+          if [ "${#TOP[@]}" -ne 1 ] || [ ! -d "${TOP[0]}" ]; then
+            echo "ERROR: release ZIP must contain exactly one top-level directory"
+            printf '  %s\n' "${TOP[@]:-<none>}"
+            exit 1
+          fi
+          echo "src=${TOP[0]}" >> "$GITHUB_OUTPUT"
+          echo "release_dir=$(basename "${TOP[0]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Validate complete release layout
+        env:
+          SRC: ${{ steps.detect.outputs.src }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            VERSION
+            START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh
+            data/VERSION data/MANIFEST.json data/FIRMWARE_CAPABILITIES.json data/SHA256SUMS
+            data/master.py data/stock_web.py data/env_patcher.py
+            data/transition-bundle.bin data/transition-manual-bundle.bin
+            data/mf-transition-bundle.bin data/mf-transition-manual-bundle.bin
+            docs/README_RU.md docs/README_EN.md
+            docs/CHANGELOG_RU.md docs/CHANGELOG.md
+            docs/ARCHITECTURE_RU.md docs/ARCHITECTURE_EN.md
+            docs/IMAGE_STATUS_RU.md docs/IMAGE_STATUS_EN.md
+            docs/OPENWRT_TODO_RU.md docs/OPENWRT_TODO_EN.md
+          )
+          fail=0
+          for rel in "${required[@]}"; do
+            if [ ! -f "$SRC/$rel" ]; then
+              echo "MISSING: $rel"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+          if find "$SRC" \
+              \( -type d -name work -o -type d -name __pycache__ \
+                 -o -type f -name '*.pyc' -o -type f -name '*.pyo' \) \
+              -print -quit | grep -q .; then
+            echo "ERROR: release contains work/cache/bytecode"
+            exit 1
+          fi
+
+      - name: Verify internal SHA256SUMS and exact coverage
+        env:
+          SRC: ${{ steps.detect.outputs.src }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$SRC" && sha256sum -c data/SHA256SUMS)
+          python3 - "$SRC" <<'PY'
+          import pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          sums = root / 'data' / 'SHA256SUMS'
+          listed = set()
+          for raw in sums.read_text(encoding='utf-8').splitlines():
+              if not raw.strip():
+                  continue
+              try:
+                  digest, rel = raw.split('  ', 1)
+              except ValueError:
+                  raise SystemExit(f'ERROR: malformed SHA256SUMS line: {raw!r}')
+              if len(digest) != 64:
+                  raise SystemExit(f'ERROR: malformed digest: {digest!r}')
+              listed.add(rel.removeprefix('./'))
+          actual = {
+              p.relative_to(root).as_posix()
+              for p in root.rglob('*')
+              if p.is_file() and p != sums
+          }
+          missing = sorted(actual - listed)
+          extra = sorted(listed - actual)
+          if missing or extra:
+              if missing:
+                  print('ERROR: files missing from SHA256SUMS:', *missing, sep='\n  ')
+              if extra:
+                  print('ERROR: SHA256SUMS references absent files:', *extra, sep='\n  ')
+              raise SystemExit(1)
+          print(f'SHA256SUMS exact coverage PASS: {len(actual)} files')
+          PY
+
+      - name: Validate version, manifest and capability consistency
+        id: version
+        env:
+          SRC: ${{ steps.detect.outputs.src }}
+          RELEASE_DIR: ${{ steps.detect.outputs.release_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$SRC" "$RELEASE_DIR" <<'PY'
+          import ast, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          release_dir = sys.argv[2]
+          root_version = (root/'VERSION').read_text().strip()
+          data_version = (root/'data/VERSION').read_text().strip()
+          tree = ast.parse((root/'data/master.py').read_text(encoding='utf-8'))
+          app_version = None
+          build_tag = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id in {'APP_VERSION','BUILD_TAG'}:
+                          val = ast.literal_eval(node.value)
+                          if target.id == 'APP_VERSION': app_version = val
+                          else: build_tag = val
+          manifest = json.loads((root/'data/MANIFEST.json').read_text(encoding='utf-8'))
+          caps = json.loads((root/'data/FIRMWARE_CAPABILITIES.json').read_text(encoding='utf-8'))
+          expected_tag = f'medveflasher-{data_version}'
+          values = {
+              'root VERSION': root_version,
+              'data/VERSION': data_version,
+              'APP_VERSION': app_version,
+              'MANIFEST.version': manifest.get('version'),
+              'MANIFEST.release.version': manifest.get('release',{}).get('version'),
+              'CAPABILITIES.version': caps.get('version'),
+          }
+          for k,v in values.items(): print(f'{k}: {v}')
+          if any(v != data_version for v in values.values()):
+              raise SystemExit('ERROR: version consistency failure')
+          if build_tag != expected_tag or manifest.get('build_tag') != expected_tag or manifest.get('release',{}).get('build_tag') != expected_tag:
+              raise SystemExit('ERROR: build_tag consistency failure')
+          expected_dir = f'Nokia-Router-MedveFlasher-{data_version}'
+          if release_dir != expected_dir or manifest.get('release',{}).get('archive_root') != expected_dir:
+              raise SystemExit('ERROR: archive-root consistency failure')
+          print(data_version)
+          PY
+          VERSION="$(tr -d '[:space:]' < "$SRC/data/VERSION")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Static validation and selftests
+        env:
+          SRC: ${{ steps.detect.outputs.src }}
+          NOKIA_LANG: en
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - "$SRC" <<'PY'
+          import pathlib, py_compile, sys
+          root = pathlib.Path(sys.argv[1])
+          for p in root.rglob('*.py'):
+              if 'vendor' in p.parts:
+                  continue
+              py_compile.compile(str(p), doraise=True)
+          PY
+
+          python3 "$SRC/data/stock_web.py" --selftest
+          python3 "$SRC/data/master.py" selftest-capabilities
+          python3 "$SRC/data/master.py" selftest-mf-transition
+          python3 "$SRC/data/master.py" selftest-safety
+
+          while IFS= read -r -d '' f; do sh -n "$f"; done < <(find "$SRC" -type f -name '*.sh' -print0)
+          while IFS= read -r -d '' f; do python3 -m json.tool "$f" >/dev/null; done < <(find "$SRC" -type f -name '*.json' -print0)
+
+          find "$SRC" -type d -name __pycache__ -prune -exec rm -rf {} +
+          find "$SRC" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          rm -rf "$SRC/work"
+
+      - name: Import complete release tree
+        env:
+          SRC: ${{ steps.detect.outputs.src }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a "$SRC/VERSION" VERSION
+          cp -a "$SRC/START.cmd" START.cmd
+          cp -a "$SRC/START.sh" START.sh
+          cp -a "$SRC/RESTORE_STOCK.cmd" RESTORE_STOCK.cmd
+          cp -a "$SRC/RESTORE_STOCK.sh" RESTORE_STOCK.sh
+          mkdir -p data docs
+          rsync -a --delete "$SRC/data/" data/
+          rsync -a --delete "$SRC/docs/" docs/
+
+      - name: Refresh repository README
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > README.md <<'EOF'
+          <div align="center">
+          
+          # 🐻 Nokia Router MedveFlasher
+          
+          **Current repository release / Текущий релиз:** `__VERSION__`
+          
+          **Full-cycle OpenWrt support: Nokia XG-040G-MD / AN7581 + Nokia XG-040G-MF / AN7583**
+          
+          </div>
+          
+          > [!IMPORTANT]
+          > **Nokia XG-040G-MF is now a first-class full-cycle target, not an experimental side path.** RC24 supports MF through the same primary stock → device-bound backup → root/preflight → transition → all-in-UBI migration → production OpenWrt verification cycle as MD. The MF installation cycle is hardware-confirmed through `[1/8]..[8/8]`, production SSH identity and LuCI HTTP-content verification.
+          >
+          > **MF теперь полноценная целевая модель полного цикла.** RC24 поддерживает Nokia XG-040G-MF от stock-определения и полного backup до transition, all-in-UBI migration и проверенной загрузки production OpenWrt с SSH + LuCI.
+          
+          > [!CAUTION]
+          > NAND flashing is destructive. Keep a validated, device-bound stock backup and stable power. BL2 remains LAST in destructive migration/recovery paths. A timeout or port state alone never authorizes a retry or power-cycle.
+          
+          ## Supported hardware / Поддерживаемые модели
+          
+          | Model | SoC | Primary OpenWrt install cycle | Recovery note |
+          |---|---|---|---|
+          | Nokia XG-040G-MD | Airoha AN7581 | **Supported / HW evidence** | RECOVERY_SAFE BootROM/UART path |
+          | Nokia XG-040G-MF | Airoha AN7583 | **Supported / full-cycle HW confirmed** | RECOVERY_SAFE BootROM/UART path; RC22 special bad-block stock restore remains separately non-final |
+          
+          ## Documentation
+          
+          - [README — Русский](docs/README_RU.md)
+          - [README — English](docs/README_EN.md)
+          - [CHANGELOG — Русский](docs/CHANGELOG_RU.md)
+          - [CHANGELOG — English](docs/CHANGELOG.md)
+          - [ARCHITECTURE — Русский](docs/ARCHITECTURE_RU.md)
+          - [ARCHITECTURE — English](docs/ARCHITECTURE_EN.md)
+          - [Image status — Русский](docs/IMAGE_STATUS_RU.md)
+          - [Image status — English](docs/IMAGE_STATUS_EN.md)
+          - [OpenWrt TODO — Русский](docs/OPENWRT_TODO_RU.md)
+          - [OpenWrt TODO — English](docs/OPENWRT_TODO_EN.md)
+          
+          ## Current safety/status notes
+          
+          - MD and MF-A permanent all-in-UBI install paths have hardware evidence; MF stock→OpenWrt full install is confirmed through production SSH + LuCI. Exact byte/status scope is tracked in `data/FIRMWARE_CAPABILITIES.json` and `docs/IMAGE_STATUS_*`.
+          - RC18 `RECOVERY_SAFE` RAM U-Boot remains the mandatory BootROM/UART safety boundary: stable prompt + exact marker + nonce before NAND capability.
+          - RC22 bad-block UART restore is **not** classified as a complete HW PASS. Real MF hardware completed write/readback and booted the stock main image/kernel, but `data` UBIFS recovery failed and stock entered watchdog reboot before a later successful OpenWrt install.
+          - Transition/recovery control-plane excludes LAN1/2.5G; use LAN2/LAN3/LAN4.
+          - RC24 interactive menus stay open after ordinary success/recoverable errors; `WRITE_STATE_UNKNOWN` activates a process-local SAFETY-LATCH and never authorizes a destructive retry.
+          
+          ## Repository import through `_incoming`
+          
+          Use `.github/workflows/import_medveflasher_from_zip.yml`. It accepts either a full release ZIP or contiguous `.zip.part-NNN` files plus the required logical `.zip.sha256` sidecar. For GitHub web upload, the prepared import parts are kept **below 25 MB each**. The workflow verifies the reassembled outer archive, exact internal `data/SHA256SUMS` coverage, version/manifest/capability consistency and selftests before importing and committing.
+          
+          ## Offline runtime
+          
+          Critical runtime/recovery payloads are shipped in the repository/release and SHA256-pinned. Normal install/recovery must not depend on mutable runtime firmware downloads.
+          EOF
+          sed -i "s/__VERSION__/${VERSION}/g" README.md
+
+      - name: Normalize permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 0644 VERSION README.md START.cmd RESTORE_STOCK.cmd
+          chmod 0755 START.sh RESTORE_STOCK.sh
+          find data docs -type f -exec chmod 0644 {} +
+          find data docs -type d -exec chmod 0755 {} +
+          chmod 0755 data/backup-agent.sh data/nokia-stock-tftp-backup-safe.sh
+          [ ! -f data/recovery/recovery-clients-bin/nokia-tftp ] || chmod 0755 data/recovery/recovery-clients-bin/nokia-tftp
+          [ ! -f data/recovery/recovery-clients-bin/nokia-scp ] || chmod 0755 data/recovery/recovery-clients-bin/nokia-scp
+
+      - name: Remove only consumed incoming upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            echo "Removing consumed staging file: $path"
+            rm -f -- "$path"
+          done < _workzip/consumed-incoming.txt
+
+      - name: Post-import verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum -c data/SHA256SUMS
+          echo "Version: $(cat VERSION) / $(cat data/VERSION)"
+          echo "Repository payload files: $(find data docs -type f | wc -l)"
+          git status --short
+          git diff --stat
+
+      - name: Commit and push
+        env:
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A -- VERSION README.md START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh docs
+          git add -f -A -- data
+
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            git add -A -- "$path"
+          done < _workzip/consumed-incoming.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git diff --cached --stat
+          git commit -m "$COMMIT_MESSAGE"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

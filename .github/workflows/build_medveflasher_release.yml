@@ -1,0 +1,424 @@
+name: build-medveflasher-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag; empty = v<VERSION>"
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark GitHub Release as prerelease"
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: medveflasher-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    env:
+      NOKIA_LANG: en
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate release identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import ast, json, pathlib
+
+          root = pathlib.Path('.')
+          root_version = (root / 'VERSION').read_text(encoding='utf-8').strip()
+          data_version = (root / 'data/VERSION').read_text(encoding='utf-8').strip()
+          manifest = json.loads((root / 'data/MANIFEST.json').read_text(encoding='utf-8'))
+          caps = json.loads((root / 'data/FIRMWARE_CAPABILITIES.json').read_text(encoding='utf-8'))
+
+          tree = ast.parse((root / 'data/master.py').read_text(encoding='utf-8'))
+          app_version = build_tag = None
+          for node in tree.body:
+              if not isinstance(node, ast.Assign):
+                  continue
+              for target in node.targets:
+                  if not isinstance(target, ast.Name):
+                      continue
+                  if target.id == 'APP_VERSION':
+                      app_version = ast.literal_eval(node.value)
+                  elif target.id == 'BUILD_TAG':
+                      build_tag = ast.literal_eval(node.value)
+
+          expected_tag = f'medveflasher-{data_version}'
+          expected_root = f'Nokia-Router-MedveFlasher-{data_version}'
+          values = {
+              'VERSION': root_version,
+              'data/VERSION': data_version,
+              'APP_VERSION': app_version,
+              'MANIFEST.version': manifest.get('version'),
+              'MANIFEST.release.version': manifest.get('release', {}).get('version'),
+              'FIRMWARE_CAPABILITIES.version': caps.get('version'),
+          }
+          for key, value in values.items():
+              print(f'{key}: {value}')
+          if any(value != data_version for value in values.values()):
+              raise SystemExit('ERROR: release version metadata is inconsistent')
+          if build_tag != expected_tag:
+              raise SystemExit(f'ERROR: BUILD_TAG {build_tag!r} != {expected_tag!r}')
+          if manifest.get('build_tag') != expected_tag:
+              raise SystemExit('ERROR: MANIFEST.build_tag mismatch')
+          if manifest.get('release', {}).get('build_tag') != expected_tag:
+              raise SystemExit('ERROR: MANIFEST.release.build_tag mismatch')
+          if manifest.get('release', {}).get('archive_root') != expected_root:
+              raise SystemExit('ERROR: MANIFEST.release.archive_root mismatch')
+          PY
+
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          ROOT="Nokia-Router-MedveFlasher-${VERSION}"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="v${VERSION}"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved VERSION=$VERSION ROOT=$ROOT TAG=$TAG"
+
+      - name: Verify repository release-tree SHA256 coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, pathlib
+
+          root = pathlib.Path('.')
+          sums = root / 'data/SHA256SUMS'
+          listed = {}
+          for raw in sums.read_text(encoding='utf-8').splitlines():
+              if not raw.strip():
+                  continue
+              try:
+                  digest, rel = raw.split('  ', 1)
+              except ValueError:
+                  raise SystemExit(f'ERROR: malformed SHA256SUMS line: {raw!r}')
+              rel = rel.removeprefix('./')
+              if len(digest) != 64 or any(c not in '0123456789abcdefABCDEF' for c in digest):
+                  raise SystemExit(f'ERROR: malformed digest for {rel}')
+              if rel in listed:
+                  raise SystemExit(f'ERROR: duplicate SHA256SUMS entry: {rel}')
+              listed[rel] = digest.lower()
+
+          for rel, expected in listed.items():
+              path = root / rel
+              if not path.is_file():
+                  raise SystemExit(f'ERROR: SHA256SUMS references missing file: {rel}')
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'ERROR: SHA256 mismatch: {rel}\nexpected {expected}\nactual   {actual}')
+
+          release_files = {
+              'VERSION', 'START.cmd', 'START.sh', 'RESTORE_STOCK.cmd', 'RESTORE_STOCK.sh',
+          }
+          for base in ('data', 'docs'):
+              for path in (root / base).rglob('*'):
+                  if not path.is_file():
+                      continue
+                  if path == sums:
+                      continue
+                  if '__pycache__' in path.parts or path.suffix in {'.pyc', '.pyo'}:
+                      continue
+                  release_files.add(path.relative_to(root).as_posix())
+
+          missing = sorted(release_files - set(listed))
+          extra = sorted(set(listed) - release_files)
+          if missing or extra:
+              if missing:
+                  print('ERROR: release files missing from SHA256SUMS:', *missing, sep='\n  ')
+              if extra:
+                  print('ERROR: SHA256SUMS has non-release/missing coverage:', *extra, sep='\n  ')
+              raise SystemExit(1)
+          print(f'SHA256SUMS exact release coverage PASS: {len(release_files)} files')
+          PY
+
+      - name: Validate pinned firmware and recovery payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+
+          root = pathlib.Path('.')
+          m = json.loads((root / 'data/MANIFEST.json').read_text(encoding='utf-8'))
+
+          def sha(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def check_file(desc, spec):
+              path = root / spec['file']
+              if not path.is_file():
+                  raise SystemExit(f'ERROR: {desc}: missing {path}')
+              size = path.stat().st_size
+              digest = sha(path)
+              if 'size' in spec and spec['size'] not in (None, 0) and size != int(spec['size']):
+                  raise SystemExit(f'ERROR: {desc}: size {size} != {spec["size"]}')
+              if spec.get('sha256') and digest != spec['sha256']:
+                  raise SystemExit(f'ERROR: {desc}: SHA256 {digest} != {spec["sha256"]}')
+              print(f'PASS {desc}: {size} {digest} {path}')
+              return path
+
+          md_bundle = check_file('MD auto transition bundle', m['bundle'])
+          check_file('MD manual transition bundle', m['manual_bundle'])
+          mf_bundle = check_file('MF auto transition bundle', m['mf_transition_bundle'])
+          check_file('MF manual transition bundle', m['mf_manual_transition_bundle'])
+
+          md = m['recovery']['profiles']['md_an7581']
+          mf = m['recovery']['profiles']['mf_an7583']
+          check_file('MD RECOVERY_SAFE preloader', md['preloader'])
+          check_file('MD RECOVERY_SAFE FIP', md['fip'])
+          check_file('MD stock-recovery initramfs', md['initramfs'])
+          check_file('MF RECOVERY_SAFE preloader', mf['preloader'])
+          check_file('MF RECOVERY_SAFE FIP', mf['fip'])
+          check_file('MF stock-recovery initramfs', mf['initramfs'])
+
+          rc18 = m['rc18_recovery_safe_uboot']
+          if sha(root / md['fip']['file']) != rc18['md_safe_fip_sha256']:
+              raise SystemExit('ERROR: MD safe FIP differs from RC18 pinned safe derivative')
+          if sha(root / mf['fip']['file']) != rc18['mf_safe_fip_sha256']:
+              raise SystemExit('ERROR: MF safe FIP differs from RC18 pinned safe derivative')
+
+          # Production sysupgrades are embedded byte-for-byte after the 8 MiB transition window.
+          for family, bundle_path, spec in (
+              ('MD', md_bundle, m['bundle']),
+              ('MF', mf_bundle, m['mf_transition_bundle']),
+          ):
+              offset = int(spec['production_offset_in_bundle'])
+              size = int(spec['production_size'])
+              expected = spec['production_sha256']
+              raw = bundle_path.read_bytes()
+              payload = raw[offset:offset + size]
+              trailing = raw[offset + size:]
+              if len(payload) != size:
+                  raise SystemExit(f'ERROR: {family} embedded production payload is truncated')
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'ERROR: {family} embedded production SHA256 {actual} != {expected}')
+              if any(trailing):
+                  raise SystemExit(f'ERROR: {family} bundle has non-zero bytes after the declared production payload')
+              print(f'PASS {family} embedded production sysupgrade: {size} {actual}; zero-padding={len(trailing)}')
+
+          mf_set = m['mf_ubi_build_set']
+          if mf_set['sysupgrade']['sha256'] != m['mf_transition_bundle']['production_sha256']:
+              raise SystemExit('ERROR: MF production sysupgrade metadata mismatch')
+          if int(mf_set['sysupgrade']['size']) != int(m['mf_transition_bundle']['production_size']):
+              raise SystemExit('ERROR: MF production sysupgrade size metadata mismatch')
+
+          clients = m['rc19_restore_transport_hardening']
+          check_file('Pinned nokia-tftp', clients['nokia_tftp'])
+          check_file('Pinned nokia-scp', clients['nokia_scp'])
+
+          print('Pinned firmware/recovery audit: PASS')
+          PY
+
+      - name: Static validation and safety selftests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import pathlib, py_compile
+          for p in pathlib.Path('.').rglob('*.py'):
+              if '.git' in p.parts or 'vendor' in p.parts:
+                  continue
+              py_compile.compile(str(p), doraise=True)
+          PY
+
+          python3 data/stock_web.py --selftest
+          python3 data/master.py selftest-capabilities
+          python3 data/master.py selftest-mf-transition
+          python3 data/master.py selftest-safety
+
+          while IFS= read -r -d '' f; do sh -n "$f"; done < <(find data docs -type f -name '*.sh' -print0)
+          while IFS= read -r -d '' f; do python3 -m json.tool "$f" >/dev/null; done < <(find data -type f -name '*.json' -print0)
+
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          rm -rf work
+
+      - name: Build one-root offline flasher ZIP
+        id: package
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          RELEASE_ROOT: ${{ steps.identity.outputs.release_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/medveflasher-release"
+          STAGE="$OUT/$RELEASE_ROOT"
+          rm -rf "$OUT"
+          mkdir -p "$STAGE/work"
+
+          cp VERSION START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh "$STAGE/"
+          cp -a data docs "$STAGE/"
+          rm -rf "$STAGE/data/__pycache__"
+          find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
+          find "$STAGE" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
+          chmod 0644 "$STAGE/VERSION" "$STAGE/START.cmd" "$STAGE/RESTORE_STOCK.cmd"
+          chmod 0755 "$STAGE/START.sh" "$STAGE/RESTORE_STOCK.sh"
+          find "$STAGE/data" "$STAGE/docs" -type d -exec chmod 0755 {} +
+          find "$STAGE/data" "$STAGE/docs" -type f -exec chmod 0644 {} +
+          chmod 0755 "$STAGE/data/backup-agent.sh" "$STAGE/data/nokia-stock-tftp-backup-safe.sh"
+          [ ! -f "$STAGE/data/recovery/recovery-clients-bin/nokia-tftp" ] || chmod 0755 "$STAGE/data/recovery/recovery-clients-bin/nokia-tftp"
+          [ ! -f "$STAGE/data/recovery/recovery-clients-bin/nokia-scp" ] || chmod 0755 "$STAGE/data/recovery/recovery-clients-bin/nokia-scp"
+
+          (cd "$STAGE" && sha256sum -c data/SHA256SUMS)
+
+          ZIP="$OUT/${RELEASE_ROOT}.zip"
+          python3 - "$OUT" "$RELEASE_ROOT" "$ZIP" <<'PY'
+          import pathlib, stat, sys, zipfile
+          out = pathlib.Path(sys.argv[1])
+          root_name = sys.argv[2]
+          root = out / root_name
+          zip_path = pathlib.Path(sys.argv[3])
+          epoch = (2026, 8, 14, 0, 0, 0)
+
+          def add_dir(zf, arc):
+              zi = zipfile.ZipInfo(arc.rstrip('/') + '/', epoch)
+              zi.create_system = 3
+              zi.external_attr = (0o755 | stat.S_IFDIR) << 16
+              zf.writestr(zi, b'')
+
+          with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              add_dir(zf, root_name)
+              for path in sorted(root.rglob('*'), key=lambda p: p.relative_to(out).as_posix()):
+                  arc = path.relative_to(out).as_posix()
+                  if path.is_dir():
+                      add_dir(zf, arc)
+                      continue
+                  mode = path.stat().st_mode & 0o777
+                  zi = zipfile.ZipInfo(arc, epoch)
+                  zi.create_system = 3
+                  zi.external_attr = (mode | stat.S_IFREG) << 16
+                  zi.compress_type = zipfile.ZIP_DEFLATED
+                  zf.writestr(zi, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+          PY
+
+          SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
+          printf '%s  %s\n' "$SHA" "$(basename "$ZIP")" > "${ZIP}.sha256"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "sha=${ZIP}.sha256" >> "$GITHUB_OUTPUT"
+          echo "ZIP SHA256: $SHA"
+
+      - name: Blind re-extract and verify built ZIP
+        env:
+          ZIP: ${{ steps.package.outputs.zip }}
+          RELEASE_ROOT: ${{ steps.identity.outputs.release_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY="$RUNNER_TEMP/medveflasher-blind-verify"
+          rm -rf "$VERIFY"
+          mkdir -p "$VERIFY"
+          unzip -q "$ZIP" -d "$VERIFY"
+
+          mapfile -t TOP < <(find "$VERIFY" -mindepth 1 -maxdepth 1 -print | sort)
+          if [ "${#TOP[@]}" -ne 1 ] || [ "$(basename "${TOP[0]}")" != "$RELEASE_ROOT" ]; then
+            echo "ERROR: built ZIP does not have exactly one expected top-level root"
+            exit 1
+          fi
+          ROOT="${TOP[0]}"
+          (cd "$ROOT" && sha256sum -c data/SHA256SUMS)
+
+          if find "$ROOT" \( -type d -name __pycache__ -o -type f -name '*.pyc' -o -type f -name '*.pyo' \) -print -quit | grep -q .; then
+            echo "ERROR: cache/bytecode leaked into release ZIP"
+            exit 1
+          fi
+
+          python3 - "$ROOT" <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          version = (root/'VERSION').read_text().strip()
+          m = json.loads((root/'data/MANIFEST.json').read_text())
+          if m['version'] != version or m['release']['version'] != version:
+              raise SystemExit('ERROR: blind manifest/version mismatch')
+          print('Blind ZIP metadata PASS:', version)
+          PY
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nokia-Router-MedveFlasher-${{ steps.identity.outputs.version }}
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.sha }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Prepare release notes
+        id: notes
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          SHA_FILE: ${{ steps.package.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/medveflasher-release-notes.md"
+          ZIP_NAME="Nokia-Router-MedveFlasher-${VERSION}.zip"
+          ZIP_DIGEST="$(awk '{print $1; exit}' "$SHA_FILE")"
+          cat > "$NOTES" <<EOF
+          # Nokia Router MedveFlasher ${VERSION}
+
+          Offline full flasher kit for:
+
+          - Nokia XG-040G-MD / Airoha AN7581
+          - Nokia XG-040G-MF / Airoha AN7583 — full stock → backup → transition → all-in-UBI → production OpenWrt install cycle is hardware-confirmed.
+
+          The release workflow validates `data/SHA256SUMS`, pinned transition/recovery images, embedded production sysupgrade tails, RECOVERY_SAFE FIPs, transient recovery clients, and safety selftests before publishing.
+
+          **Archive:** `${ZIP_NAME}`  
+          **SHA256:** `${ZIP_DIGEST}`
+
+          RC22 bad-block-aware UART stock restore remains a separate non-final recovery status; it is not promoted to a complete HW PASS by this package build.
+          EOF
+          echo "file=$NOTES" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          SHA_FILE: ${{ steps.package.outputs.sha }}
+          NOTES: ${{ steps.notes.outputs.file }}
+          PRERELEASE_INPUT: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; replacing ZIP assets."
+            gh release upload "$TAG" "$ZIP" "$SHA_FILE" --clobber
+          else
+            args=(release create "$TAG" "$ZIP" "$SHA_FILE" --target "$GITHUB_SHA" --title "Nokia Router MedveFlasher ${VERSION}" --notes-file "$NOTES")
+            if [ "${PRERELEASE_INPUT:-true}" = "true" ] || [[ "$VERSION" == *-* ]]; then
+              args+=(--prerelease)
+            fi
+            gh "${args[@]}"
+          fi

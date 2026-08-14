@@ -1,40 +1,149 @@
-# Nokia Router MedveFlasher 1.0.0-rc7 image status
+## 1.0.0-rc24 — persistent wizard navigation
 
-## Standard automatic transition
+- Firmware/transition/recovery payloads: **byte-identical to RC23**.
+- Interactive success/error navigation: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
+- `WRITE_STATE_UNKNOWN` SAFETY-LATCH: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
+- Direct CLI exit-code contract is unchanged.
 
-`data/transition-bundle.bin` contains the verified OpenWrt sysupgrade image:
+## 1.0.0-rc23 — PC-side timestamp/backup identity
 
-- profile: `nokia_xg-040g-md-ubi`;
-- target: `airoha/an7581`;
-- OpenWrt version: `SNAPSHOT r35679-e9a6e45556`;
-- kernel: `Linux 6.18.41`;
-- sysupgrade size: `9531670` bytes;
-- sysupgrade SHA256: `95fe315cedca64b5f5db39a5e03e75eb773b7c43e970d06fc3be6d0d8e1cbdc6`;
-- bundle offset: `0x800000`;
-- complete bundle size: `17956864` bytes;
-- bundle SHA256: `e19ff00652a7a581f418badc998d21baed78949dd82c4f54764d993dbb39f8a0`.
+- Firmware/transition/recovery payloads must remain byte-identical to RC22; RC23 changes only PC orchestration/backup-agent metadata/docs.
+- Timestamp layer: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
+- Live TFTP/USB `DEVICE_MAC.txt`: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
+- Exact RC22 MF permanent install: **HW PASS** in the current run — `[1/8]..[8/8]`, production board/UBI/release, SSH and LuCI were verified.
+- RC22 UART bad-block stock restore: **NOT FULL PASS** — the main stock kernel booted and BMT/BBT plus the partition table initialized, but `/data` UBIFS recovery failed and triggered a watchdog boot loop.
 
-LuCI was confirmed by parsing SquashFS directly. `luci`,
-`luci-mod-admin-full`, `luci-theme-bootstrap`, `rpcd-mod-luci`, `uhttpd`, and
-the main administration modules are present.
+## 1.0.0-rc22 — BootROM restore bad-block fix
 
-## Manual transition for a user-selected sysupgrade
+- MD/MF firmware payloads: **byte-identical to RC21**.
+- RC22 PC-side BootROM/UART bad-block mapper: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
+- Hardware trigger: a real restore exposed `mtd bad ubi = 0x05d00000, 0x05d20000, 0x05de0000`; RC21 later failed at IBU 13/30 readback `ubi+0x06000800` with `-74`.
+- RC22 invariant: known bad blocks in the stock UBI-backed mutable region are physical holes, never logical stream compaction; every good span gets readback CRC32.
+- Raw-critical bad block or bad BL2: automatic restore BLOCKED. Bad-block-map change after body writes: BL2 BLOCKED.
 
-`data/transition-manual-bundle.bin` is exactly 8 MiB and contains no production
-sysupgrade. Automatic stage 2 is disabled. After boot, the manual transition lets
-normal OpenWrt preinit finish, generating sysinfo, DSA/netdev labels and LAN,
-brings `br-lan` up at `192.168.1.1/24`, and starts SSH with the temporary blank
-`root` account explicitly allowed by Dropbear `-B`. The readiness marker is
-published only after LAN and SSH are verified.
+## 1.0.0-rc21 — PC-side Stage 6/UX fix
 
-- manual bundle SHA256: `3b7b89508da309a45d02002a972a3a554231b12d5839bb1f812d655c29ef347f`;
-- selected-image checks: FIT magic, size, local and remote SHA256,
-  `nokia-ubi-installer check`, and `sysupgrade -T`;
-- `sysupgrade -F` is never used;
-- BL2 is written last;
-- the manual transition remains as the fallback image in UBI `fit`.
+- MD/MF firmware payloads: **byte-identical to RC20**.
+- The MD destructive install path `[1/8]..[6/8]`, UBI migration, BL2-last, and production sysupgrade are already HW PASS on the RC18/RC20 lineage; RC21 changes only PC-side polling/reconciliation/UX.
+- `[7/8]` and `[8/8]`: first use 350 ms fast polling; if network handoff hides the lines, they may be displayed only after the strict production board/UBI/release gate as POST-BOOT VERIFIED.
+- Stalled reboot after sysupgrade: manual power cycling is allowed only with external UART proof of the exact `sysupgrade successful` line; timeout is not authorization.
+- Startup Web credential reuse: STATIC_QA_PASS, hardware regression pending.
+- Rich banner / backup summary / USB wording / `[NET]` telemetry: PC-side only.
 
-The standard hardware cycle stock → transition → production OpenWrt and the
-rollback to stock are confirmed. The new manual transition has passed static and
-synthetic validation; its first complete hardware run should be performed with a
-verified PC backup and stable power.
+## 1.0.0-rc19 — transient recovery clients / restore safety
+
+- MD/MF auto/manual transition and stock recovery: pinned `nokia-tftp` + `nokia-scp` embedded, Dropbear `-B`; static QA PASS, exact RC19 bytes require hardware regression.
+- MD/MF production sysupgrade tails: byte-identical to RC18.
+- RC18 RECOVERY_SAFE AN7581/AN7583 FIPs: byte-identical to RC18.
+- Restore state machine: fallback is pre-write only; post-write disconnect = `WRITE_STATE_UNKNOWN`, automatic retry BLOCKED.
+- MD initramfs panic/reboot: known upstream issue; production/sysupgrade kernel is unaffected.
+
+## 1.0.0-rc18 — RECOVERY_SAFE RAM U-Boot / prompt capability gate
+
+- RC18 packaging correction: SAFE BL33 is now encoded in canonical Airoha LZMA-Alone form **known size + no EOPM** via `LZMA1EXT`. The first RC18 archive failed closed before COM/XMODEM under strict Windows liblzma with `Corrupt input data`; NAND was untouched. Runtime no longer decodes BL33 on the PC and instead pins exact FIP plus compressed BL31/BL33 SHA256.
+- Fixed a critical BootROM recovery defect: the ordinary AN7581 RAM U-Boot used `bootdelay=0` and could reach first-boot `ubi_format -> mtd erase ubi` before an interactive prompt was proven. A U-Boot banner is no longer considered control of the bootloader.
+- RC18 ships recovery-only SAFE FIP derivatives for AN7581 and AN7583. BL31 is preserved byte-for-byte; BL33 gets `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18`, and neutralized persistent UBI environment volume names so NAND `ubootenv/ubootenv2` cannot re-enable autoboot.
+- After a stable prompt, `master.py` requires the exact SAFE marker, `bootdelay=-1`, inert bootcmd, and a fresh nonce. No NAND write/erase/saveenv capability exists before this gate; only UART/XMODEM and then read-only geometry are allowed.
+- Ctrl-C after the banner remains only a secondary safety net: it is sent as a paced series until the prompt, not once. The primary safety boundary is inside the recovery BL33.
+- Linux fallback after a missed BootROM-recovery U-Boot prompt is disabled fail-closed for both families.
+- Full stock restore retains the existing invariant: body/IBU erase+write+readback first, exact stock BL2 LAST. U-Boot prints the `mtd erase ubi` range relative to the partition; physical BL2 is outside that erase.
+- LAN1/2.5G remains prohibited for every transition/recovery process; use LAN2/LAN3/LAN4.
+- Exact RC18 SAFE FIP bytes require the first hardware regression before promotion to HW CONFIRMED.
+
+## 1.0.0-rc17fix5 — LAN1/2.5G excluded from transition/recovery
+
+> **Network safety policy:** LAN1 / 2.5G is considered unstable and **must not be used for any transition or recovery process**. For stock→transition, manual/auto transition, live progress, RAM stock recovery, TFTP/SCP/SSH, and restore, connect the PC only to **LAN2, LAN3, or LAN4**. A link on LAN1 does not make it a supported transport path.
+
+- The build-time patcher `data/recovery/transition-network-source/patch_transition_network.py` enforces this for MD/MF auto/manual transition and stock-recovery FITs. Production sysupgrade images are intentionally out of scope.
+- Initramfs `/etc/board.d/02_network` exposes only `lan2 lan3 lan4` for Nokia; the exact fixed-slot script bytes contain no literal `lan1`.
+- In transition/recovery DTs the single `2500base-x` MAC is `status = "disabled"`; its `openwrt,netdev-name` and NVMEM binding are removed. The primary/internal Ethernet path and switch remain active and use raw `ri-stock` MAC NVMEM.
+- MD Dark and MF Uname production OpenWrt payloads remain byte-for-byte unchanged; the exclusion is transition/recovery-only.
+- Evidence: `docs/RC17FIX5_DTB_EVIDENCE.md` and `docs/RC17FIX5_NETWORK_POLICY_EVIDENCE.md`.
+
+## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
+
+- Fixed the MF stock-recovery release blocker: the recovery FIT no longer carries the production DT. `all_flash` remains read-only, `bl2` is writable only in RAM recovery, `mtd2=ibu`, and there is no pre-restore `linux,ubi` auto-attach.
+- MD and MF stock-recovery now use the same fail-closed pre-restore NVMEM topology: read-only raw `ri-stock` at `0x05200000/0x00040000`, `macaddr@3e` (`mac-base`, 6 bytes), with Ethernet MAC consumers bound to that raw RI provider. Recovery Ethernet no longer depends on the future UBI `ri` volume.
+- `docs/dtb-evidence/` carries byte-exact DTBs for MD/MF recovery/transition/production. QA now proves for both families that recovery != production, recovery BL2 is writable, `ibu` has no `linux,ubi`, Ethernet uses raw-RI MAC NVMEM, and Ethernet/switch and active DSA LAN2/LAN3/LAN4 are present.
+- Manual READY no longer uses the approximate `/proc/net/route` fallback. The exact address is parsed from `/proc/net/fib_trie`, with exact `ip -4 addr` output as fallback.
+- Both manual initramfs images contain `uhttpd` and its init script. The PC master can now consume `/www/medveflasher-manual.status` as content-based pre-SSH diagnostics; READY and custom image transfer still require SSH content identity.
+
+## 1.0.0-rc17fix3 — persistent manual READY / reviewable DT evidence
+
+- Manual transition no longer freezes at `NETWORK_NOT_READY` after 60 seconds. The family/LAN/SSH readiness monitor runs in the background until READY, so the PC-side 600 s retry now observes state that can actually change.
+- The READY gate no longer depends on `netstat`: SSH LISTEN is parsed from `/proc/net/tcp{,6}`, LAN 192.168.1.1 from `/proc/net/fib_trie` / `/proc/net/route`; `ip` is fallback only. Preflight confirms `sbin/ip`, `bin/netstat`, and `bin/cat` exist in both manual initramfs images.
+- `/tmp/NOKIA_MANUAL_STATE` and `/www/medveflasher-manual.status` now expose ASCII key/value diagnostics: `STATE`, `REASON`, board, br-lan/IP/SSH flags, and `DEFERRED`.
+- Auto transition still performs destructive work autonomously, while Ethernet is required for PC-side live progress/control-plane telemetry. MF/MD transition DTs retain the raw `ri-stock` pre-format NVMEM policy.
+- `fullflash` rc=0 without reboot is no longer classified as FAILED; it becomes verification-pending and requires production verification.
+- `docs/dtb-evidence/` contains byte-exact DTBs extracted from MD/MF auto/manual transition, stock-recovery, and production sysupgrade images, allowing REVIEW_ONLY to independently inspect NVMEM/MTD/network topology without runtime ITBs.
+
+## 1.0.0-rc17fix2 — transition network / Dark MD audit
+
+- Fixed the root cause of missing Ethernet in MF transition before formatting: MAC NVMEM now comes from read-only raw stock RI at `0x05200000+0x3e`, not from the future UBI `ri` volume. This applies to auto and manual transitions.
+- Auto mode needs Ethernet for PC-side live progress/control-plane, not for the autonomous destructive installer itself. RC17fix2 restores that channel.
+- MF target `mtd2` keeps label `ubi` for compatibility with the hardware-confirmed installer, while pre-format `linux,ubi` auto-attach is disabled.
+- All MD ITBs were audited. Production sysupgrade and stock recovery were already Dark 6.18.41; auto/manual transition were still old 6.18.39 r35573. RC17fix2 rebases both transitions onto the selected Dark 6.18.41 / r0-486b4a4 kernel and a minimized initramfs while retaining the fail-closed installer gates.
+- Manual readiness is family-specific; the MF path no longer contains an MD board-name hardcode.
+
+# Nokia Router MedveFlasher 1.0.0-rc24 image status
+
+## RC17fix2 exact transition artifacts
+
+- MD auto: size `21626880`, SHA256 `7b817391930572664ef4a5a27fa3e53bda103115e5fb5e34f9949626a24e9b95`, FIT totalsize `7810596`, FIT SHA256 `aeac0f15dc8fadfc1f5f604f0f6d55256a499eaa0ac63c0a4035dc2de836a06a`.
+- MD manual: size `8388608`, SHA256 `e5606341dd8c64ea9638c61efeb61050a1dc64df11beb344d52fd3ca208e68eb`, FIT totalsize `7810012`, FIT SHA256 `08218a49e58daf7ebed83db6d46727a60b7621761cc1f687a76f74e6601c3dbb`.
+- MF auto: size `17694720`, SHA256 `8e45db3676a760831745b45c976e2a11b8bf13fc64ca6224922a42ee0209c8cf`, FIT totalsize `7827180`, FIT SHA256 `cfb5902e6ee67995d34a1b8bd767b8a3082331585f3b51be6c943ec44e22446e`.
+- MF manual: size `8388608`, SHA256 `a7a5e1cb19b95e831305882f04201a4c3162f775a72554155d84eab2fe52087a`, FIT totalsize `7826668`, FIT SHA256 `09e916bbe31cf3c7138aba8bbaaa3c3af00e7f63fbcba33218fe5461f1faf35d`.
+
+These exact RC17fix2 transition bytes are static-QA PASS and **hardware-regression pending**. The MF destructive all-in-UBI sequence itself remains hardware-confirmed from RC16; production payload bytes are unchanged.
+
+## Historical RC17: transition control-plane rebuild
+
+
+Production payload bytes are unchanged from RC16. Only automatic transition FIT control-plane/logging and RC17 release identity changed.
+
+- MD auto transition: `21626880`, SHA256 `47631c782b75aef2a13082a4da2ffcee687742d8d743ed357a5753236b640962`, FIT totalsize `7509716`, FIT SHA256 `4a898c31dc69065decc267d5ede173530932079d5fc75344a417cf4e5946d392`, 8-MiB window SHA256 `e25b1156b945c66516bedccf420efe1c835b80d7701ce9d7201fc1d178cbb4b1`;
+- MF auto transition: `17694720`, SHA256 `988fb4aa960441aa7176672c23181a373f54690fcc9a63389124adc8c7a6a188`, FIT totalsize `7649300`, FIT SHA256 `be365db3dabf68eb4e5cad56087e5af241f8fdb2c24c8936bf427d57cf7e469c`, 8-MiB window SHA256 `325bef457b611e81cf4a45885fb82c91b96ad1c9de14ae40d4adcf82461b3428`;
+- MD/MF manual transition bundles remain byte-identical to RC16.
+- MD/MF production tails from offset `0x800000` remain byte-identical to RC16.
+- RC17 auto-transition delta is statically validated; a hardware regression run is still pending.
+
+
+## RC16: MD / AN7581 — Dark patched build-set
+
+Production target: `airoha/an7581`, board `nokia,xg-040g-md-ubi`, revision `r0-486b4a4`, kernel `6.18.41`.
+
+- selected source initramfs: `11141120` bytes, SHA256 `a8e24301925c4a7b120594b61aa679bac835b26ef70736fd28a69c9029ffda3b`;
+- shipped MedveFlasher RAM stock-recovery FIT: `11294372` bytes, SHA256 `4a6f579bb0d623bd5b582ed38d88735ac94079083d485bcc16f2ee7d706665f0`;
+- production sysupgrade: `13226255` bytes, SHA256 `c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03`;
+- auto transition bundle: `21626880` bytes, SHA256 `5e658b2c50719db5e552c0c047aea0d58044ebcbea016a3e61707b2c62d3affe`, FIT totalsize `7509816`, production offset `0x800000`;
+- manual transition: `8388608` bytes, SHA256 `0baac2ee30e752893942edf614aa0515117abb5fae10985d200879a2c226bb56`, FIT totalsize `7508736`, no embedded production image.
+
+Production LuCI is confirmed by direct SquashFS/filesystem inspection: `cgi-bin/luci`, `luci-base`, admin/network/status/system modules, `rpcd-mod-luci`, `uhttpd`, and web assets are present.
+
+The recovery FIT is not a blind copy of the UBI initramfs: kernel/rootfs are preserved from the selected Dark image while the recovery DT is rebuilt for stock restore. `all_flash` remains read-only, `bl2` is writable only in recovery, and production `ubi` is replaced by the recovery `ibu` view so BL2-last stock restore stays possible. Dark PHY/NPU DT changes remain present. Static/FIT/DT/SHA QA: PASS; the refreshed MD payload-set still requires hardware regression.
+
+## RC16: MF / AN7583 — Uname production set retained
+
+The production UBI build-set remains unchanged from rc15fix:
+
+- production preloader: `118333`, SHA256 `778d10a65276085b70bec005248fc87ec208b43b0239502f15ade20fe528301e`;
+- production BL31/U-Boot FIP: `319568`, SHA256 `99b6c20a7cb46a56692eaeb9f086f70fc7e987a641396653e6a8fb5c03e07aa7`;
+- production sysupgrade: `9191705`, SHA256 `db881b8053cdfbdf49dd6c2336dee3ddfa489966456a3e75556c5a0f6cc7663b`;
+- bundled stock-recovery initramfs: `7486892`, SHA256 `f0591c84132fa6d93e8f41fa9e4ff57729a8ba698850f0dfc2ce2032726ff76f`;
+- auto transition: `17694720`, SHA256 `c83898a4e2b22aa9ff0d16cd4f018812439c2665b24bf0588776815cd94fdf59`, FIT totalsize `7649360`;
+- manual transition: `8388608`, SHA256 `17f70f23bf2bc465628915509fc853c1d2bc160ff0d299479a258080e20ee8b7`, FIT totalsize `7648816`.
+
+The MF production sysupgrade also passed direct filesystem LuCI validation.
+
+## RC16: MF BootROM/XMODEM offline recovery pins
+
+- EVB preloader: `118322`, SHA256 `c2ac1c183b18bc34632c958dfe0bd1dfdfb607f090e39c41126956641893362f`;
+- EVB BL31+U-Boot FIP: `339224`, SHA256 `b2f5f93f52afbaf539fe362267b13a91fb0a3a22c4ea770f2fc984dece176c12`.
+
+Both files are carried in the full rollup and checked by exact size/SHA256 before the destructive path. Runtime download/cache fallback is absent. The refreshed exact-byte pair itself is HW-confirmed on Nokia XG-040G-MF by the RC16 full BootROM/XMODEM stock-restore run on 2026-08-12.
+
+## RC16 release-integrity gates
+
+`verify_kit()` binds all four transition bundles to MANIFEST using actual full size/SHA256, FIT totalsize/FIT SHA256, and production size/SHA256. This closes the `MANIFEST.json` drift found in rc15fix. Transition-only writable BL2, production read-only BL2, provenance gate before BL2-last, readback, and immediate stage2 stop on `FAILED` are retained.
+- RC17fix changes no firmware payload bytes; only post-UART-restore reboot/stock-Web verification was fixed.
+

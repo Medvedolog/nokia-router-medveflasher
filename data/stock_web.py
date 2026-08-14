@@ -44,6 +44,7 @@ import argparse
 import base64
 import getpass
 import hashlib
+import http.client
 import http.cookiejar
 import json
 import os
@@ -357,26 +358,51 @@ class StockWeb:
         self.base = f"http://{host}"
         self.timeout = timeout
         self.jar = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(
+        self.opener = self._build_opener()
+        self.pubkey_pem = None
+
+    def _build_opener(self):
+        opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.jar)
         )
-        self.opener.addheaders = [("User-Agent", "Mozilla/5.0"), ("Accept", "*/*")]
-        self.pubkey_pem = None
+        # Embedded Nokia HTTP servers occasionally close a keep-alive socket
+        # without a response.  Do not reuse that transport between requests.
+        opener.addheaders = [
+            ("User-Agent", "Mozilla/5.0"),
+            ("Accept", "*/*"),
+            ("Connection", "close"),
+        ]
+        return opener
 
     def request(self, path: str, data: bytes = None, ajax: bool = False):
         url = urllib.parse.urljoin(self.base, path)
-        req = urllib.request.Request(url, data=data,
-                                     method="POST" if data else "GET")
-        if data:
-            req.add_header("Content-Type", "application/x-www-form-urlencoded")
-            req.add_header("Origin", self.base)
-        if ajax:
-            req.add_header("X-Requested-With", "XMLHttpRequest")
-        try:
-            with self.opener.open(req, timeout=self.timeout) as response:
-                return response.status, response.read()
-        except urllib.error.HTTPError as exc:
-            return exc.code, exc.read()
+        method = "POST" if data else "GET"
+        last_exc = None
+        for attempt in range(3):
+            req = urllib.request.Request(url, data=data, method=method)
+            if data:
+                req.add_header("Content-Type", "application/x-www-form-urlencoded")
+                req.add_header("Origin", self.base)
+            if ajax:
+                req.add_header("X-Requested-With", "XMLHttpRequest")
+            try:
+                with self.opener.open(req, timeout=self.timeout) as response:
+                    return response.status, response.read()
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read()
+            except (http.client.RemoteDisconnected, ConnectionResetError,
+                    BrokenPipeError, TimeoutError, socket.timeout,
+                    urllib.error.URLError, OSError) as exc:
+                last_exc = exc
+                if attempt >= 2:
+                    break
+                # Keep cookies, but discard the failed HTTP transport.
+                self.opener = self._build_opener()
+                time.sleep(0.35 * (attempt + 1))
+        raise SetupError(
+            f"HTTP {method} {path}: transport failed after 3 attempts: "
+            f"{type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
 
     def cookie(self, name: str):
         for item in self.jar:
@@ -434,6 +460,8 @@ class StockWeb:
         public key, plain-вход пробуется только при этом явном разрешении.
         """
         status, body = None, b""
+        encrypted_transport = None
+        plain_transport = None
         for attempt in range(2):
             try:
                 got, status, body = self._attempt(user, password, "encrypted")
@@ -442,15 +470,31 @@ class StockWeb:
             except UnsupportedFirmware:
                 if not allow_plain:
                     raise
+            except SetupError as exc:
+                # Some stock firmwares simply close the socket when they do
+                # not like the encrypted login POST.  When the operator has
+                # explicitly allowed plain compatibility, continue to the
+                # plain form instead of aborting the whole wizard.
+                encrypted_transport = exc
+                if not allow_plain:
+                    raise LoginError(f"encrypted web login transport failed: {exc}") from exc
             if allow_plain:
-                got, status, body = self._attempt(user, password, "plain")
-                if got:
-                    return got
+                try:
+                    got, status, body = self._attempt(user, password, "plain")
+                    if got:
+                        return got
+                except SetupError as exc:
+                    plain_transport = exc
             if attempt == 0:
                 # Частая причина отказа — не пароль, а незакрытая сессия
                 # прошлого запуска: прошивка держит их около двух.
                 self.logout()
 
+        if plain_transport is not None and status is None:
+            raise LoginError(
+                f"web transport failed for encrypted and plain login: "
+                f"encrypted={encrypted_transport}; plain={plain_transport}"
+            ) from plain_transport
         raise LoginError(
             f"вход не принят: HTTP {status}, кука sid "
             f"{'получена' if self.cookie('sid') else 'не получена'}.\n"

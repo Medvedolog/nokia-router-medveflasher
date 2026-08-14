@@ -1,75 +1,65 @@
 #!/bin/ash
-# Nokia Router MedveFlasher stock firmware launcher.
+# Nokia Router MedveFlasher shared MD/MF stock firmware launcher.
 # Writes the selected transition bundle to nsb_master, verifies it, then writes a
 # device-specific U-Boot environment erase block last so stock U-Boot loads
 # the raw FIT with `flash read`. This package is bound to one device backup.
 set -eu
 
-select_language() {
-    case "${NOKIA_LANG:-}" in ru|en) return 0 ;; esac
-    if [ -t 0 ]; then
-        printf '%s\n' 'Select language / Выберите язык:' '  1. RUS' '  2. ENG'
-        printf 'RUS or ENG [1/2]: '
-        IFS= read -r answer
-        case "$answer" in 2|en|EN|eng|ENG) NOKIA_LANG=en ;; *) NOKIA_LANG=ru ;; esac
-    else
-        NOKIA_LANG=ru
-    fi
-    export NOKIA_LANG
-}
+select_language() { NOKIA_LANG=en; export NOKIA_LANG; }
 select_language
 
 nokia_ru_line() {
     printf '%s\n' "$1" | sed \
-      -e 's/\[WARN\]/[ПРЕДУПРЕЖДЕНИЕ]/g' \
-      -e 's/CRITICAL FAILURE:/КРИТИЧЕСКАЯ ОШИБКА:/g' \
-      -e 's/Stock slot layout/Разметка stock-слотов/g' \
-      -e 's/Exact supported stock MTD layout matched/Точная поддерживаемая stock-разметка MTD подтверждена/g' \
-      -e 's/explicitly detected/явно обнаружена/g' \
-      -e 's/NAND geometry/Геометрия NAND/g' \
-      -e 's/Current /Текущий /g' \
-      -e 's/Expected /Ожидаемый /g' \
-      -e 's/Detected bootcmd/Обнаружен bootcmd/g' \
-      -e 's/Detected \/proc\/cmdline/Обнаружена \/proc\/cmdline/g' \
-      -e 's/Detected /Обнаружено /g' \
-      -e 's/Compatible stock bootcmd/Совместимый stock bootcmd/g' \
-      -e 's/Active stock slot/Активный stock-слот/g' \
-      -e 's/Transition target/Цель transition/g' \
+      -e 's/\[WARN\]/[PREDUPREZhDENIE]/g' \
+      -e 's/CRITICAL FAILURE:/KRITIChESKAYa OShIBKA:/g' \
+      -e 's/Stock slot layout/Razmetka stock-slotov/g' \
+      -e 's/Exact supported stock MTD layout matched/Tochnaya podderzhivaemaya stock-razmetka MTD podtverzhdena/g' \
+      -e 's/explicitly detected/yavno obnaruzhena/g' \
+      -e 's/NAND geometry/Geometriya NAND/g' \
+      -e 's/Current /Tekuschiy /g' \
+      -e 's/Expected /Ozhidaemyy /g' \
+      -e 's/Detected bootcmd/Obnaruzhen bootcmd/g' \
+      -e 's/Detected \/proc\/cmdline/Obnaruzhena \/proc\/cmdline/g' \
+      -e 's/Detected /Obnaruzheno /g' \
+      -e 's/Compatible stock bootcmd/Sovmestimyy stock bootcmd/g' \
+      -e 's/Active stock slot/Aktivnyy stock-slot/g' \
+      -e 's/Transition target/Tsel transition/g' \
       -e 's/Transition FIT/Transition FIT/g' \
-      -e 's/Embedded production image/Встроенный production-образ/g' \
-      -e 's/Complete bundle/Полный bundle/g' \
-      -e 's/Bundle directory/Каталог bundle/g' \
-      -e 's/Bundle mount/Точка монтирования bundle/g' \
-      -e 's/No NAND writes were performed/Запись в NAND не выполнялась/g' \
-      -e 's/Minimal RAM runtime staged successfully/Минимальная среда успешно размещена в RAM/g' \
-      -e 's/This stage writes/Этот этап записывает/g' \
-      -e 's/The installer is written and read back first/Installer сначала записывается и проверяется чтением/g' \
-      -e 's/The device-specific environment is written and read back last/Персональная environment записывается и проверяется последней/g' \
-      -e 's/Fiber must be disconnected and power must be stable/Оптический кабель должен быть отключён, питание должно быть стабильным/g' \
-      -e 's/A complete verified backup must already be saved on the PC/Полный проверенный backup должен быть заранее сохранён на ПК/g' \
-      -e 's/This single authorization also permits/Это единое подтверждение также разрешает/g' \
-      -e 's/Telnet may disconnect/Соединение Telnet может разорваться/g' \
-      -e 's/Do not power off/Не отключайте питание/g'
+      -e 's/Embedded production image/Vstroennyy production-obraz/g' \
+      -e 's/Complete bundle/Polnyy bundle/g' \
+      -e 's/Bundle directory/Katalog bundle/g' \
+      -e 's/Bundle mount/Tochka montirovaniya bundle/g' \
+      -e 's/No NAND writes were performed/Zapis v NAND ne vypolnyalas/g' \
+      -e 's/Minimal RAM runtime staged successfully/Minimalnaya sreda uspeshno razmeschena v RAM/g' \
+      -e 's/This stage writes/Etot etap zapisyvaet/g' \
+      -e 's/The installer is written and read back first/Installer snachala zapisyvaetsya i proveryaetsya chteniem/g' \
+      -e 's/The device-specific environment is written and read back last/Personalnaya environment zapisyvaetsya i proveryaetsya posledney/g' \
+      -e 's/Fiber must be disconnected and power must be stable/Opticheskiy kabel dolzhen byt otklyuchen, pitanie dolzhno byt stabilnym/g' \
+      -e 's/A complete verified backup must already be saved on the PC/Polnyy proverennyy backup dolzhen byt zaranee sokhranen na PK/g' \
+      -e 's/This authorization permits the MF all-in-UBI migration and production sysupgrade/Eto edinoe podtverzhdenie takzhe razreshaet/g' \
+      -e 's/Telnet may disconnect/Soedinenie Telnet mozhet razorvatsya/g' \
+      -e 's/Do not power off/Ne otklyuchayte pitanie/g'
 }
 
 nokia_line() {
-    if [ "$NOKIA_LANG" = ru ]; then nokia_ru_line "$1"; else printf '%s\n' "$1"; fi
+    printf '%s\n' "$1"
 }
 
 
-say2() {
-    if [ "$NOKIA_LANG" = ru ]; then printf '%s\n' "$1"; else printf '%s\n' "$2"; fi
-}
+say2() { printf '%s
+' "$2"; }
 log2() { say2 "$1" "$2"; }
-die2() { if [ "$NOKIA_LANG" = ru ]; then printf 'ОШИБКА: %s\n' "$1" >&2; else printf 'ERROR: %s\n' "$2" >&2; fi; exit 1; }
+die2() { printf 'ERROR: %s
+' "$2" >&2; exit 1; }
 
 PATH=/usr/sbin:/usr/bin:/sbin:/bin:/opt/mtdtools
 export PATH
 umask 077
 
-# Duplicate complete stdout/stderr to the caller, persistent log files and the
-# active serial console. Set NOKIA_UART_MIRROR=0 to disable UART duplication,
-# or NOKIA_UART_DEVICE=/dev/ttyS0 to override automatic detection.
+# Duplicate stdout/stderr to the caller and persistent logs. UART duplication is
+# deliberately isolated behind a draining relay: a stock-kernel /dev/console may
+# exist and be writable according to stat(2), yet still return EIO on write. A UART
+# failure must never terminate the primary tee/FIFO or the flash worker.
 nokia_detect_uart() {
     local current dev
     [ "${NOKIA_UART_MIRROR:-1}" != 0 ] || return 1
@@ -82,7 +72,9 @@ nokia_detect_uart() {
         printf '%s\n' "$NOKIA_UART_DEVICE"
         return 0
     fi
-    for dev in /dev/console /dev/ttyS0; do
+    # Prefer the physical UART node. /dev/console is only a fallback and may
+    # reject writes on vendor kernels even when its mode bits say writable.
+    for dev in /dev/ttyS0 /dev/console; do
         [ -c "$dev" ] && [ -w "$dev" ] || continue
         printf '%s\n' "$dev"
         return 0
@@ -90,15 +82,30 @@ nokia_detect_uart() {
     return 1
 }
 
+nokia_uart_drain() {
+    local uart line uart_ok
+    uart="$1"
+    uart_ok=1
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$uart_ok" = 1 ]; then
+            if ! printf '%s\n' "$line" > "$uart" 2>/dev/null; then
+                # Keep draining forever after EIO so the primary tee never sees
+                # a broken FIFO. Serial mirroring is diagnostics only.
+                uart_ok=0
+            fi
+        fi
+    done
+}
+
 nokia_begin_output_mirror() {
-    local requested_log label extra_log log_file uart fifo tee_pid
+    local requested_log label extra_log log_file uart fifo uart_fifo tee_pid
     requested_log="$1"
     label="$2"
     extra_log="${3:-}"
     [ "${NOKIA_OUTPUT_MIRROR_ACTIVE:-0}" = 1 ] && return 0
 
     if ! command -v tee >/dev/null 2>&1 || ! command -v mkfifo >/dev/null 2>&1; then
-        nokia_line '[WARN] UART/log mirroring unavailable: tee or mkfifo is missing.' >&2
+        nokia_line '[WARN] Log mirroring unavailable: tee or mkfifo is missing.' >&2
         return 0
     fi
 
@@ -127,46 +134,55 @@ nokia_begin_output_mirror() {
         return 0
     }
 
+    uart_fifo=''
+    if [ -n "$uart" ]; then
+        uart_fifo="/tmp/nokia-uart-mirror.$$.fifo"
+        rm -f "$uart_fifo"
+        if mkfifo "$uart_fifo"; then
+            nokia_uart_drain "$uart" < "$uart_fifo" &
+        else
+            uart_fifo=''
+        fi
+    fi
+
     export NOKIA_OUTPUT_MIRROR_ACTIVE=1
-    if [ -n "$uart" ] && [ -n "$extra_log" ]; then
-        tee -a "$log_file" "$extra_log" "$uart" < "$fifo" &
-    elif [ -n "$uart" ]; then
-        tee -a "$log_file" "$uart" < "$fifo" &
+    if [ -n "$extra_log" ] && [ -n "$uart_fifo" ]; then
+        tee -a "$log_file" "$extra_log" "$uart_fifo" < "$fifo" &
     elif [ -n "$extra_log" ]; then
         tee -a "$log_file" "$extra_log" < "$fifo" &
+    elif [ -n "$uart_fifo" ]; then
+        tee -a "$log_file" "$uart_fifo" < "$fifo" &
     else
         tee -a "$log_file" < "$fifo" &
     fi
     tee_pid=$!
     if ! kill -0 "$tee_pid" 2>/dev/null; then
-        rm -f "$fifo"
+        rm -f "$fifo" "$uart_fifo"
         nokia_line '[WARN] Output mirror process did not start; continuing normally.' >&2
         return 0
     fi
 
     exec > "$fifo" 2>&1
     rm -f "$fifo"
-    printf '[LOG] %s output mirror active: log=%s' "$label" "$log_file"
-    [ -n "$extra_log" ] && printf ' secondary-log=%s' "$extra_log"
-    if [ -n "$uart" ]; then
-        printf ' uart=%s\n' "$uart"
-    else
-        printf ' uart=not-available-or-current-session\n'
-    fi
+    # Operator output intentionally stays quiet; detailed mirror destinations are
+    # implementation diagnostics and remain discoverable from the session log.
 }
 
 SCRIPT_DIR="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
+PROFILE_FAMILY='md'
+PROFILE_LABEL='Nokia XG-040G-MD'
+RELEASE_VERSION='1.0.0-rc24'
 BUNDLE_NAME='transition-bundle.bin'
 MANUAL_TRANSITION=0
-BUNDLE_SIZE=17956864
-BUNDLE_SHA='e19ff00652a7a581f418badc998d21baed78949dd82c4f54764d993dbb39f8a0'
+BUNDLE_SIZE=21626880
+BUNDLE_SHA='5e658b2c50719db5e552c0c047aea0d58044ebcbea016a3e61707b2c62d3affe'
 TRANSITION_WINDOW=8388608
-TRANSITION_TOTALSIZE=7509692
-TRANSITION_FIT_SHA='70265373577f188478629ebbaf0b65780024c8918d5feb14bcf455c8086084bb'
-TRANSITION_WINDOW_SHA='07dd85608075ada63672e07555ca6c6b9dbdd1292bf2d5941174b36f24a41795'
+TRANSITION_TOTALSIZE=7509816
+TRANSITION_FIT_SHA='ffcf7b03643c91a73e6b8321d2a987a98b8e2cb30916e9db06813850359baabe'
+TRANSITION_WINDOW_SHA='29aca66e809752e8907db96491304c472db671f52edfa58984d05b30366e7469'
 SYSUPGRADE_OFFSET=8388608
-SYSUPGRADE_SIZE=9531670
-SYSUPGRADE_SHA='95fe315cedca64b5f5db39a5e03e75eb773b7c43e970d06fc3be6d0d8e1cbdc6'
+SYSUPGRADE_SIZE=13226255
+SYSUPGRADE_SHA='c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03'
 ENV_NAME='OpenWrt.mtd2.u-boot-env.bin'
 ENV_SHA='@ENV_SHA@'
 ENV_SOURCE_SHA='@ENV_SOURCE_SHA@'
@@ -179,7 +195,7 @@ NAND_IDENTITY=unknown
 
 case "$ENV_SHA:$ENV_SOURCE_SHA" in
     *'@'*)
-        if [ "$NOKIA_LANG" = ru ]; then printf '%s\n' 'ОШИБКА: это внутренний шаблон launcher, а не готовый flash-скрипт.' 'Запустите START.cmd на ПК, выберите backup устройства и используйте созданный персональный каталог.' >&2; else printf '%s\n' 'ERROR: this is an internal launcher template, not a flash script.' 'Run START.cmd on a PC, select the device backup, and use the generated device-specific directory.' >&2; fi
+        if [ "$NOKIA_LANG" = ru ]; then printf '%s\n' 'OShIBKA: eto vnutrenniy shablon launcher, a ne gotovyy flash-skript.' 'Zapustite START.cmd na PK, vyberite backup ustroystva i ispolzuyte sozdannyy personalnyy katalog.' >&2; else printf '%s\n' 'ERROR: this is an internal launcher template, not a flash script.' 'Run START.cmd on a PC, select the device backup, and use the generated device-specific directory.' >&2; fi
         exit 64
         ;;
 esac
@@ -193,7 +209,7 @@ esac
 nokia_begin_output_mirror "$NOKIA_INITIAL_LOG" "$NOKIA_LOG_LABEL" "$NOKIA_EXTRA_LOG"
 
 log() { nokia_line "$*"; }
-die() { if [ "$NOKIA_LANG" = ru ]; then printf 'ОШИБКА: ' >&2; nokia_ru_line "$*" >&2; else printf 'ERROR: %s\n' "$*" >&2; fi; exit 1; }
+die() { if [ "$NOKIA_LANG" = ru ]; then printf 'OShIBKA: ' >&2; nokia_ru_line "$*" >&2; else printf 'ERROR: %s\n' "$*" >&2; fi; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 file_size() { wc -c < "$1" | tr -d ' '; }
 sha_file() { sha256sum "$1" | awk '{print $1}'; }
@@ -221,15 +237,33 @@ verify_stock_slots() {
     [ "$(mtd_index rootfs_slave)" = mtd5 ] || die 'rootfs_slave must be mtd5'
 
     slot_signature="$(mtd_size_hex kernel):$(mtd_size_hex rootfs):$(mtd_size_hex kernel_slave):$(mtd_size_hex rootfs_slave)"
-    case "$slot_signature" in
-        003af6da:01cc0000:00480000:02400000)
-            log2 '[OK] Разметка stock-слотов A подтверждена: компактная master-пара, полноразмерная slave-пара.' '[OK] Stock slot layout A matched: compact master pair, full-size slave pair.'
+    case "$PROFILE_FAMILY:$slot_signature" in
+        md:003af6da:01cc0000:00480000:02400000)
+            STOCK_VARIANT=MD-A
+            log2 '[OK] MD stock slot layout A matched.' '[OK] MD stock slot layout A matched.'
             ;;
-        00480000:02400000:003af6da:01cc0000)
-            log2 '[OK] Разметка stock-слотов B подтверждена: полноразмерная master-пара, компактная slave-пара.' '[OK] Stock slot layout B matched: full-size master pair, compact slave pair.'
+        md:00480000:02400000:003af6da:01cc0000)
+            STOCK_VARIANT=MD-A-MIRROR
+            log2 '[OK] MD mirrored stock slot layout matched.' '[OK] MD mirrored stock slot layout matched.'
+            ;;
+        mf:003b6cc0:01d00000:00480000:02400000)
+            STOCK_VARIANT=MF-A
+            log2 '[OK] MF-A stock slot layout matched.' '[OK] MF-A stock slot layout matched.'
+            ;;
+        mf:00480000:02400000:003b6cc0:01d00000)
+            STOCK_VARIANT=MF-A-MIRROR
+            die 'MF-A-MIRROR is recognized but permanent write is enabled only for hardware-confirmed MF-A'
+            ;;
+        mf:003b6d40:01d10000:00480000:02400000)
+            STOCK_VARIANT=MF-B
+            die 'MF-B is recognized but permanent write is enabled only for hardware-confirmed MF-A'
+            ;;
+        mf:00480000:02400000:003b6d40:01d10000)
+            STOCK_VARIANT=MF-B-MIRROR
+            die 'MF-B-MIRROR is recognized but permanent write is enabled only for hardware-confirmed MF-A'
             ;;
         *)
-            die "unsupported stock slot signature: $slot_signature"
+            die "unsupported $PROFILE_FAMILY stock slot signature: $slot_signature"
             ;;
     esac
 }
@@ -250,7 +284,7 @@ verify_stock_layout() {
     require_partition nsb_master   mtd14 02880000
     require_partition nsb_slave    mtd15 02880000
     require_partition all_flash    mtd16 0eba0000
-    log2 '[OK] Точная поддерживаемая stock-разметка MTD подтверждена.' '[OK] Exact supported stock MTD layout matched.'
+    log2 '[OK] Tochnaya podderzhivaemaya stock-razmetka MTD podtverzhdena.' '[OK] Exact supported stock MTD layout matched.'
 }
 
 check_nand() {
@@ -272,18 +306,30 @@ check_nand() {
 
     if grep -qi -E 'fudan|fm25g02b' "$evidence"; then
         NAND_IDENTITY=fudan
-        die 'FudanMicro FM25G02B NAND explicitly detected; this NAND is blocked for the bundled U-Boot'
+        die 'FudanMicro FM25G02B NAND explicitly detected; this release blocks it'
     fi
-    if grep -qi -E 'skyhigh|ml02g300whi00' "$evidence"; then
-        NAND_IDENTITY=skyhigh
-        log2 '[OK] Явно обнаружена SkyHigh ML02G300WHI00.' '[OK] SkyHigh ML02G300WHI00 explicitly detected.'
+    if [ "$PROFILE_FAMILY" = mf ]; then
+        if grep -qi -E 'skyhigh|ml02g300whi00' "$evidence"; then
+            NAND_IDENTITY=skyhigh
+            die 'SkyHigh ML02G300WHI00 NAND detected; the MF profile is not validated for that NAND'
+        fi
+        if grep -qi -E 'gigadevice|gd5f2gm7|gd5f2g' "$evidence"; then
+            NAND_IDENTITY=gigadevice
+            log2 '[OK] Obnaruzhena GigaDevice SPI-NAND semeystva MF.' '[OK] GigaDevice MF-family SPI-NAND detected.'
+            return 0
+        fi
+        NAND_IDENTITY=unknown
+        log2 '[PREDUPREZhDENIE] Stock kernel ne pokazyvaet model SPI-NAND; prodolzhayu tolko posle tochnykh MF-A/MTD/env proverok.' '[WARN] Stock kernel does not expose the SPI-NAND model; continuing only after exact MF-A/MTD/env checks.'
         return 0
     fi
 
+    if grep -qi -E 'skyhigh|ml02g300whi00' "$evidence"; then
+        NAND_IDENTITY=skyhigh
+        log2 '[OK] Yavno obnaruzhena SkyHigh ML02G300WHI00.' '[OK] SkyHigh ML02G300WHI00 explicitly detected.'
+        return 0
+    fi
     NAND_IDENTITY=unknown
-    log2 '[ПРЕДУПРЕЖДЕНИЕ] Stock kernel не показывает строку модели SPI-NAND.' '[WARN] Stock kernel does not expose the SPI-NAND model string.'
-    log2 '[ПРЕДУПРЕЖДЕНИЕ] Fudan не обнаружена, но SkyHigh нельзя доказать через dmesg/sysfs.' '[WARN] Fudan was not detected, but SkyHigh cannot be proven from dmesg/sysfs.'
-    log2 '[ПРЕДУПРЕЖДЕНИЕ] Точные проверки платы, MTD и геометрии NAND остаются обязательными.' '[WARN] Exact board, MTD and NAND geometry checks remain mandatory.'
+    log2 '[PREDUPREZhDENIE] Stock kernel ne pokazyvaet model SPI-NAND; tochnye MD/MTD/env proverki ostayutsya obyazatelnymi.' '[WARN] Stock kernel does not expose the SPI-NAND model; exact MD/MTD/env checks remain mandatory.'
 }
 
 first4_hex() {
@@ -311,14 +357,14 @@ verify_personal_env() {
     current_env_sha="$(current_env_partition_sha)"
     [ -n "$current_env_sha" ] || die 'cannot hash current mtd0 environment erase block'
     if [ "$current_env_sha" != "$ENV_SOURCE_SHA" ]; then
-        log2 "Текущий SHA256 mtd0+0x60000: $current_env_sha" "Current mtd0+0x60000 SHA256: $current_env_sha"
-        log2 "Ожидаемый исходный SHA256:    $ENV_SOURCE_SHA" "Expected source SHA256:       $ENV_SOURCE_SHA"
+        log2 "Tekuschiy SHA256 mtd0+0x60000: $current_env_sha" "Current mtd0+0x60000 SHA256: $current_env_sha"
+        log2 "Ozhidaemyy iskhodnyy SHA256:    $ENV_SOURCE_SHA" "Expected source SHA256:       $ENV_SOURCE_SHA"
         die 'this personalized package does not match the current device environment or the environment was already modified'
     fi
 
-    log2 "[OK] Персональная environment: размер=$env_size SHA256=$ENV_SHA" "[OK] Personalized environment size=$env_size SHA256=$ENV_SHA"
-    log2 "[OK] Environment привязана к текущему исходному mtd0 SHA256=$ENV_SOURCE_SHA" "[OK] Environment is bound to current mtd0 source SHA256=$ENV_SOURCE_SHA"
-    log2 "[OK] Новый bootcmd: $ENV_BOOTCMD" "[OK] New bootcmd: $ENV_BOOTCMD"
+    log2 "[OK] Personalnaya environment: razmer=$env_size SHA256=$ENV_SHA" "[OK] Personalized environment size=$env_size SHA256=$ENV_SHA"
+    log2 "[OK] Environment privyazana k tekuschemu iskhodnomu mtd0 SHA256=$ENV_SOURCE_SHA" "[OK] Environment is bound to current mtd0 source SHA256=$ENV_SOURCE_SHA"
+    log2 "[OK] Novyy bootcmd: $ENV_BOOTCMD" "[OK] New bootcmd: $ENV_BOOTCMD"
 }
 
 read_stock_bootcmd() {
@@ -376,7 +422,7 @@ verify_active_slot_alias() {
     [ -n "$aggregate_hash" ] || die "cannot hash $aggregate_label prefix"
     [ -n "$kernel_hash" ] || die "cannot hash $kernel_label prefix"
     [ "$aggregate_hash" = "$kernel_hash" ] || die "$aggregate_label does not match active $kernel_label prefix"
-    log2 "[OK] Активный $kernel_label физически соответствует $aggregate_label (SHA256 первых 1 MiB=$aggregate_hash)." "[OK] Active $kernel_label is physically backed by $aggregate_label (1 MiB SHA256=$aggregate_hash)."
+    log2 "[OK] Aktivnyy $kernel_label fizicheski sootvetstvuet $aggregate_label (SHA256 pervykh 1 MiB=$aggregate_hash)." "[OK] Active $kernel_label is physically backed by $aggregate_label (1 MiB SHA256=$aggregate_hash)."
 }
 
 verify_stock_boot_path() {
@@ -394,7 +440,7 @@ verify_stock_boot_path() {
             active_root=mtd5
             ;;
         *)
-            log2 "Обнаружена /proc/cmdline: $(cat /proc/cmdline)" "Detected /proc/cmdline: $(cat /proc/cmdline)"
+            log2 "Obnaruzhena /proc/cmdline: $(cat /proc/cmdline)" "Detected /proc/cmdline: $(cat /proc/cmdline)"
             die "unsupported or inconsistent stock boot path: root=${root_spec:-missing}, bootflag=${bootflag:-missing}"
             ;;
     esac
@@ -413,22 +459,22 @@ verify_stock_boot_path() {
             flashread0xc00000x8000000x92000000\;bootm0x92000000)
                 ;;
             *)
-                log2 "Обнаружен bootcmd: $bootcmd" "Detected bootcmd: $bootcmd"
+                log2 "Obnaruzhen bootcmd: $bootcmd" "Detected bootcmd: $bootcmd"
                 die 'bootcmd is outside the supported stock/raw allowlist'
                 ;;
         esac
-        log2 "[OK] Совместимый stock bootcmd: $bootcmd" "[OK] Compatible stock bootcmd: $bootcmd"
+        log2 "[OK] Sovmestimyy stock bootcmd: $bootcmd" "[OK] Compatible stock bootcmd: $bootcmd"
     else
-        log2 '[ПРЕДУПРЕЖДЕНИЕ] Эта stock-прошивка не экспортирует bootcmd; вероятно, используется встроенное значение U-Boot.' '[WARN] bootcmd is not exported by this stock firmware (likely a compiled U-Boot default).'
-        log2 '[ПРЕДУПРЕЖДЕНИЕ] Физическая проверка активного слота пройдена; перед записью персональной environment всё равно требуется точный SHA256 исходной env.' '[WARN] Active-slot physical alias passed; exact source env SHA256 must still match before personalized env is written.'
+        log2 '[PREDUPREZhDENIE] Eta stock-proshivka ne eksportiruet bootcmd; veroyatno, ispolzuetsya vstroennoe znachenie U-Boot.' '[WARN] bootcmd is not exported by this stock firmware (likely a compiled U-Boot default).'
+        log2 '[PREDUPREZhDENIE] Fizicheskaya proverka aktivnogo slota proydena; pered zapisyu personalnoy environment vse ravno trebuetsya tochnyy SHA256 iskhodnoy env.' '[WARN] Active-slot physical alias passed; exact source env SHA256 must still match before personalized env is written.'
     fi
 
     if [ "$active_slot" = slave ]; then
-        log2 '[OK] Активный stock-слот: nsb_slave, bootflag=1, root=mtd5.' '[OK] Active stock slot: nsb_slave, bootflag=1, root=mtd5.'
-        log2 '[OK] Целевой transition-раздел nsb_master/mtd14 сейчас неактивен.' '[OK] Transition target nsb_master/mtd14 is currently inactive.'
+        log2 '[OK] Aktivnyy stock-slot: nsb_slave, bootflag=1, root=mtd5.' '[OK] Active stock slot: nsb_slave, bootflag=1, root=mtd5.'
+        log2 '[OK] Tselevoy transition-razdel nsb_master/mtd14 seychas neaktiven.' '[OK] Transition target nsb_master/mtd14 is currently inactive.'
     else
-        log2 '[OK] Активный stock-слот: nsb_master, bootflag=0, root=mtd3.' '[OK] Active stock slot: nsb_master, bootflag=0, root=mtd3.'
-        log2 '[ПРЕДУПРЕЖДЕНИЕ] Целевой transition-раздел nsb_master/mtd14 активен; разрушительные операции изолированы в проверенном RAM worker.' '[WARN] Transition target nsb_master/mtd14 is active; destructive work remains isolated in the tested RAM worker.'
+        log2 '[OK] Aktivnyy stock-slot: nsb_master, bootflag=0, root=mtd3.' '[OK] Active stock slot: nsb_master, bootflag=0, root=mtd3.'
+        log2 '[PREDUPREZhDENIE] Tselevoy transition-razdel nsb_master/mtd14 aktiven; razrushitelnye operatsii izolirovany v proverennom RAM worker.' '[WARN] Transition target nsb_master/mtd14 is active; destructive work remains isolated in the tested RAM worker.'
     fi
 }
 
@@ -459,11 +505,11 @@ verify_bundle() {
     verify_personal_env
     log2 "[OK] Transition FIT: totalsize=$TRANSITION_TOTALSIZE SHA256=$TRANSITION_FIT_SHA" "[OK] Transition FIT totalsize=$TRANSITION_TOTALSIZE SHA256=$TRANSITION_FIT_SHA"
     if [ "$MANUAL_TRANSITION" = 1 ]; then
-        log2 '[OK] Ручной transition не содержит встроенного sysupgrade.' '[OK] Manual transition contains no embedded sysupgrade.'
+        log2 '[OK] Ruchnoy transition ne soderzhit vstroennogo sysupgrade.' '[OK] Manual transition contains no embedded sysupgrade.'
     else
-        log2 "[OK] Встроенный production-образ: offset=0x800000 size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA" "[OK] Embedded production image offset=0x800000 size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA"
+        log2 "[OK] Vstroennyy production-obraz: offset=0x800000 size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA" "[OK] Embedded production image offset=0x800000 size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA"
     fi
-    log2 "[OK] Полный bundle: size=$BUNDLE_SIZE SHA256=$BUNDLE_SHA" "[OK] Complete bundle size=$BUNDLE_SIZE SHA256=$BUNDLE_SHA"
+    log2 "[OK] Polnyy bundle: size=$BUNDLE_SIZE SHA256=$BUNDLE_SHA" "[OK] Complete bundle size=$BUNDLE_SIZE SHA256=$BUNDLE_SHA"
 }
 
 check_bundle_rw() {
@@ -479,7 +525,7 @@ check_nand_geometry() {
     [ "$(cat /sys/class/mtd/mtd0/erasesize)" = 131072 ] || die 'unexpected NAND erase size'
     [ "$(cat /sys/class/mtd/mtd0/writesize)" = 2048 ] || die 'unexpected NAND write size'
     [ "$(cat /sys/class/mtd/mtd16/size)" = 247070720 ] || die 'unexpected all_flash exposed size'
-    log2 '[OK] Геометрия NAND: erase=131072, write=2048, доступный stock-размер=247070720.' '[OK] NAND geometry: erase=131072, write=2048, stock exposed size=247070720.'
+    log2 '[OK] Geometriya NAND: erase=131072, write=2048, dostupnyy stock-razmer=247070720.' '[OK] NAND geometry: erase=131072, write=2048, stock exposed size=247070720.'
 }
 
 check_bundle_location() {
@@ -487,15 +533,15 @@ check_bundle_location() {
         index(path, $2) == 1 && length($2) > best { best=length($2); line=$0 }
         END { print line }
     ' /proc/mounts 2>/dev/null)"
-    log2 "[OK] Каталог bundle: $SCRIPT_DIR" "[OK] Bundle directory: $SCRIPT_DIR"
+    log2 "[OK] Katalog bundle: $SCRIPT_DIR" "[OK] Bundle directory: $SCRIPT_DIR"
     if [ -n "$mount_info" ]; then
-        log2 "[OK] Точка монтирования bundle: $mount_info" "[OK] Bundle mount: $mount_info"
+        log2 "[OK] Tochka montirovaniya bundle: $mount_info" "[OK] Bundle mount: $mount_info"
     else
-        log2 '[ПРЕДУПРЕЖДЕНИЕ] Не удалось определить точку монтирования bundle через /proc/mounts.' '[WARN] Could not resolve the bundle mount from /proc/mounts.'
+        log2 '[PREDUPREZhDENIE] Ne udalos opredelit tochku montirovaniya bundle cherez /proc/mounts.' '[WARN] Could not resolve the bundle mount from /proc/mounts.'
     fi
     if dmesg 2>/dev/null | grep -qi 'Volume was not properly unmounted'; then
-        log2 '[ПРЕДУПРЕЖДЕНИЕ] USB-файловая система отмечена как некорректно отключённая; образы всё равно защищены проверками SHA256.' '[WARN] USB filesystem was reported as not cleanly unmounted. SHA256 checks still protect the images.'
-        log2 '[ПРЕДУПРЕЖДЕНИЕ] До необратимой UBI-миграции выполните проверку файловой системы на ПК.' '[WARN] Run filesystem repair on a PC before the irreversible UBI migration.'
+        log2 '[PREDUPREZhDENIE] USB-faylovaya sistema otmechena kak nekorrektno otklyuchennaya; obrazy vse ravno zaschischeny proverkami SHA256.' '[WARN] USB filesystem was reported as not cleanly unmounted. SHA256 checks still protect the images.'
+        log2 '[PREDUPREZhDENIE] Do neobratimoy UBI-migratsii vypolnite proverku faylovoy sistemy na PK.' '[WARN] Run filesystem repair on a PC before the irreversible UBI migration.'
     fi
 }
 
@@ -514,9 +560,9 @@ preflight() {
     verify_bundle
     check_bundle_rw
     check_bundle_location
-    log2 '[OK] PREFLIGHT PASSED. Запись в NAND не выполнялась.' '[OK] PREFLIGHT PASSED. No NAND writes were performed.'
-    log2 '[OK] В режиме --flash сначала записывается и проверяется mtd14; персональная environment mtd0 пишется последней.' '[OK] During --flash, installer mtd14 is written and verified first; personalized mtd0 environment is written last.'
-    log2 '[OK] bootflag, bosa, ri и data на этом этапе не изменяются.' '[OK] bootflag, bosa, ri and data remain untouched at this launcher stage.'
+    log2 '[OK] PREFLIGHT PASSED. Zapis v NAND ne vypolnyalas.' '[OK] PREFLIGHT PASSED. No NAND writes were performed.'
+    log2 '[OK] V rezhime --flash snachala zapisyvaetsya i proveryaetsya mtd14; personalnaya environment mtd0 pishetsya posledney.' '[OK] During --flash, installer mtd14 is written and verified first; personalized mtd0 environment is written last.'
+    log2 '[OK] bootflag, bosa, ri i data na etom etape ne izmenyayutsya.' '[OK] bootflag, bosa, ri and data remain untouched at this launcher stage.'
 }
 
 STOCK_LIBPATH='/lib:/lib64:/usr/lib:/usr/lib64:/opt/mtdtools/lib'
@@ -639,8 +685,8 @@ prepare_stage_plan() {
     [ "$STAGE_FREE_BYTES" -ge "$STAGE_REQUIRED_BYTES" ] || \
         die "insufficient tmpfs space before staging: need $STAGE_REQUIRED_BYTES bytes, free $STAGE_FREE_BYTES bytes"
 
-    log2 "[OK] План размещения в RAM: требуется <=$STAGE_REQUIRED_BYTES байт, свободно=$STAGE_FREE_BYTES байт." "[OK] RAM staging plan: need <=$STAGE_REQUIRED_BYTES bytes, free=$STAGE_FREE_BYTES bytes."
-    log2 '[OK] Installer, персональная environment, BusyBox, mtd_debug и точные shared libraries будут размещены в tmpfs.' '[OK] Installer, personalized environment, BusyBox, mtd_debug and exact shared libraries will be staged in tmpfs.'
+    log2 "[OK] Plan razmescheniya v RAM: trebuetsya <=$STAGE_REQUIRED_BYTES bayt, svobodno=$STAGE_FREE_BYTES bayt." "[OK] RAM staging plan: need <=$STAGE_REQUIRED_BYTES bytes, free=$STAGE_FREE_BYTES bytes."
+    log2 '[OK] Installer, personalnaya environment, BusyBox, mtd_debug i tochnye shared libraries budut razmescheny v tmpfs.' '[OK] Installer, personalized environment, BusyBox, mtd_debug and exact shared libraries will be staged in tmpfs.'
 }
 
 copy_stage_file() {
@@ -710,15 +756,25 @@ stage_runtime() {
     ram_echo="$(run_staged_busybox echo RAM_OK 2>/dev/null || true)"
     [ "$ram_echo" = RAM_OK ] || die 'RAM BusyBox self-test failed'
 
-    # BusyBox 1.16 does not support `busybox --list`, and its grep applet does
-    # not support -x. With no applet argument, BusyBox prints the compiled-in
-    # applet list; normalize commas/tabs and compare tokens using awk.
-    applets="$(run_staged_busybox 2>&1 || true)"
-    [ -n "$applets" ] || die 'RAM BusyBox applet list is empty'
-    for applet in ash awk cat dd echo reboot rm sha256sum sleep sync tr wc; do
-        printf '%s\n' "$applets" | tr ',' ' ' | \
-            awk -v wanted="$applet" '{ for (i=1; i<=NF; i++) if ($i == wanted) found=1 } END { exit !found }' || \
-            die "RAM BusyBox applet missing: $applet"
+    # Prove the staged BusyBox can launch a shell before any NAND operation.
+    # Applet availability is probed directly below; do not infer it from the
+    # vendor-specific text printed by BusyBox with no arguments.
+    ram_sh="$(run_staged_busybox sh -c 'printf RAM_SH_OK' 2>/dev/null || true)"
+    [ "$ram_sh" = RAM_SH_OK ] || die 'RAM BusyBox sh self-test failed'
+
+    # Ne parsim tekstovyy spisok applet iz vyvoda `busybox` bez argumentov:
+    # chast vendorskikh sborok (v t.ch. stock BusyBox na MF) ne pechataet sektsiyu
+    # "Currently defined functions", iz-za chego proverka valilas na PERVOM zhe
+    # applet nezavisimo ot ego nalichiya. Probuem kazhdyy applet napryamuyu cherez
+    # staged BusyBox. "applet not found" - tochnoe soobschenie BusyBox ob otsutstvii;
+    # `--help` perekhvatyvaetsya optsionnym parserom DO vypolneniya applet (proba
+    # reboot ne perezagruzhaet), a `</dev/null` ne daet zavisnut, esli applet
+    # pri --help vse zhe chitaet stdin.
+    for applet in dd reboot sha256sum sleep sync tr wc; do
+        probe="$(run_staged_busybox "$applet" --help </dev/null 2>&1 || true)"
+        case "$probe" in
+            *"applet not found"*) die "RAM BusyBox applet missing: $applet" ;;
+        esac
     done
     run_staged_mtd read /dev/mtd0ro 0 4 "$STAGE_RAM/mtd-test.bin" >/dev/null 2>&1 || die 'RAM mtd_debug self-test failed'
     [ "$(file_size "$STAGE_RAM/mtd-test.bin")" -eq 4 ] || die 'RAM mtd_debug test read has wrong size'
@@ -733,7 +789,7 @@ stage_runtime() {
     [ "$(sha_file "$STAGE_RAM/personal-env.bin")" = "$ENV_SHA" ] || die 'RAM personalized environment SHA256 mismatch after staging'
     free_kb="$(df -Pk /tmp | awk 'END { print $4 }')"
     [ "$free_kb" -ge 1024 ] || die "tmpfs reserve after staging is too small: $free_kb KiB"
-    log2 "[OK] Минимальная RAM-среда успешно подготовлена; резерв tmpfs=${free_kb} KiB." "[OK] Minimal RAM runtime staged successfully; tmpfs reserve=${free_kb} KiB."
+    log2 "[OK] Minimalnaya RAM-sreda uspeshno podgotovlena; rezerv tmpfs=${free_kb} KiB." "[OK] Minimal RAM runtime staged successfully; tmpfs reserve=${free_kb} KiB."
 }
 
 stage_ram_and_flash() {
@@ -744,15 +800,15 @@ stage_ram_and_flash() {
     stage_runtime
     log ''
     if [ "$MANUAL_TRANSITION" = 1 ]; then
-        log2 '[READY] Проверки завершены. Далее: запись ручного transition и environment; sysupgrade будет выбран на ПК после reboot.' '[READY] Checks passed. Next: write the manual transition and environment; sysupgrade will be selected on the PC after reboot.'
+        log2 '[READY] Proverki zaversheny. Dalee: zapis ruchnogo transition i environment; sysupgrade budet vybran na PK posle reboot.' '[READY] Checks passed. Next: write the manual transition and environment; sysupgrade will be selected on the PC after reboot.'
     else
-        log2 '[READY] Проверки завершены. Далее: запись transition и environment с readback, затем автоматическая установка OpenWrt.' '[READY] Checks passed. Next: write and read back the transition image and environment, then install OpenWrt automatically.'
+        log2 '[READY] Proverki zaversheny. Dalee: zapis transition i environment s readback, zatem avtomaticheskaya ustanovka OpenWrt.' '[READY] Checks passed. Next: write and read back the transition image and environment, then install OpenWrt automatically.'
     fi
-    log2 '[ВАЖНО] Отключите оптику, не прерывайте питание; полный backup должен быть сохранён на ПК.' '[IMPORTANT] Disconnect fiber, do not interrupt power, and keep the complete backup on the PC.'
-    [ "$NAND_IDENTITY" != unknown ] || log2 '[ПРЕДУПРЕЖДЕНИЕ] NAND не распознана; совместимость подтверждает оператор.' '[WARNING] NAND was not identified; compatibility remains the operator responsibility.'
+    log2 '[VAZhNO] Otklyuchite optiku, ne preryvayte pitanie; polnyy backup dolzhen byt sokhranen na PK.' '[IMPORTANT] Disconnect fiber, do not interrupt power, and keep the complete backup on the PC.'
+    [ "$NAND_IDENTITY" != unknown ] || log2 '[PREDUPREZhDENIE] NAND ne raspoznana; sovmestimost podtverzhdaet operator.' '[WARNING] NAND was not identified; compatibility remains the operator responsibility.'
 
     if [ "${NOKIA_FORMAT_AND_FLASH_AUTH:-}" != 'CONFIRM FORMAT AND FLASH' ]; then
-        if [ "$NOKIA_LANG" = ru ]; then printf 'Введите точно CONFIRM FORMAT AND FLASH: '; else printf 'Type exactly CONFIRM FORMAT AND FLASH: '; fi
+        if [ "$NOKIA_LANG" = ru ]; then printf 'Vvedite tochno CONFIRM FORMAT AND FLASH: '; else printf 'Type exactly CONFIRM FORMAT AND FLASH: '; fi
         IFS= read -r answer
         [ "$answer" = 'CONFIRM FORMAT AND FLASH' ] || die 'cancelled'
     fi
@@ -774,10 +830,10 @@ stage_ram_and_flash() {
         # inherit the outer Telnet/SSH mirror, whose terminal can disappear.
         unset NOKIA_OUTPUT_MIRROR_ACTIVE
         if [ "$STAGE_BB_MODE" = dynamic ]; then
-            exec "$STAGE_LOADER_RAM" --library-path "$STAGE_LIBPATH" "$STAGE_RAM/busybox" ash "$STAGE_RAM/flash.sh" \
+            exec "$STAGE_LOADER_RAM" --library-path "$STAGE_LIBPATH" "$STAGE_RAM/busybox" sh "$STAGE_RAM/flash.sh" \
                 --ram-flash "$STAGE_RAM" "$STAGE_LOADER_RAM" "$STAGE_LIBPATH" "$STAGE_BB_MODE" "$STAGE_MTD_MODE" "$installer_path" "$env_path" "$ramlog" "$usblog"
         else
-            exec "$STAGE_RAM/busybox" ash "$STAGE_RAM/flash.sh" \
+            exec "$STAGE_RAM/busybox" sh "$STAGE_RAM/flash.sh" \
                 --ram-flash "$STAGE_RAM" "$STAGE_LOADER_RAM" "$STAGE_LIBPATH" "$STAGE_BB_MODE" "$STAGE_MTD_MODE" "$installer_path" "$env_path" "$ramlog" "$usblog"
         fi
     ) > /dev/null 2>&1 < /dev/null &
@@ -786,9 +842,9 @@ stage_ram_and_flash() {
     kill -0 "$worker_pid" 2>/dev/null || { cat "$ramlog" >&2 || true; die 'RAM worker failed to start'; }
     # Stable protocol marker for the PC master. Never localize or reword it.
     printf '__NOKIA_RAM_WORKER_STARTED__%s__\n' "$worker_pid"
-    log2 "[OK] Автономная прошивка запущена." "[OK] Autonomous flashing started."
+    log2 "[OK] Avtonomnaya proshivka zapuschena." "[OK] Autonomous flashing started."
     log2 "[LOG] $usblog" "[LOG] $usblog"
-    log2 '[WAIT] Telnet может отключиться. Не выключайте питание.' '[WAIT] Telnet may disconnect. Do not power off.'
+    log2 '[WAIT] Telnet mozhet otklyuchitsya. Ne vyklyuchayte pitanie.' '[WAIT] Telnet may disconnect. Do not power off.'
 }
 
 ram_flash() {
@@ -821,7 +877,7 @@ ram_flash() {
     rlog() { nokia_line "$*"; }
     rlog2() { if [ "$NOKIA_LANG" = ru ]; then printf '%s\n' "$1"; else printf '%s\n' "$2"; fi; }
     save_log() { rbb sleep 1; rbb sync; }
-    rfail() { rlog "CRITICAL FAILURE: $*"; rlog2 'Используйте UART и проверенный backup. Не перезагружайте устройство вслепую.' 'Use UART and the verified backup. Do not power-cycle blindly.'; save_log; exit 1; }
+    rfail() { rlog "CRITICAL FAILURE: $*"; rlog2 'Ispolzuyte UART i proverennyy backup. Ne perezagruzhayte ustroystvo vslepuyu.' 'Use UART and the verified backup. Do not power-cycle blindly.'; save_log; exit 1; }
     rpulse() {
         ru="$1"; en="$2"; shift 2
         "$@" & pulse_pid=$!
@@ -835,7 +891,7 @@ ram_flash() {
         done
         wait "$pulse_pid"
     }
-    rsha() { rbb sha256sum "$1" | rbb awk '{print $1}'; }
+    rsha() { _rsha_out="$(rbb sha256sum "$1")" || return $?; printf '%s\n' "${_rsha_out%% *}"; }
 
     [ -r "$installer" ] || rfail 'RAM installer is no longer readable'
     [ -r "$env_image" ] || rfail 'RAM personalized environment is no longer readable'
@@ -850,32 +906,36 @@ ram_flash() {
     [ "$env_sha" = "$ENV_SHA" ] || rfail 'RAM personalized environment SHA256 changed before erase'
     blocks=$((installer_size / ERASE_SIZE))
 
-    current_env_sha="$(rbb dd if=/dev/mtd0ro bs=$ENV_SIZE skip=3 count=1 2>/dev/null | rbb sha256sum | rbb awk '{print $1}')"
+    current_env_sha="$(rbb dd if=/dev/mtd0ro bs=$ENV_SIZE skip=3 count=1 2>/dev/null | rbb sha256sum)"
+    current_env_sha="${current_env_sha%% *}"
     [ "$current_env_sha" = "$ENV_SOURCE_SHA" ] || rfail "current mtd0 environment no longer matches source backup: $current_env_sha"
 
     rbb sync
-    rlog2 "[1/7] Стираю $installer_size байт в mtd14 со смещения 0." "[1/7] Erasing $installer_size bytes at mtd14 offset 0."
-    rpulse 'стирание mtd14' 'erasing mtd14' rmtd erase /dev/mtd14 0 "$installer_size" || rfail 'mtd14 erase failed'
-    rlog2 '[2/7] Записываю переходный пакет из tmpfs.' '[2/7] Writing the transition package from tmpfs.'
-    rpulse 'запись mtd14' 'writing mtd14' rmtd write /dev/mtd14 0 "$installer_size" "$installer" || rfail 'mtd14 write failed'
-    rlog2 '[3/7] Читаю mtd14 обратно и проверяю SHA256 полного bundle.' '[3/7] Reading back mtd14 and checking complete bundle SHA256.'
-    rlog2 '[WAIT] Вычисляется SHA256 mtd14...' '[WAIT] Calculating mtd14 SHA256...'
-    readback_sha="$(rbb dd if=/dev/mtd14ro bs=$ERASE_SIZE count=$blocks 2>/dev/null | rbb sha256sum | rbb awk '{print $1}')"
+    rlog2 "[1/7] Stirayu $installer_size bayt v mtd14 so smescheniya 0." "[1/7] Erasing $installer_size bytes at mtd14 offset 0."
+    rpulse 'stiranie mtd14' 'erasing mtd14' rmtd erase /dev/mtd14 0 "$installer_size" || rfail 'mtd14 erase failed'
+    rlog2 '[2/7] Zapisyvayu perekhodnyy paket iz tmpfs.' '[2/7] Writing the transition package from tmpfs.'
+    rpulse 'zapis mtd14' 'writing mtd14' rmtd write /dev/mtd14 0 "$installer_size" "$installer" || rfail 'mtd14 write failed'
+    rlog2 '[3/7] Chitayu mtd14 obratno i proveryayu SHA256 polnogo bundle.' '[3/7] Reading back mtd14 and checking complete bundle SHA256.'
+    rlog2 '[WAIT] Vychislyaetsya SHA256 mtd14...' '[WAIT] Calculating mtd14 SHA256...'
+    readback_sha="$(rbb dd if=/dev/mtd14ro bs=$ERASE_SIZE count=$blocks 2>/dev/null | rbb sha256sum)"
+    readback_sha="${readback_sha%% *}"
     [ "$readback_sha" = "$installer_sha" ] || rfail "mtd14 readback SHA256 mismatch: $readback_sha"
     save_log
 
-    rlog2 '[4/7] Повторно проверяю исходную environment непосредственно перед стиранием mtd0.' '[4/7] Rechecking untouched source environment immediately before mtd0 erase.'
-    current_env_sha="$(rbb dd if=/dev/mtd0ro bs=$ENV_SIZE skip=3 count=1 2>/dev/null | rbb sha256sum | rbb awk '{print $1}')"
+    rlog2 '[4/7] Povtorno proveryayu iskhodnuyu environment neposredstvenno pered stiraniem mtd0.' '[4/7] Rechecking untouched source environment immediately before mtd0 erase.'
+    current_env_sha="$(rbb dd if=/dev/mtd0ro bs=$ENV_SIZE skip=3 count=1 2>/dev/null | rbb sha256sum)"
+    current_env_sha="${current_env_sha%% *}"
     [ "$current_env_sha" = "$ENV_SOURCE_SHA" ] || rfail "mtd0 source environment changed before erase: $current_env_sha"
-    rlog2 '[5/7] Стираю последний блок 128 KiB в mtd0 со смещения 0x60000.' '[5/7] Erasing final 128 KiB block at mtd0 offset 0x60000.'
-    rpulse 'стирание environment mtd0' 'erasing mtd0 environment' rmtd erase /dev/mtd0 0x60000 0x20000 || rfail 'mtd0 environment erase failed'
-    rlog2 '[6/7] Записываю персональный erase-block environment.' '[6/7] Writing personalized environment erase-block image.'
-    rpulse 'запись environment mtd0' 'writing mtd0 environment' rmtd write /dev/mtd0 0x60000 0x20000 "$env_image" || rfail 'mtd0 personalized environment write failed'
-    rlog2 '[7/7] Читаю environment mtd0 обратно и проверяю SHA256.' '[7/7] Reading back mtd0 environment and checking SHA256.'
-    env_readback_sha="$(rbb dd if=/dev/mtd0ro bs=$ENV_SIZE skip=3 count=1 2>/dev/null | rbb sha256sum | rbb awk '{print $1}')"
+    rlog2 '[5/7] Stirayu posledniy blok 128 KiB v mtd0 so smescheniya 0x60000.' '[5/7] Erasing final 128 KiB block at mtd0 offset 0x60000.'
+    rpulse 'stiranie environment mtd0' 'erasing mtd0 environment' rmtd erase /dev/mtd0 0x60000 0x20000 || rfail 'mtd0 environment erase failed'
+    rlog2 '[6/7] Zapisyvayu personalnyy erase-block environment.' '[6/7] Writing personalized environment erase-block image.'
+    rpulse 'zapis environment mtd0' 'writing mtd0 environment' rmtd write /dev/mtd0 0x60000 0x20000 "$env_image" || rfail 'mtd0 personalized environment write failed'
+    rlog2 '[7/7] Chitayu environment mtd0 obratno i proveryayu SHA256.' '[7/7] Reading back mtd0 environment and checking SHA256.'
+    env_readback_sha="$(rbb dd if=/dev/mtd0ro bs=$ENV_SIZE skip=3 count=1 2>/dev/null | rbb sha256sum)"
+    env_readback_sha="${env_readback_sha%% *}"
     [ "$env_readback_sha" = "$env_sha" ] || rfail "mtd0 environment readback SHA256 mismatch: $env_readback_sha"
 
-    rlog2 '[OK] Bundle и персональная environment совпали при чтении. Синхронизация и reboot в raw FIT.' '[OK] Bundle and personalized environment readbacks match. Syncing and rebooting into raw FIT.'
+    rlog2 '[OK] Bundle i personalnaya environment sovpali pri chtenii. Sinkhronizatsiya i reboot v raw FIT.' '[OK] Bundle and personalized environment readbacks match. Syncing and rebooting into raw FIT.'
     save_log
     rbb sync
     rbb sleep 3
@@ -886,13 +946,13 @@ ram_flash() {
 usage() {
     if [ "$NOKIA_LANG" = ru ]; then
         cat <<EOF_USAGE
-Использование:
+Ispolzovanie:
   ash $0 --preflight
   ash $0 --flash
 
-Персональный каталог должен содержать:
+Personalnyy katalog dolzhen soderzhat:
   $BUNDLE_NAME
-  $ENV_NAME (привязан к устройству; не публиковать)
+  $ENV_NAME (privyazan k ustroystvu; ne publikovat)
 EOF_USAGE
     else
         cat <<EOF_USAGE

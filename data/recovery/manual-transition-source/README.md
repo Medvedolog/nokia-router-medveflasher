@@ -1,25 +1,35 @@
-# Manual transition FIT build
+# Manual transition build source status
 
-`build_manual_transition.py` derives `data/transition-manual-bundle.bin`
-from the hardware-tested standard `data/transition-bundle.bin`.
+The historical standalone `build_manual_transition.py` is **retired and
+fail-closed starting with 1.0.0-rc17fix4**.
 
-Changes are limited to the embedded initramfs:
+It previously derived only the MD manual transition from a generic transition
+bundle.  That recipe predates the RC17fix4 family-specific transition network
+fixes and can regenerate obsolete board/NVMEM semantics, so it must not be used
+to reproduce release images.
 
-- removes the autonomous `S99nokia-autoflash` service and worker;
-- preserves the normal OpenWrt preinit path so sysinfo, netdev labels, board data and LAN configuration are generated;
-- adds `S99nokia-manual-ready`, which publishes readiness only after `br-lan` has `192.168.1.1/24` and SSH/22 is listening;
-- enables Dropbear `-B` only in the manual transition so the intentionally blank `root` account is usable by the non-interactive PC wizard;
-- accepts a PC-provided expected SHA256 for a selected sysupgrade;
-- retains mandatory board, NAND, geometry, payload, readback and `sysupgrade -T`
-  checks;
-- keeps BL2-last ordering and writes the manual FIT as the fallback UBI `fit`
-  volume.
+RC17fix5 has two distinct manual transition artifacts:
 
-The output is exactly 8 MiB and contains no production sysupgrade image.
-The builder uses only the Python standard library and emits deterministic output.
+- `data/transition-manual-bundle.bin` for MD / AN7581;
+- `data/mf-transition-manual-bundle.bin` for MF / AN7583.
 
-Run from any directory:
+Each is derived from its corresponding release-pinned auto transition and is
+verified by release metadata and `verify-kit`.  Manual mode removes autonomous
+stage 2, keeps the fail-closed destructive installer, enables the local blank
+root Dropbear control channel, and publishes readiness only when the expected
+family board, `br-lan` at `192.168.1.1/24`, and SSH/22 are all present.
+
+The exact shipped on-device scripts are exported under
+`data/recovery/transition-control-source/` for source review.  Treat the bundled
+FIT bytes plus `data/MANIFEST.json`, `data/SHA256SUMS`, and the constants in
+`data/master.py` as the authoritative release inputs.
+
+Run integrity verification from the kit root:
 
 ```sh
-python3 data/recovery/manual-transition-source/build_manual_transition.py
+python3 data/master.py verify-kit
 ```
+
+Calling the retired Python builder exits with code 2 by design.
+
+RC17fix5 additionally applies the shared transition-network safety patcher: LAN1 / 2.5G is disabled and excluded; use LAN2/LAN3/LAN4 only.

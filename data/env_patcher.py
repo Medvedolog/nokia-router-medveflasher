@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a device-specific Nokia XG-040G-MD U-Boot env erase-block image.
+"""Create a device-specific Nokia XG-040G-MD/MF stock U-Boot env erase-block image.
 
 Input may be the raw/gzipped 0x80000-byte mtd0 backup or an already extracted
 0x20000-byte final erase block. The tool validates the stock U-Boot environment,
@@ -185,7 +185,7 @@ def create_image(source: bytes, bootcmd: str) -> tuple[bytes, dict[str, object]]
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     select_language()
-    parser = argparse.ArgumentParser(description=tr("Создание персонального erase-block образа U-Boot environment Nokia XG-040G-MD", __doc__ or "Create a device-specific Nokia XG-040G-MD U-Boot environment image"))
+    parser = argparse.ArgumentParser(description=tr("Создание персонального erase-block образа U-Boot environment Nokia XG-040G-MD/MF", __doc__ or "Create a device-specific Nokia XG-040G-MD/MF U-Boot environment image"))
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--report-json", type=Path)

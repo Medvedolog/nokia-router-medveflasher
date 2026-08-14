@@ -9,6 +9,7 @@ import getpass
 import hashlib
 import importlib.util
 import json
+import lzma
 import os
 import re
 import shlex
@@ -24,17 +25,25 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc7"
-BUILD_TAG = "medveflasher-1.0.0-rc7"
+APP_VERSION = "1.0.0-rc24"
+BUILD_TAG = "medveflasher-1.0.0-rc24"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
+VENDOR = DATA / "vendor"
+if str(VENDOR) not in sys.path:
+    sys.path.insert(0, str(VENDOR))
+from rich.console import Console as RichConsole
+from rich.text import Text as RichText
 WORK = KIT / "work"
 BUNDLE = DATA / "transition-bundle.bin"
 MANUAL_BUNDLE = DATA / "transition-manual-bundle.bin"
+MF_TRANSITION_BUNDLE = DATA / "mf-transition-bundle.bin"
+MF_MANUAL_TRANSITION_BUNDLE = DATA / "mf-transition-manual-bundle.bin"
 LAUNCHER_TEMPLATE = DATA / "stock-launcher.sh.in"
 BACKUP_AGENT = DATA / "backup-agent.sh"
 STOCK_WEB = DATA / "stock_web.py"
@@ -44,13 +53,107 @@ RECOVERY_FIP = RECOVERY_DIR / "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-u
 RECOVERY_INITRAMFS = RECOVERY_DIR / "nokia-xg040gmd-stock-recovery-initramfs.itb"
 UBOOT_DEFAULT_RECOVERY_FILENAME = "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-initramfs-recovery.itb"
 RECOVERY_PRELOADER_SHA = "6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808"
-RECOVERY_FIP_SHA = "9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b"
-RECOVERY_INITRAMFS_SHA = "5fe4a4508da8107c7a10a670d120a01eb9f2aec677514bc650f9dc809013e088"
-STOCK_ALL_FLASH_SIZE = 0x0EBA0000
+RECOVERY_FIP_SHA = "2ebcbf3981e3e56b6389521fc2caa3320cf259c08f173b660b29366b9290bcc1"
+RECOVERY_FIP_SIZE = 308154
+RECOVERY_FIP_SOURCE_SHA = "9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b"
+RECOVERY_INITRAMFS_SHA = "c40c87354566eb44fc933c1ce6c0cd9c81227b525243c67c9932b80a656d01c6"
+RECOVERY_INITRAMFS_SIZE = 11_285_480
+RECOVERY_CLIENT_DIR = RECOVERY_DIR / "recovery-clients-bin"
+RECOVERY_TFTP_CLIENT = RECOVERY_CLIENT_DIR / "nokia-tftp"
+RECOVERY_SCP_CLIENT = RECOVERY_CLIENT_DIR / "nokia-scp"
+RECOVERY_TFTP_CLIENT_SHA = "2b6bbc51975e22f420565c42363821eb362936136b03f70a2a0cedee99c1641a"
+RECOVERY_SCP_CLIENT_SHA = "232a4ba7f8ae62922815bb12503fd7d09c3b4f40929d130475e467f0a597ac89"
+MD_RECOVERY_SOURCE_INITRAMFS_SHA = "a8e24301925c4a7b120594b61aa679bac835b26ef70736fd28a69c9029ffda3b"
+MD_RECOVERY_SOURCE_INITRAMFS_SIZE = 11_141_120
+MF_RECOVERY_DIR = RECOVERY_DIR / "mf"
+MF_RECOVERY_METADATA = MF_RECOVERY_DIR / "OPENWRT_SNAPSHOT.json"
+MF_RECOVERY_BASE_URL = "https://downloads.openwrt.org/snapshots/targets/airoha/an7583/"
+MF_RECOVERY_PRELOADER_NAME = "openwrt-airoha-an7583-airoha_an7583-evb-preloader.bin"
+MF_RECOVERY_FIP_NAME = "openwrt-airoha-an7583-airoha_an7583-evb-bl31-uboot.fip"
+MF_RECOVERY_PRELOADER = MF_RECOVERY_DIR / MF_RECOVERY_PRELOADER_NAME
+MF_RECOVERY_FIP = MF_RECOVERY_DIR / MF_RECOVERY_FIP_NAME
+MF_RECOVERY_PRELOADER_SHA = "c2ac1c183b18bc34632c958dfe0bd1dfdfb607f090e39c41126956641893362f"
+MF_RECOVERY_FIP_SHA = "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2"
+MF_RECOVERY_FIP_SOURCE_SHA = "b2f5f93f52afbaf539fe362267b13a91fb0a3a22c4ea770f2fc984dece176c12"
+MF_RECOVERY_PRELOADER_SIZE = 118322
+MF_RECOVERY_FIP_SIZE = 339010
+MF_STOCK_RECOVERY_INITRAMFS = MF_RECOVERY_DIR / "nokia-xg040gmf-stock-recovery-initramfs.itb"
+MF_STOCK_RECOVERY_INITRAMFS_SHA = "da1f3cb376ad599a2d8ffea3d03abeb02bdec1114aad06d6ad049885914b045f"
+MF_STOCK_RECOVERY_INITRAMFS_SIZE = 7_479_380
+MF_UBI_PRELOADER_SIZE = 118333
+MF_UBI_PRELOADER_SHA = "778d10a65276085b70bec005248fc87ec208b43b0239502f15ade20fe528301e"
+MF_UBI_FIP_SIZE = 319568
+MF_UBI_FIP_SHA = "99b6c20a7cb46a56692eaeb9f086f70fc7e987a641396653e6a8fb5c03e07aa7"
+MF_UBI_SYSUPGRADE_SIZE = 9191705
+MF_UBI_SYSUPGRADE_SHA = "db881b8053cdfbdf49dd6c2336dee3ddfa489966456a3e75556c5a0f6cc7663b"
+MF_UBI_BOARD = "nokia,xg-040g-mf-ubi"
+RECOVERY_SAFE_MARKER = "rc18"  # SAFE BL33 bytes are retained from RC18
+RECOVERY_SAFE_BOOTCMD = "echo RECOVERY_SAFE_RC18"
+
+@dataclass(frozen=True)
+class InstallProfile:
+    family: str
+    model: str
+    soc: str
+    expected_board: str
+    auto_bundle: Path
+    manual_bundle: Path
+    runtime_bundle_name: str
+    runtime_env_name: str
+    require_hw_validated_backup: bool = False
+    allowed_stock_variant: str | None = None
+    force_tftp: bool = False
+
+
+MD_INSTALL_PROFILE = InstallProfile(
+    family="md",
+    model="Nokia XG-040G-MD",
+    soc="AN7581",
+    expected_board="nokia,xg-040g-md-ubi",
+    auto_bundle=BUNDLE,
+    manual_bundle=MANUAL_BUNDLE,
+    runtime_bundle_name="transition-bundle.bin",
+    runtime_env_name="OpenWrt.mtd2.u-boot-env.bin",
+)
+MF_INSTALL_PROFILE = InstallProfile(
+    family="mf",
+    model="Nokia XG-040G-MF",
+    soc="AN7583",
+    expected_board=MF_UBI_BOARD,
+    auto_bundle=MF_TRANSITION_BUNDLE,
+    manual_bundle=MF_MANUAL_TRANSITION_BUNDLE,
+    runtime_bundle_name="mf-transition-bundle.bin",
+    runtime_env_name="OpenWrt.mf.u-boot-env.bin",
+    require_hw_validated_backup=True,
+    allowed_stock_variant="MF-A",
+    force_tftp=True,
+)
+INSTALL_PROFILES = {"md": MD_INSTALL_PROFILE, "mf": MF_INSTALL_PROFILE}
+BOOTROM_BACKUP_TFTP_PORT = 1069
+DIAGNOSTICS_DIR = DATA / "diagnostics"
+STOCK_AUDIT_SCRIPT = DIAGNOSTICS_DIR / "mf-stock-audit.sh"
+STOCK_AUDIT_PARSER = DIAGNOSTICS_DIR / "mf_audit_parse.py"
+FIRMWARE_CAPABILITIES = DATA / "FIRMWARE_CAPABILITIES.json"
+# Canonical stock image/restore span captured by stock mtd16.  This is not
+# the capacity of the physical SPI-NAND chip.
+STOCK_RESTORE_SPAN = 0x0EBA0000
+# Known AN7581/AN7583 physical SPI-NAND capacity used only as a hardware
+# reference. Stock audit derives physical capacity from NAND-driver evidence,
+# never from mtd0 (stock mtd0 is the 512-KiB bootloader partition).
+PHYSICAL_NAND_SIZE = 0x10000000
 STOCK_BL2_SIZE = 0x00020000
-STOCK_IBU_SIZE = STOCK_ALL_FLASH_SIZE - STOCK_BL2_SIZE
+STOCK_IBU_SIZE = STOCK_RESTORE_SPAN - STOCK_BL2_SIZE
+UBOOT_ERASE_SIZE = 0x00020000
 UBOOT_RESTORE_CHUNK_SIZE = 0x00800000
 UBOOT_LOAD_ADDRESS = 0x90000000
+# Stock config/data/oopsfs/log_truncated are UBI-backed and can tolerate
+# physical bad eraseblocks. Raw bootloader/kernel/rootfs/flags cannot be
+# safely reconstructed by the OpenWrt RAM U-Boot without proven stock BMT
+# semantics, so UART restore fails closed if a bad block is found there.
+STOCK_BADBLOCK_SAFE_PHYS_START = 0x052C0000
+STOCK_BADBLOCK_SAFE_PHYS_END = 0x0EB60000
+STOCK_BADBLOCK_SAFE_UBI_START = STOCK_BADBLOCK_SAFE_PHYS_START - STOCK_BL2_SIZE
+STOCK_BADBLOCK_SAFE_UBI_END = STOCK_BADBLOCK_SAFE_PHYS_END - STOCK_BL2_SIZE
 OPENWRT_PRELOADER_SIZE = 113447
 OPENWRT_PRELOADER_SHA = "6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808"
 STOCK_RAW_SLICES = {
@@ -75,19 +178,47 @@ STOCK_STABLE_RAW_SLICES = frozenset((0, 1, 6, 7, 14, 15))
 # Their own transfer SHA256, gzip integrity and exact size are still mandatory;
 # mtd16 is the canonical restore image.
 STOCK_LIVE_RAW_SLICES = frozenset(STOCK_RAW_SLICES) - STOCK_STABLE_RAW_SLICES
-EXPECTED_BUNDLE_SHA = "e19ff00652a7a581f418badc998d21baed78949dd82c4f54764d993dbb39f8a0"
-EXPECTED_BUNDLE_SIZE = 17_956_864
-EXPECTED_MANUAL_BUNDLE_SHA = "3b7b89508da309a45d02002a972a3a554231b12d5839bb1f812d655c29ef347f"
+EXPECTED_BUNDLE_SHA = "bb421ef151a5ea118f10780042461f594b84925cdc92381dcc4de19f8ac35fb1"
+EXPECTED_BUNDLE_SIZE = 21_626_880
+EXPECTED_MANUAL_BUNDLE_SHA = "394461e5cb65eddef7615967603c08b14811c07168293bdc93a630f823aaf85f"
 EXPECTED_MANUAL_BUNDLE_SIZE = 8_388_608
-EXPECTED_PROD_SHA = "95fe315cedca64b5f5db39a5e03e75eb773b7c43e970d06fc3be6d0d8e1cbdc6"
+EXPECTED_MF_TRANSITION_BUNDLE_SHA = "9ec21e8f7454011e91f251a0784c0c57b815c39e4defe74cc031eb270e6a9aa3"
+EXPECTED_MF_TRANSITION_BUNDLE_SIZE = 17_694_720
+EXPECTED_MF_TRANSITION_FIT_SIZE = 7_702_044
+EXPECTED_MF_TRANSITION_FIT_SHA = "d32997998f0e74bf6063982b4a20da656048ea9c3443df61fd297cb512cdf341"
+EXPECTED_MF_TRANSITION_WINDOW_SHA = "5ef8e2c1d433c5e3d695517de40f0dd093a100487e9f0cee1a07f23ff4b17215"
+EXPECTED_MF_MANUAL_TRANSITION_BUNDLE_SHA = "120488c7b2c26cc3a036a12de1572e207d506e54ea98a4fd94de96f08301a733"
+EXPECTED_MF_MANUAL_TRANSITION_BUNDLE_SIZE = 8_388_608
+EXPECTED_MF_MANUAL_TRANSITION_FIT_SIZE = 7_702_276
+EXPECTED_MF_MANUAL_TRANSITION_FIT_SHA = "f8a8d9a1ce867029ab8b74e497910678530fc1cf54ac0211b174089e8459240c"
+EXPECTED_PROD_SIZE = 13_226_255
+EXPECTED_PROD_SHA = "c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03"
 FIXED_EXPECTED = {
     0: 524288, 1: 262144, 6: 262144, 7: 262144, 8: 262144,
     9: 262144, 10: 10485760, 11: 135135232, 12: 4194304,
-    13: 10485760, 14: 42467328, 15: 42467328, 16: 247070720,
+    13: 10485760, 14: 42467328, 15: 42467328, 16: STOCK_RESTORE_SPAN,
 }
 SLOT_LAYOUTS = (
     {2: 0x003AF6DA, 3: 0x01CC0000, 4: 0x00480000, 5: 0x02400000},
     {2: 0x00480000, 3: 0x02400000, 4: 0x003AF6DA, 5: 0x01CC0000},
+)
+MF_SLOT_LAYOUTS = (
+    # MF-A: hardware-confirmed stock layout.
+    {2: 0x003B6CC0, 3: 0x01D00000, 4: 0x00480000, 5: 0x02400000},
+    {2: 0x00480000, 3: 0x02400000, 4: 0x003B6CC0, 5: 0x01D00000},
+    # MF-B: second real stock layout observed in the field.
+    {2: 0x003B6D40, 3: 0x01D10000, 4: 0x00480000, 5: 0x02400000},
+    {2: 0x00480000, 3: 0x02400000, 4: 0x003B6D40, 5: 0x01D10000},
+)
+MF_SLOT_VARIANTS = (
+    ("MF-A", MF_SLOT_LAYOUTS[0]),
+    ("MF-A-MIRROR", MF_SLOT_LAYOUTS[1]),
+    ("MF-B", MF_SLOT_LAYOUTS[2]),
+    ("MF-B-MIRROR", MF_SLOT_LAYOUTS[3]),
+)
+MD_SLOT_VARIANTS = (
+    ("MD-A", SLOT_LAYOUTS[0]),
+    ("MD-A-MIRROR", SLOT_LAYOUTS[1]),
 )
 EXPECTED_NUMBERS = tuple(range(17))
 IAC, DO, DONT, WILL, WONT = 255, 253, 254, 251, 252
@@ -100,6 +231,11 @@ _COLOR_ENABLED = False
 _LOG_SECRET_VALUES: set[str] = set()
 _LOG_SECRET_LOCK = threading.Lock()
 _LOG_SECRET_REPLACEMENT = "[REDACTED]"
+_STARTUP_DEVICE_PROFILE: dict[str, object] = {
+    "family": "unknown", "model": "", "chipset": "", "host": "192.168.1.1",
+    "verified": False, "source": "not-probed",
+}
+_STARTUP_WEB_AUTH: dict[str, str] = {}
 
 
 def _register_log_secret(value: object | None) -> None:
@@ -153,15 +289,18 @@ class _ConsoleTee:
 
 
 def _write_session_only(text: str) -> None:
-    """Append technical diagnostics to PC logs without cluttering the console."""
-    if not text:
+    """Append technical diagnostics only to the timestamped session log.
+
+    LATEST.log intentionally mirrors the operator-facing console and stays clean.
+    """
+    if not text or not _SESSION_FILES:
         return
     clean = _redact_log_text(ANSI_RE.sub("", text))
     if not clean.endswith("\n"):
         clean += "\n"
-    for fh in _SESSION_FILES:
-        fh.write(clean)
-        fh.flush()
+    fh = _SESSION_FILES[0]
+    fh.write(clean)
+    fh.flush()
 
 
 def _clean_telnet_protocol(text: str) -> str:
@@ -259,6 +398,21 @@ def colorize_text(text: str) -> str:
     return "".join(lines)
 
 
+def print_app_banner() -> None:
+    """Rich-coloured startup banner; ANSI is stripped from LATEST/session logs by _ConsoleTee."""
+    console = RichConsole(file=sys.stdout, force_terminal=_COLOR_ENABLED, color_system="truecolor" if _COLOR_ENABLED else None, highlight=False)
+    bear = RichText()
+    bear.append("       ʕ•ᴥ•ʔ\n", style="bold rgb(150,75,0)")
+    bear.append("      /|   |\\\n", style="rgb(150,75,0)")
+    bear.append("     /_|___|_\\", style="rgb(150,75,0)")
+    console.print(bear)
+    title = RichText("Nokia Router MedveFlasher", style="bold cyan")
+    title.append("  •  ", style="dim")
+    title.append(APP_VERSION, style="bold green")
+    console.print(title)
+    console.print(RichText(BUILD_TAG, style="green"))
+
+
 def stage_header(number: str, ru: str, en: str) -> None:
     title = en if ensure_language() == "en" else ru
     print()
@@ -311,9 +465,9 @@ _RU_EN = [
     ("не найден доступный UID 0 аккаунт", "no usable UID 0 account found"),
     ("Найден UID 0 аккаунт", "UID 0 account found"),
     ("не дал UID 0", "did not grant UID 0"),
-    ("в stock firmware отсутствует nc; используйте USB через Samba/FTP", "stock firmware has no usable nc; use USB through Samba/FTP"),
-    ("в stock firmware отсутствует BusyBox tftp; используйте USB через Samba/FTP", "stock firmware has no BusyBox tftp; use USB through Samba/FTP"),
-    ("stock tftp не поддерживает PUT/GET; используйте USB через Samba/FTP", "stock tftp does not support PUT/GET; use USB through Samba/FTP"),
+    ("в stock firmware отсутствует nc; используйте USB-накопитель на Nokia через Samba/FTP", "stock firmware has no usable nc; use the Nokia-attached USB drive through Samba/FTP"),
+    ("в stock firmware отсутствует BusyBox tftp; используйте USB-накопитель на Nokia через Samba/FTP", "stock firmware has no BusyBox tftp; use the Nokia-attached USB drive through Samba/FTP"),
+    ("stock tftp не поддерживает PUT/GET; используйте USB-накопитель на Nokia через Samba/FTP", "stock tftp does not support PUT/GET; use the Nokia-attached USB drive through Samba/FTP"),
     ("короткий TFTP request", "truncated TFTP request"),
     ("повреждённый TFTP request", "malformed TFTP request"),
     ("распакованный размер", "decompressed size"),
@@ -464,8 +618,8 @@ _RU_EN = [
     ("Пароль Telnet/с наклейки", "Telnet/password from the label"),
     ("Пароль UID 0 [тот же]", "UID 0 password [same]"),
     ("Транспорт backup и установочного пакета", "Backup and installation package transport"),
-    ("USB через Samba/смонтированную папку, флешку вынимать не нужно", "USB through Samba/a mounted directory; do not remove the drive"),
-    ("USB через FTP stock Nokia", "USB through stock Nokia FTP"),
+    ("USB-накопитель подключён к Nokia: Samba/сетевая папка (флешку не вынимать)", "USB drive connected to the Nokia: Samba/network share (do not remove the drive)"),
+    ("USB-накопитель подключён к Nokia: FTP штатной прошивки", "USB drive connected to the Nokia: stock-firmware FTP"),
     ("прямой TFTP между Nokia и ПК, USB не требуется", "direct TFTP between Nokia and the PC; USB is not required"),
     ("Выберите", "Select"),
     ("Путь к корню USB", "Path to the USB root"),
@@ -533,10 +687,6 @@ _RU_EN = [
     ('или исправьте serverip перед повтором', 'or correct serverip before retrying'),
     ('U-Boot ipaddr=', 'U-Boot ipaddr='),
     ('а ожидаемый IP Nokia=', 'while the expected Nokia IP is='),
-    ('Если UART уже показывает Press x или повторяющийся C, Nokia НЕ выключайте: мастер продолжит с текущего состояния.', 'If UART already shows Press x or repeated C, do NOT power off Nokia: the wizard will continue from the current state.'),
-    ('Закройте PuTTY/Tera Term/другой serial-терминал, чтобы освободить COM-порт.', 'Close PuTTY/Tera Term/any other serial terminal to release the COM port.'),
-    ('Только если приглашения BootROM ещё нет: выключите Nokia, удерживайте Reset, включите питание и дождитесь Press x.', 'Only when the BootROM prompt is not already present: power off Nokia, hold Reset, power on, and wait for Press x.'),
-    ('Нажмите Enter, когда COM-порт свободен и BootROM готов или Nokia подготовлена к включению', 'Press Enter when the COM port is free and BootROM is ready, or Nokia is prepared for power-on'),
     ('One-shot recovery вооружён. Штатный bootcmd будет восстановлен до начала TFTP.', 'One-shot recovery is armed. The normal bootcmd will be restored before TFTP starts.'),
     ('TFTP/69 запущен и ожидает запрос от U-Boot.', 'TFTP/69 is running and waiting for a request from U-Boot.'),
     ('не загрузила recovery FIT', 'did not load the recovery FIT'),
@@ -649,6 +799,14 @@ def tr(ru: str, en: str) -> str:
     return en if ensure_language() == "en" else ru
 
 
+def transition_lan_policy_notice() -> None:
+    """Operator-visible safety policy for every transition/recovery network path."""
+    print(tr(
+        "[NETWORK POLICY] LAN1 / 2.5G исключён из transition/recovery из-за нестабильности. Подключайте ПК только к LAN2, LAN3 или LAN4.",
+        "[NETWORK POLICY] LAN1 / 2.5G is excluded from transition/recovery because it is unstable. Connect the PC only to LAN2, LAN3, or LAN4.",
+    ))
+
+
 def _replace_catalog(text: str, catalog: list[tuple[str, str]]) -> str:
     for source, target in sorted(catalog, key=lambda item: len(item[0]), reverse=True):
         text = text.replace(source, target)
@@ -662,25 +820,65 @@ def localize_text(value: object) -> object:
     return _replace_catalog(value, _RU_EN if lang == "en" else _EN_RU)
 
 
+def _timestamp_text(text: str) -> str:
+    """Prefix every non-empty operator line with an absolute local timestamp.
+
+    The timestamp is added after localization/colorization, so protocol markers and
+    machine data embedded in the message remain unchanged. Blank separator lines stay
+    blank to keep stage output readable.
+    """
+    if not text:
+        return text
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    lines = text.split("\n")
+    return "\n".join(f"[{stamp}] {line}" if line else "" for line in lines)
+
+
 def _localized_print(*args, **kwargs):
     values = []
     for arg in args:
         value = localize_text(arg)
         values.append(colorize_text(value) if isinstance(value, str) else value)
+
+    # Timestamp only operator console/stderr output. Prints intentionally directed
+    # to another file retain their exact original format.
+    target = kwargs.get("file")
+    if target is None or target is sys.stdout or target is sys.stderr:
+        sep = kwargs.pop("sep", " ")
+        end = kwargs.pop("end", "\n")
+        sep = " " if sep is None else sep
+        end = "\n" if end is None else end
+        rendered = sep.join(str(value) for value in values)
+        return _RAW_PRINT(_timestamp_text(rendered), end=end, **kwargs)
     return _RAW_PRINT(*values, **kwargs)
 
 
+def _log_prompt_newline() -> None:
+    """Terminate an input prompt in PC logs without adding a blank console line."""
+    for fh in _SESSION_FILES:
+        try:
+            fh.write("\n")
+            fh.flush()
+        except Exception:
+            pass
+
+
 def _localized_input(prompt: str = "") -> str:
-    return _RAW_INPUT(colorize_text(str(localize_text(prompt))))
+    value = _RAW_INPUT(_timestamp_text(colorize_text(str(localize_text(prompt)))))
+    _log_prompt_newline()
+    return value
 
 
 def _localized_getpass(prompt: str = "Password: ", stream=None) -> str:
-    localized = colorize_text(str(localize_text(prompt)))
+    localized = _timestamp_text(colorize_text(str(localize_text(prompt))))
     if os.environ.get("NOKIA_HIDE_PASSWORDS", "").strip().lower() in ("1", "yes", "true"):
-        return _RAW_GETPASS(localized, stream=stream)
-    # Passwords are visible while typed by request. Terminal echo is not
-    # generated by Python and therefore is not copied into PC session logs.
-    return _RAW_INPUT(localized)
+        value = _RAW_GETPASS(localized, stream=stream)
+    else:
+        # Passwords are visible while typed by request. Terminal echo is not
+        # generated by Python and therefore is not copied into PC session logs.
+        value = _RAW_INPUT(localized)
+    _log_prompt_newline()
+    return value
 
 
 print = _localized_print
@@ -694,7 +892,90 @@ class Error(RuntimeError):
 
 
 class TransportError(Error):
-    """A payload transport failed before readback validation."""
+    """A restore transport failed before any NAND write command was issued."""
+
+
+class WriteStateUnknownError(Error):
+    """The NAND write command was issued but completion/readback is unproven."""
+
+
+# RC24 interactive navigation state. A WRITE_STATE_UNKNOWN failure must never
+# turn a friendly menu return into permission to repeat a destructive action.
+# The latch keeps the process alive for diagnostics/backup/UART recovery while
+# blocking normal install/no-UART write paths until a full UART recovery succeeds.
+_INTERACTIVE_DESTRUCTIVE_LATCH: dict[str, object] = {"blocked": False, "reason": ""}
+_WIZARD_RECOVERABLE_ERRORS = (Error, OSError, EOFError, ftplib.Error, subprocess.SubprocessError)
+
+
+def _set_interactive_destructive_latch(exc: BaseException) -> None:
+    _INTERACTIVE_DESTRUCTIVE_LATCH["blocked"] = True
+    _INTERACTIVE_DESTRUCTIVE_LATCH["reason"] = str(exc).replace("\n", " ")[-1200:]
+    print(tr(
+        "[SAFETY-LATCH] Состояние NAND после write не доказано. Обычная установка, no-UART restore и продолжение destructive stage заблокированы в этом запуске. Доступны read-only диагностика/backup и полный BootROM/UART recovery.",
+        "[SAFETY-LATCH] NAND state after a write is unproven. Normal installation, no-UART restore, and destructive-stage continuation are blocked for this process. Read-only diagnostics/backup and full BootROM/UART recovery remain available.",
+    ))
+
+
+def _clear_interactive_destructive_latch() -> None:
+    if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+        print(tr(
+            "[SAFETY-LATCH] Полный BootROM/UART recovery завершён; блокировка destructive menu снята.",
+            "[SAFETY-LATCH] Full BootROM/UART recovery completed; the destructive-menu latch is cleared.",
+        ))
+    _INTERACTIVE_DESTRUCTIVE_LATCH["blocked"] = False
+    _INTERACTIVE_DESTRUCTIVE_LATCH["reason"] = ""
+
+
+def _interactive_navigation_prompt(section_ru: str, section_en: str, *, failed: bool) -> str:
+    """Return section/main/exit after an interactive action without ending Python."""
+    print()
+    if failed:
+        print(tr(
+            "[NAV] Задание завершилось ошибкой. Скрипт остаётся запущенным.",
+            "[NAV] The task ended with an error. The script remains running.",
+        ))
+    else:
+        print(tr(
+            "[NAV] Задание завершено. Скрипт остаётся запущенным.",
+            "[NAV] The task is complete. The script remains running.",
+        ))
+    print(tr(f"1 — вернуться: {section_ru}", f"1 — back: {section_en}"))
+    print(tr("2 — в главное меню", "2 — main menu"))
+    print(tr("3 — выход", "3 — exit"))
+    while True:
+        choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip().lower() or "1"
+        if choice in {"1", "b", "back", "назад"}:
+            return "section"
+        if choice in {"2", "m", "main", "menu", "главное"}:
+            return "main"
+        if choice in {"3", "q", "quit", "exit", "выход"}:
+            return "exit"
+        print(tr("Неверный выбор. Скрипт не закрывается; выберите 1, 2 или 3.", "Invalid selection. The script remains open; select 1, 2, or 3."))
+
+
+def _run_interactive_action(action, *, label_ru: str, label_en: str, section_ru: str, section_en: str) -> tuple[str, bool]:
+    """Run one wizard action and convert ordinary failures into menu navigation.
+
+    KeyboardInterrupt intentionally remains process-level: interrupting a NAND
+    operation cannot safely be reinterpreted as a normal menu cancellation.
+    Direct CLI subcommands also do not use this helper and keep their exit codes.
+    """
+    failed = False
+    try:
+        action()
+        print(tr(f"[DONE] {label_ru}", f"[DONE] {label_en}"))
+    except WriteStateUnknownError as exc:
+        failed = True
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        _set_interactive_destructive_latch(exc)
+    except _WIZARD_RECOVERABLE_ERRORS as exc:
+        failed = True
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        print(tr(
+            "[SAFE] Ошибка сама по себе не разрешает повторять destructive action или отключать питание. Все существующие state/content gates остаются обязательными.",
+            "[SAFE] An error by itself does not authorize repeating a destructive action or removing power. All existing state/content gates remain mandatory.",
+        ))
+    return _interactive_navigation_prompt(section_ru, section_en, failed=failed), not failed
 
 
 def sha_file(path: Path) -> str:
@@ -703,6 +984,133 @@ def sha_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _verify_exact_artifact(path: Path, expected_size: int, expected_sha: str, label: str) -> None:
+    if not path.is_file():
+        raise Error(tr(f"отсутствует {label}: {path}", f"missing {label}: {path}"))
+    size = path.stat().st_size
+    if size != expected_size:
+        raise Error(tr(
+            f"{label}: размер {size}, ожидается {expected_size}",
+            f"{label}: size {size}, expected {expected_size}",
+        ))
+    actual = sha_file(path)
+    if actual != expected_sha:
+        raise Error(tr(
+            f"{label}: SHA256 {actual}, ожидается {expected_sha}",
+            f"{label}: SHA256 {actual}, expected {expected_sha}",
+        ))
+
+
+def _mf_artifact_spec() -> tuple[tuple[str, int, str, str], ...]:
+    return (
+        (MF_RECOVERY_PRELOADER_NAME, MF_RECOVERY_PRELOADER_SIZE, MF_RECOVERY_PRELOADER_SHA, "AN7583 preloader"),
+        (MF_RECOVERY_FIP_NAME, MF_RECOVERY_FIP_SIZE, MF_RECOVERY_FIP_SHA, "AN7583 RC18 RECOVERY_SAFE BL31+U-Boot FIP"),
+    )
+
+
+def _load_mf_snapshot_metadata() -> dict:
+    try:
+        meta = json.loads(MF_RECOVERY_METADATA.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise Error(tr(
+            f"не удалось прочитать {MF_RECOVERY_METADATA.relative_to(KIT)}: {exc}",
+            f"failed to read {MF_RECOVERY_METADATA.relative_to(KIT)}: {exc}",
+        )) from exc
+    if meta.get("target") != "airoha/an7583" or meta.get("source") != MF_RECOVERY_BASE_URL:
+        raise Error(tr(
+            "metadata MF recovery указывает неожиданный target/source",
+            "MF recovery metadata points to an unexpected target/source",
+        ))
+    artifacts = meta.get("artifacts", {})
+    expected = {
+        "preloader": (MF_RECOVERY_PRELOADER_NAME, MF_RECOVERY_PRELOADER_SIZE, MF_RECOVERY_PRELOADER_SHA),
+        "fip": (MF_RECOVERY_FIP_NAME, MF_RECOVERY_FIP_SIZE, MF_RECOVERY_FIP_SHA),
+    }
+    for key, (name, size, digest) in expected.items():
+        entry = artifacts.get(key, {})
+        if entry.get("file") != name or int(entry.get("size", -1)) != size or entry.get("sha256") != digest:
+            raise Error(tr(
+                f"metadata MF recovery не совпадает с кодом для {key}",
+                f"MF recovery metadata does not match the code for {key}",
+            ))
+    return meta
+
+
+def _bundled_pinned_mf_recovery_artifact(name: str, expected_size: int, expected_sha: str, label: str) -> Path:
+    """Resolve one release-pinned MF RAM stage from the full rollup only.
+
+    The BootROM/XMODEM recovery path is hardware-confirmed, but critical stage
+    bytes are versioned independently.  The full rollup therefore carries the
+    exact release-pinned stages and verifies local size/SHA256 before COM/XMODEM;
+    missing or changed bytes fail closed and are never fetched at runtime.
+    """
+    bundled = MF_RECOVERY_DIR / name
+    print(tr(
+        f"[CHECK] {label}: проверяю bundled stage и SHA256...",
+        f"[CHECK] {label}: verifying bundled stage and SHA256...",
+    ))
+    try:
+        _verify_exact_artifact(bundled, expected_size, expected_sha, label)
+    except Error as exc:
+        raise Error(tr(
+            f"{label}: полный MedveFlasher rollup неполон или повреждён; "
+            "аварийный recovery не скачивает boot stages из сети. "
+            f"Нужен bundled файл {name} с закреплённым SHA256. Причина: {exc}",
+            f"{label}: the full MedveFlasher rollup is incomplete or corrupt; "
+            "emergency recovery never downloads boot stages from the network. "
+            f"The bundled file {name} with the pinned SHA256 is required. Cause: {exc}",
+        )) from exc
+    print(tr(f"[OK] {label}: bundled SHA256 подтверждён.", f"[OK] {label}: bundled SHA256 verified."))
+    return bundled
+
+
+def recovery_profile_for_family(family: str) -> dict[str, object]:
+    if family == "md":
+        return {
+            "family": "md",
+            "model": "Nokia XG-040G-MD",
+            "soc": "AN7581",
+            "preloader": RECOVERY_PRELOADER,
+            "fip": RECOVERY_FIP,
+            "initramfs": RECOVERY_INITRAMFS,
+            "preloader_sha": RECOVERY_PRELOADER_SHA,
+            "fip_sha": RECOVERY_FIP_SHA,
+            "initramfs_sha": RECOVERY_INITRAMFS_SHA,
+            "backup_initramfs": RECOVERY_INITRAMFS,
+            "backup_initramfs_sha": RECOVERY_INITRAMFS_SHA,
+            "allow_linux_fallback": False,
+        }
+    if family != "mf":
+        raise Error(tr(
+            "backup не распознан как известный stock-профиль MD или MF; XMODEM recovery запрещён",
+            "backup was not recognized as a known MD or MF stock profile; XMODEM recovery is blocked",
+        ))
+    _load_mf_snapshot_metadata()
+    resolved = {}
+    # Hardware-confirmed AN7583 BootROM stages are release payloads, not runtime
+    # downloads.  Snapshot metadata is provenance only; emergency recovery is
+    # network-independent until RAM U-Boot is ready for the stock TFTP restore.
+    for name, size, digest, label in _mf_artifact_spec():
+        resolved[name] = _bundled_pinned_mf_recovery_artifact(name, size, digest, label)
+    return {
+        "family": "mf",
+        "model": "Nokia XG-040G-MF",
+        "soc": "AN7583",
+        "preloader": resolved[MF_RECOVERY_PRELOADER_NAME],
+        "fip": resolved[MF_RECOVERY_FIP_NAME],
+        "initramfs": MF_STOCK_RECOVERY_INITRAMFS,
+        "preloader_sha": MF_RECOVERY_PRELOADER_SHA,
+        "fip_sha": MF_RECOVERY_FIP_SHA,
+        "initramfs_sha": MF_STOCK_RECOVERY_INITRAMFS_SHA,
+        "backup_initramfs": MF_STOCK_RECOVERY_INITRAMFS,
+        "backup_initramfs_sha": MF_STOCK_RECOVERY_INITRAMFS_SHA,
+        # The first MF brick-recovery release writes stock directly in RAM
+        # U-Boot.  It deliberately does not enter the MD-specific Linux
+        # recovery fallback when U-Boot capture is missed.
+        "allow_linux_fallback": False,
+    }
 
 
 def bundle_release_metadata(bundle_path: Path = BUNDLE) -> dict[str, int | str]:
@@ -753,16 +1161,149 @@ def bundle_release_metadata(bundle_path: Path = BUNDLE) -> dict[str, int | str]:
     }
 
 
+def mf_transition_release_metadata(bundle_path: Path = MF_TRANSITION_BUNDLE) -> dict[str, int | str]:
+    raw = bundle_path.read_bytes()
+    manual = bundle_path == MF_MANUAL_TRANSITION_BUNDLE
+    exp_size = EXPECTED_MF_MANUAL_TRANSITION_BUNDLE_SIZE if manual else EXPECTED_MF_TRANSITION_BUNDLE_SIZE
+    exp_sha = EXPECTED_MF_MANUAL_TRANSITION_BUNDLE_SHA if manual else EXPECTED_MF_TRANSITION_BUNDLE_SHA
+    exp_fit_size = EXPECTED_MF_MANUAL_TRANSITION_FIT_SIZE if manual else EXPECTED_MF_TRANSITION_FIT_SIZE
+    exp_fit_sha = EXPECTED_MF_MANUAL_TRANSITION_FIT_SHA if manual else EXPECTED_MF_TRANSITION_FIT_SHA
+    if len(raw) != exp_size:
+        raise Error(tr("размер MF transition bundle не совпадает с релизом", "MF transition bundle size does not match this release"))
+    if len(raw) < 8 or struct.unpack(">I", raw[:4])[0] != 0xD00DFEED:
+        raise Error(tr("MF transition bundle не начинается с FIT", "MF transition bundle does not begin with a FIT"))
+    fit_size = struct.unpack(">I", raw[4:8])[0]
+    if fit_size != exp_fit_size:
+        raise Error(tr("FIT totalsize MF transition не совпадает с релизом", "MF transition FIT totalsize does not match this release"))
+    bundle_sha = hashlib.sha256(raw).hexdigest()
+    fit_sha = hashlib.sha256(raw[:fit_size]).hexdigest()
+    window_sha = hashlib.sha256(raw[:0x800000]).hexdigest()
+    if bundle_sha != exp_sha or fit_sha != exp_fit_sha:
+        raise Error(tr("SHA256 MF transition bundle не совпадает с релизом", "MF transition bundle SHA256 does not match this release"))
+    if manual:
+        production_size = 0
+        production_sha = ""
+        if window_sha != exp_sha:
+            raise Error(tr("SHA256 MF manual transition window не совпадает", "MF manual transition window SHA256 mismatch"))
+    else:
+        if window_sha != EXPECTED_MF_TRANSITION_WINDOW_SHA:
+            raise Error(tr("SHA256 первых 8 MiB MF transition не совпадает", "MF transition 8 MiB window SHA256 mismatch"))
+        production_size = MF_UBI_SYSUPGRADE_SIZE
+        production_sha = hashlib.sha256(raw[0x800000:0x800000 + production_size]).hexdigest()
+        if production_sha != MF_UBI_SYSUPGRADE_SHA:
+            raise Error(tr("embedded MF sysupgrade SHA256 не совпадает", "embedded MF sysupgrade SHA256 mismatch"))
+    return {
+        "bundle_size": len(raw), "bundle_sha": bundle_sha,
+        "transition_fit_size": fit_size, "transition_fit_sha": fit_sha,
+        "transition_window_sha": window_sha,
+        "production_size": production_size, "production_sha": production_sha,
+    }
+
+
+def transition_release_metadata(profile: InstallProfile, bundle_path: Path) -> dict[str, int | str]:
+    """Return pinned metadata for either board using the same installer contract."""
+    if profile.family == "mf":
+        return mf_transition_release_metadata(bundle_path)
+    if profile.family == "md":
+        return bundle_release_metadata(bundle_path)
+    raise Error(tr("неизвестный install profile", "unknown install profile"))
+
+
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
 
 
+def _verify_recovery_safe_fip(
+    path: Path,
+    expected_bl31_compressed_sha: str,
+    expected_bl33_compressed_sha: str,
+    label: str,
+) -> None:
+    """Verify the exact shipped RECOVERY_SAFE FIP without host-side decode.
+
+    Runtime preflight already pins the whole FIP by size+SHA256.  Decoding BL33
+    again on the operator PC is redundant and made the first RC18 package
+    dependent on liblzma implementation details.  Build/release QA performs the
+    full decode and marker audit; runtime only proves FIP structure and exact
+    compressed payload identities.
+    """
+    data = path.read_bytes()
+    if len(data) < 96 or struct.unpack_from("<I", data, 0)[0] != 0xAA640001:
+        raise Error(f"{label}: invalid FIP header")
+    entries: list[tuple[int, int]] = []
+    pos = 16
+    while pos + 40 <= len(data):
+        uuid = data[pos:pos+16]
+        offset, size, _flags = struct.unpack_from("<QQQ", data, pos+16)
+        if uuid == b"\x00" * 16:
+            break
+        if offset + size > len(data):
+            raise Error(f"{label}: FIP entry outside file")
+        entries.append((offset, size))
+        pos += 40
+    if len(entries) != 2:
+        raise Error(f"{label}: expected exactly BL31+BL33 FIP entries")
+    bl31 = data[entries[0][0]:entries[0][0]+entries[0][1]]
+    bl33 = data[entries[1][0]:entries[1][0]+entries[1][1]]
+    if hashlib.sha256(bl31).hexdigest() != expected_bl31_compressed_sha:
+        raise Error(f"{label}: BL31 payload changed")
+    if hashlib.sha256(bl33).hexdigest() != expected_bl33_compressed_sha:
+        raise Error(f"{label}: RECOVERY_SAFE BL33 payload changed")
+    if len(bl33) < 13 or bl33[0] != 0x5D:
+        raise Error(f"{label}: BL33 is not LZMA-Alone")
+    raw_size = struct.unpack_from("<Q", bl33, 5)[0]
+    if raw_size in (0, 0xFFFFFFFFFFFFFFFF):
+        raise Error(f"{label}: BL33 must carry a known uncompressed size")
+
+
 def verify_kit() -> None:
-    required = (BUNDLE, MANUAL_BUNDLE, LAUNCHER_TEMPLATE, BACKUP_AGENT, STOCK_WEB, DATA / "env_patcher.py", RECOVERY_PRELOADER, RECOVERY_FIP, RECOVERY_INITRAMFS)
+    root_version = KIT / "VERSION"
+    data_version = DATA / "VERSION"
+    manifest_path = DATA / "MANIFEST.json"
+    required = (root_version, data_version, manifest_path, BUNDLE, MANUAL_BUNDLE, MF_TRANSITION_BUNDLE, MF_MANUAL_TRANSITION_BUNDLE, LAUNCHER_TEMPLATE, BACKUP_AGENT, STOCK_WEB, DATA / "env_patcher.py", RECOVERY_PRELOADER, RECOVERY_FIP, RECOVERY_INITRAMFS, MF_RECOVERY_METADATA, MF_RECOVERY_PRELOADER, MF_RECOVERY_FIP, MF_STOCK_RECOVERY_INITRAMFS, STOCK_AUDIT_SCRIPT, STOCK_AUDIT_PARSER, FIRMWARE_CAPABILITIES, RECOVERY_DIR / "transition-network-source" / "patch_transition_network.py", RECOVERY_DIR / "recovery-clients-source" / "patch_recovery_clients.py", RECOVERY_TFTP_CLIENT, RECOVERY_SCP_CLIENT, RECOVERY_DIR / "transition-network-source" / "shipped-md-02_network.sh", RECOVERY_DIR / "transition-network-source" / "shipped-mf-02_network.sh", RECOVERY_DIR / "recovery-safe-uboot-source" / "patch_recovery_safe_fip.py", RECOVERY_DIR / "recovery-safe-uboot-source" / "lzma1ext_noeopm.c", RECOVERY_DIR / "recovery-safe-uboot-source" / "md-rc18-safe-fip-report.json", RECOVERY_DIR / "recovery-safe-uboot-source" / "mf-rc18-safe-fip-report.json", VENDOR / "rich" / "__init__.py", VENDOR / "RICH_LICENSE.txt")
     for path in required:
         if not path.is_file():
             raise Error(f"повреждён комплект: отсутствует {path.relative_to(KIT)}")
+    for template_name in ("shipped-md-02_network.sh", "shipped-mf-02_network.sh"):
+        template_path = RECOVERY_DIR / "transition-network-source" / template_name
+        template_text = template_path.read_text(encoding="ascii")
+        if "lan1" in template_text.lower() or "lan2 lan3 lan4" not in template_text:
+            raise Error(tr(
+                f"transition network policy нарушена в {template_name}: LAN1/2.5G должен быть исключён, LAN2-LAN4 обязательны",
+                f"transition network policy is violated in {template_name}: LAN1/2.5G must be excluded and LAN2-LAN4 are required",
+            ))
+    root_version_text = root_version.read_text(encoding="utf-8").strip()
+    data_version_text = data_version.read_text(encoding="utf-8").strip()
+    if root_version_text != APP_VERSION or data_version_text != APP_VERSION:
+        raise Error(tr(
+            f"VERSION/data/VERSION не совпадают с кодом {APP_VERSION}",
+            f"VERSION/data/VERSION do not match code version {APP_VERSION}",
+        ))
+    try:
+        release_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise Error(tr(f"не удалось прочитать MANIFEST.json: {exc}", f"failed to read MANIFEST.json: {exc}")) from exc
+    if release_manifest.get("version") != APP_VERSION or release_manifest.get("build_tag") != BUILD_TAG:
+        raise Error(tr(
+            "MANIFEST.json version/build_tag не совпадают с кодом",
+            "MANIFEST.json version/build_tag do not match the code",
+        ))
+    _verify_exact_artifact(RECOVERY_TFTP_CLIENT, 7792, RECOVERY_TFTP_CLIENT_SHA, "pinned AArch64 nokia-tftp")
+    _verify_exact_artifact(RECOVERY_SCP_CLIENT, 6072, RECOVERY_SCP_CLIENT_SHA, "pinned AArch64 nokia-scp")
+    _verify_exact_artifact(RECOVERY_PRELOADER, 113447, RECOVERY_PRELOADER_SHA, "AN7581 preloader")
+    _verify_exact_artifact(RECOVERY_FIP, RECOVERY_FIP_SIZE, RECOVERY_FIP_SHA, "AN7581 RC18 RECOVERY_SAFE BL31+U-Boot FIP")
+    _verify_recovery_safe_fip(RECOVERY_FIP, "a81dbbe98acb1dabc2afcbf72e73ad87e24efa8dd88e559612a024c28ece920e", "df4803b9f70bb35050555947268fc35d61f1724814a1ea59b480689f056fa123", "AN7581 RC18 RECOVERY_SAFE FIP")
+    _load_mf_snapshot_metadata()
+    _verify_exact_artifact(MF_RECOVERY_PRELOADER, MF_RECOVERY_PRELOADER_SIZE, MF_RECOVERY_PRELOADER_SHA, "AN7583 preloader")
+    _verify_exact_artifact(MF_RECOVERY_FIP, MF_RECOVERY_FIP_SIZE, MF_RECOVERY_FIP_SHA, "AN7583 RC18 RECOVERY_SAFE BL31+U-Boot FIP")
+    _verify_recovery_safe_fip(MF_RECOVERY_FIP, "6d97815b5cdf905eff874062f9364ebe41a2a11f4b25944a82aea4fcbdd71e35", "3bb4cf1aa950dd212e1b5781abf55c239ff61326d5ca0c19e9f2c010285f5bb1", "AN7583 RC18 RECOVERY_SAFE FIP")
+    try:
+        capability_manifest = json.loads(FIRMWARE_CAPABILITIES.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise Error(tr(f"не удалось прочитать FIRMWARE_CAPABILITIES.json: {exc}", f"failed to read FIRMWARE_CAPABILITIES.json: {exc}")) from exc
+    if capability_manifest.get("version") != APP_VERSION:
+        raise Error(tr("FIRMWARE_CAPABILITIES.json version не совпадает с кодом", "FIRMWARE_CAPABILITIES.json version does not match the code"))
     if BUNDLE.stat().st_size != EXPECTED_BUNDLE_SIZE:
         raise Error("размер transition bundle не совпадает с релизом")
     if sha_file(BUNDLE) != EXPECTED_BUNDLE_SHA:
@@ -771,29 +1312,65 @@ def verify_kit() -> None:
         raise Error("размер manual transition bundle не совпадает с релизом")
     if sha_file(MANUAL_BUNDLE) != EXPECTED_MANUAL_BUNDLE_SHA:
         raise Error("SHA256 manual transition bundle не совпадает с релизом")
-    metadata = bundle_release_metadata()
-    expected_template_values = {
-        "BUNDLE_SIZE": str(metadata["bundle_size"]),
-        "BUNDLE_SHA": f"'{metadata['bundle_sha']}'",
-        "TRANSITION_TOTALSIZE": str(metadata["transition_fit_size"]),
-        "TRANSITION_FIT_SHA": f"'{metadata['transition_fit_sha']}'",
-        "TRANSITION_WINDOW_SHA": f"'{metadata['transition_window_sha']}'",
-        "SYSUPGRADE_SIZE": str(metadata["production_size"]),
-        "SYSUPGRADE_SHA": f"'{metadata['production_sha']}'",
-    }
+    # Both boards use one stock launcher template. Bundle/env/profile values are
+    # personalized from InstallProfile; the template must expose every placeholder.
     launcher_template = LAUNCHER_TEMPLATE.read_text(encoding="utf-8")
-    for key, expected in expected_template_values.items():
-        match = re.search(rf"^{key}=(.+)$", launcher_template, flags=re.M)
-        if not match or match.group(1).strip() != expected:
+    for key in (
+        "PROFILE_FAMILY", "PROFILE_LABEL", "RELEASE_VERSION", "BUNDLE_NAME", "ENV_NAME",
+        "BUNDLE_SIZE", "BUNDLE_SHA", "TRANSITION_TOTALSIZE", "TRANSITION_FIT_SHA",
+        "TRANSITION_WINDOW_SHA", "SYSUPGRADE_SIZE", "SYSUPGRADE_SHA",
+        "MANUAL_TRANSITION", "ENV_SHA", "ENV_SOURCE_SHA",
+    ):
+        if not re.search(rf"^{key}=", launcher_template, flags=re.M):
             raise Error(tr(
-                f"metadata {key} во внутреннем launcher не совпадает с transition bundle",
-                f"metadata {key} in the internal launcher does not match the transition bundle",
+                f"общий launcher не содержит поле {key}",
+                f"shared launcher does not contain field {key}",
             ))
+    # Validate both ready-made board bundles independently. No runtime repacking.
+    bundle_metadata = {
+        "bundle": bundle_release_metadata(BUNDLE),
+        "manual_bundle": bundle_release_metadata(MANUAL_BUNDLE),
+        "mf_transition_bundle": mf_transition_release_metadata(MF_TRANSITION_BUNDLE),
+        "mf_manual_transition_bundle": mf_transition_release_metadata(MF_MANUAL_TRANSITION_BUNDLE),
+    }
+    # RC16 regression gate: release metadata must describe the exact shipped FIT/bundle,
+    # not merely a historically correct SHA.  This catches the stale rc15fix MF
+    # transition_fit_totalsize fields before a rollup can pass verify_kit().
+    for section, actual in bundle_metadata.items():
+        info = release_manifest.get(section, {})
+        checks = (
+            ("size", int(actual["bundle_size"])),
+            ("sha256", str(actual["bundle_sha"])),
+            ("transition_fit_totalsize", int(actual["transition_fit_size"])),
+            ("production_size", int(actual["production_size"])),
+            ("production_sha256", str(actual["production_sha"])),
+        )
+        for field, expected_actual in checks:
+            declared = info.get(field)
+            if field in ("size", "transition_fit_totalsize", "production_size"):
+                try:
+                    declared = int(declared)
+                except (TypeError, ValueError):
+                    declared = None
+            if declared != expected_actual:
+                raise Error(tr(
+                    f"MANIFEST.json {section}.{field} не совпадает с shipped bundle: {declared!r} != {expected_actual!r}",
+                    f"MANIFEST.json {section}.{field} does not match the shipped bundle: {declared!r} != {expected_actual!r}",
+                ))
+        declared_fit_sha = info.get("transition_fit_sha256")
+        if declared_fit_sha != actual["transition_fit_sha"]:
+            raise Error(tr(
+                f"MANIFEST.json {section}.transition_fit_sha256 не совпадает с shipped FIT",
+                f"MANIFEST.json {section}.transition_fit_sha256 does not match the shipped FIT",
+            ))
+    _verify_exact_artifact(RECOVERY_INITRAMFS, RECOVERY_INITRAMFS_SIZE, RECOVERY_INITRAMFS_SHA, "AN7581/MD Dark-derived stock-recovery initramfs")
     recovery_expected = {
         RECOVERY_PRELOADER: RECOVERY_PRELOADER_SHA,
         RECOVERY_FIP: RECOVERY_FIP_SHA,
         RECOVERY_INITRAMFS: RECOVERY_INITRAMFS_SHA,
+        MF_STOCK_RECOVERY_INITRAMFS: MF_STOCK_RECOVERY_INITRAMFS_SHA,
     }
+    _load_mf_snapshot_metadata()
     for path, expected in recovery_expected.items():
         if sha_file(path) != expected:
             raise Error(f"SHA256 recovery-артефакта не совпадает: {path.name}")
@@ -848,7 +1425,40 @@ def verify_manifest(directory: Path) -> list[str]:
     return []
 
 
-def verify_backup(directory: Path) -> dict:
+def _layout_matches(sizes: dict[int, int], layout: dict[int, int]) -> bool:
+    return all(sizes.get(number) == expected for number, expected in layout.items())
+
+
+def detect_stock_backup_family(sizes: dict[int, int]) -> str:
+    """Classify known stock slot layouts without weakening install validation."""
+    if any(_layout_matches(sizes, layout) for layout in SLOT_LAYOUTS):
+        return "md"
+    if any(_layout_matches(sizes, layout) for layout in MF_SLOT_LAYOUTS):
+        return "mf"
+    return "unknown"
+
+
+def detect_stock_backup_variant(sizes: dict[int, int]) -> str:
+    for label, layout in MD_SLOT_VARIANTS + MF_SLOT_VARIANTS:
+        if _layout_matches(sizes, layout):
+            return label
+    return "UNKNOWN"
+
+
+def _slot_layout_diagnostic(sizes: dict[int, int]) -> str:
+    got = {n: sizes.get(n) for n in (2, 3, 4, 5)}
+    candidates = MD_SLOT_VARIANTS + MF_SLOT_VARIANTS
+    best_label = "none"
+    best_diff = None
+    for label, layout in candidates:
+        diff = sum(abs((got.get(n) or 0) - layout[n]) for n in (2, 3, 4, 5))
+        if best_diff is None or diff < best_diff:
+            best_label, best_diff = label, diff
+    formatted = ", ".join(f"mtd{n}=0x{(got.get(n) or 0):08X}" for n in (2,3,4,5))
+    return f"{formatted}; nearest={best_label}"
+
+
+def verify_backup(directory: Path, *, require_md_slot_layout: bool = True) -> dict:
     directory = directory.resolve()
     if not directory.is_dir():
         raise Error(f"backup-каталог не найден: {directory}")
@@ -879,26 +1489,49 @@ def verify_backup(directory: Path) -> dict:
         files[number] = path
         sizes[number] = total
 
+    family = detect_stock_backup_family(sizes)
+    variant = detect_stock_backup_variant(sizes)
     selected: dict[int, int] | None = None
     for layout in SLOT_LAYOUTS:
-        if all(sizes.get(n) == size for n, size in layout.items()):
+        if _layout_matches(sizes, layout):
             selected = layout
             break
-    if selected is None:
-        raise Error(f"неподдерживаемые размеры stock-слотов: { {n:sizes[n] for n in (2,3,4,5)} }")
+    if require_md_slot_layout and selected is None:
+        if family == "mf":
+            raise Error(tr(
+                f"Backup распознан как Nokia XG-040G-MF ({variant}), но normal OpenWrt install в rc12 остаётся заблокирован до отдельного HW gate. "
+                + _slot_layout_diagnostic(sizes),
+                f"The backup is recognized as Nokia XG-040G-MF ({variant}), but normal OpenWrt install remains blocked in rc12 pending a separate HW gate. "
+                + _slot_layout_diagnostic(sizes),
+            ))
+        raise Error(tr(
+            "неподдерживаемые размеры stock-слотов: " + _slot_layout_diagnostic(sizes),
+            "unsupported stock slot sizes: " + _slot_layout_diagnostic(sizes),
+        ))
+
     expected = dict(FIXED_EXPECTED)
-    expected.update(selected)
+    if selected is not None:
+        expected.update(selected)
     for number, size in sizes.items():
+        # mtd2..mtd5 describe the vendor kernel/rootfs slot geometry.  The
+        # brick-restore path uses canonical mtd16 and therefore validates those
+        # slots only for family detection, not as a physical NAND invariant.
+        if not require_md_slot_layout and number in (2, 3, 4, 5):
+            continue
         if size != expected[number]:
             raise Error(f"mtd{number}: размер {size}, ожидается {expected[number]}")
     if proc:
         for number, expected_size in expected.items():
+            if not require_md_slot_layout and number in (2, 3, 4, 5):
+                continue
             if number not in proc or proc[number][0] != expected_size:
                 raise Error(f"proc_mtd не совпадает с dump для mtd{number}")
     return {
         "directory": str(directory),
         "files": {str(k): str(v) for k, v in files.items()},
         "sizes": {str(k): v for k, v in sizes.items()},
+        "stock_family": family,
+        "stock_variant": variant,
         "warnings": warnings,
     }
 
@@ -913,8 +1546,97 @@ def env_module():
     return module
 
 
-def personalize(backup_dir: Path, force: bool = True, manual_transition: bool = False) -> tuple[Path, dict]:
-    validation = verify_backup(backup_dir)
+def _validate_install_backup(profile: InstallProfile, backup_dir: Path) -> dict:
+    if profile.family == "mf":
+        validation = verify_stock_restore_backup(backup_dir)
+        _require_mf_hw_validated_backup(backup_dir, validation)
+        return validation
+    if profile.family == "md":
+        validation = verify_backup(backup_dir)
+        family = str(validation.get("stock_family") or "md")
+        if family not in ("", "md"):
+            raise Error(tr(
+                f"backup не соответствует {profile.model}: family={family}",
+                f"backup does not match {profile.model}: family={family}",
+            ))
+        return validation
+    raise Error(tr("неизвестный install profile", "unknown install profile"))
+
+
+def _print_install_backup_validation(profile: InstallProfile, backup_dir: Path, validation: dict) -> None:
+    files = validation.get("files") or {}
+    sizes = validation.get("sizes") or {}
+    family = str(validation.get("stock_family") or "unknown").upper()
+    variant = str(validation.get("stock_variant") or "UNKNOWN")
+    present = sum(1 for n in EXPECTED_NUMBERS if str(n) in files)
+    mtd16_size = int(sizes.get("16") or 0)
+    checksum_file = next((backup_dir / name for name in ("SHA256SUMS", "SHA256SUMS.txt") if (backup_dir / name).is_file()), None)
+    print(tr(
+        f"[OK] Backup: mtd0..mtd16 {present}/{len(EXPECTED_NUMBERS)} на месте; gzip/raw читаются полностью.",
+        f"[OK] Backup: mtd0..mtd16 {present}/{len(EXPECTED_NUMBERS)} present; gzip/raw streams read completely.",
+    ))
+    print(tr(
+        f"[OK] Backup family/profile: {family} / {variant}; ожидаемый аппарат: {profile.model}.",
+        f"[OK] Backup family/profile: {family} / {variant}; expected hardware: {profile.model}.",
+    ))
+    if mtd16_size:
+        print(tr(
+            f"[OK] Backup canonical mtd16 span: 0x{mtd16_size:08X} байт.",
+            f"[OK] Backup canonical mtd16 span: 0x{mtd16_size:08X} bytes.",
+        ))
+    mac_info = _read_backup_device_mac(backup_dir / "DEVICE_MAC.txt")
+    if mac_info is not None:
+        interface, mac = mac_info
+        print(tr(
+            f"[OK] Backup source MAC: {mac} ({interface}); DEVICE_MAC.txt.",
+            f"[OK] Backup source MAC: {mac} ({interface}); DEVICE_MAC.txt.",
+        ))
+    else:
+        print(tr(
+            "[INFO] Backup source MAC metadata отсутствует (старый формат backup); это не блокирует совместимость.",
+            "[INFO] Backup source MAC metadata is absent (legacy backup format); compatibility is not blocked.",
+        ))
+    if checksum_file is not None:
+        print(tr(
+            f"[OK] Backup SHA256 manifest проверен: {checksum_file.name}.",
+            f"[OK] Backup SHA256 manifest verified: {checksum_file.name}.",
+        ))
+    else:
+        print(tr(
+            "[WARNING] В backup нет SHA256SUMS; целостность подтверждена gzip и точными размерами, но manifest отсутствует.",
+            "[WARNING] The backup has no SHA256SUMS; gzip integrity and exact sizes passed, but the manifest is absent.",
+        ))
+    for warning in validation.get("warnings") or []:
+        print(tr(f"[WARNING] Backup: {warning}", f"[WARNING] Backup: {warning}"))
+
+
+def _require_mf_hw_validated_backup(backup_dir: Path, validation: dict) -> None:
+    marker = backup_dir / "BACKUP_HW_VALIDATED"
+    if not marker.is_file():
+        raise Error(tr(
+            "для MF install нужен backup с BACKUP_HW_VALIDATED из normal MF TFTP backend",
+            "MF installation requires a backup carrying BACKUP_HW_VALIDATED from the normal MF TFTP backend",
+        ))
+    evidence = marker.read_text(encoding="utf-8", errors="replace")
+    family = str(validation.get("stock_family") or "")
+    variant = str(validation.get("stock_variant") or "")
+    if family != "mf" or variant != "MF-A":
+        raise Error(tr(
+            f"MF permanent write разрешён только для hardware-confirmed MF-A; backup={family}/{variant}",
+            f"MF permanent write is enabled only for hardware-confirmed MF-A; backup={family}/{variant}",
+        ))
+    if "family=mf" not in evidence.lower() or "variant=mf-a" not in evidence.lower():
+        raise Error(tr("BACKUP_HW_VALIDATED не подтверждает MF-A", "BACKUP_HW_VALIDATED does not confirm MF-A"))
+
+
+def personalize_transition(
+    profile: InstallProfile,
+    backup_dir: Path,
+    force: bool = True,
+    manual_transition: bool = False,
+) -> tuple[Path, dict]:
+    """Create one board-profiled installer package using the shared launcher engine."""
+    validation = _validate_install_backup(profile, backup_dir)
     mtd0 = Path(validation["files"]["0"])
     module = env_module()
     env_data, report = module.create_image(module.read_input(mtd0), BOOTCMD)
@@ -927,14 +1649,18 @@ def personalize(backup_dir: Path, force: bool = True, manual_transition: bool = 
         shutil.rmtree(output)
     output.mkdir(parents=True)
 
-    selected_bundle = MANUAL_BUNDLE if manual_transition else BUNDLE
-    # The on-device launcher always uses this stable filename. The content and
-    # embedded metadata are selected by the PC wizard.
-    shutil.copy2(selected_bundle, output / BUNDLE.name)
-    (output / "OpenWrt.mtd2.u-boot-env.bin").write_bytes(env_data)
+    selected_bundle = profile.manual_bundle if manual_transition else profile.auto_bundle
+    metadata = transition_release_metadata(profile, selected_bundle)
+    shutil.copy2(selected_bundle, output / profile.runtime_bundle_name)
+    (output / profile.runtime_env_name).write_bytes(env_data)
+
     template = LAUNCHER_TEMPLATE.read_text(encoding="utf-8")
-    metadata = bundle_release_metadata(selected_bundle)
     substitutions = {
+        "PROFILE_FAMILY": f"'{profile.family}'",
+        "PROFILE_LABEL": f"'{profile.model}'",
+        "RELEASE_VERSION": f"'{APP_VERSION}'",
+        "BUNDLE_NAME": f"'{profile.runtime_bundle_name}'",
+        "ENV_NAME": f"'{profile.runtime_env_name}'",
         "BUNDLE_SIZE": str(metadata["bundle_size"]),
         "BUNDLE_SHA": f"'{metadata['bundle_sha']}'",
         "TRANSITION_TOTALSIZE": str(metadata["transition_fit_size"]),
@@ -950,11 +1676,11 @@ def personalize(backup_dir: Path, force: bool = True, manual_transition: bool = 
         template, count = re.subn(rf"^{key}=.*$", f"{key}={value}", template, count=1, flags=re.M)
         if count != 1:
             raise Error(tr(
-                f"не удалось записать {key} во внутренний stock launcher",
-                f"failed to write {key} into the internal stock launcher",
+                f"не удалось записать {key} в общий stock launcher",
+                f"failed to write {key} into the shared stock launcher",
             ))
     if "@ENV_" in template:
-        raise Error("не удалось персонализировать stock launcher")
+        raise Error(tr("не удалось персонализировать общий launcher", "failed to personalize the shared launcher"))
     launcher = output / "INSTALL.sh"
     write_text(launcher, template)
     os.chmod(launcher, 0o755)
@@ -963,12 +1689,17 @@ def personalize(backup_dir: Path, force: bool = True, manual_transition: bool = 
         "kit_version": APP_VERSION,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "device_id": device_id,
+        "family": profile.family,
+        "model": profile.model,
+        "variant": str(validation.get("stock_variant") or ""),
         "backup": validation,
         "environment": report,
         "bundle_sha256": metadata["bundle_sha"],
         "manual_transition": manual_transition,
-        "production_sha256": EXPECTED_PROD_SHA,
+        "production_sha256": metadata["production_sha"],
+        "expected_board": profile.expected_board,
         "language": ensure_language(),
+        "behavior": "shared profile-driven stock -> transition -> UBI install; BL2 last",
         "warning": tr(
             "Пакет привязан к одному устройству. Не публиковать env-файл.",
             "This package is bound to one device. Do not publish the environment file.",
@@ -979,16 +1710,20 @@ def personalize(backup_dir: Path, force: bool = True, manual_transition: bool = 
     for path in sorted(p for p in output.iterdir() if p.is_file() and p.name != "SHA256SUMS"):
         sums.append(f"{sha_file(path)}  {path.name}")
     write_text(output / "SHA256SUMS", "\n".join(sums) + "\n")
-    write_text(
-        output / "README.txt",
-        tr(
-            "Персональный пакет Nokia XG-040G-MD. Запускается мастером START; вручную: ",
-            "Device-specific Nokia XG-040G-MD package. Use the START wizard; manual command: ",
-        ) + "sha256sum -c SHA256SUMS && ash ./INSTALL.sh --preflight\n",
-    )
-    state = device_root / "state.json"
-    save_state(state, {"version": APP_VERSION, "device_id": device_id, "phase": "personalized", "install_dir": str(output)})
+    write_text(output / "README.txt", tr(
+        f"Персональный пакет {profile.model}. Используется общим MD/MF installer engine; BL2 записывается последней.\n",
+        f"Device-specific {profile.model} package. Uses the shared MD/MF installer engine; BL2 is written last.\n",
+    ))
+    save_state(device_root / "state.json", {
+        "version": APP_VERSION, "device_id": device_id, "family": profile.family,
+        "phase": "personalized", "install_dir": str(output),
+    })
     return output, info
+
+
+def personalize(backup_dir: Path, force: bool = True, manual_transition: bool = False) -> tuple[Path, dict]:
+    """Compatibility wrapper: MD now delegates to the shared engine."""
+    return personalize_transition(MD_INSTALL_PROFILE, backup_dir, force=force, manual_transition=manual_transition)
 
 
 def save_state(path: Path, data: dict) -> None:
@@ -1650,7 +2385,7 @@ def find_nc(telnet: Telnet) -> str:
     rc, text = telnet.command("busybox 2>&1 | tr ',' ' ' | awk '{for(i=1;i<=NF;i++) if($i==\"nc\") found=1} END{exit !found}'", echo=False)
     if rc == 0:
         return "busybox nc"
-    raise Error("в stock firmware отсутствует nc; используйте USB через Samba/FTP")
+    raise Error("в stock firmware отсутствует nc; используйте USB-накопитель на Nokia через Samba/FTP")
 
 
 @dataclass
@@ -1667,15 +2402,35 @@ class TftpResult:
     block_size: int = 512
 
 
+def login_root_family(access: StockAccess, family: str, sessions: int = 3) -> Telnet:
+    """Open a proven UID-0 stock Telnet shell for the selected hardware family.
+
+    MD keeps the established backend unchanged. MF uses the same interactive
+    root proof machinery but with the MF label and device-derived UID-0 accounts.
+    """
+    family = (family or "").lower()
+    if family == "md":
+        return login_root_md(access, sessions=sessions)
+    if family == "mf":
+        return login_root_profile_dynamic(
+            access,
+            model="MF",
+            sessions=sessions,
+            connect_attempts=3,
+            preferred_accounts=("user_ftp", "root", "useradmin_ftp", "osgi_admin", "samba_anony", "telecomadmin"),
+        )
+    raise Error(tr("неизвестный stock-профиль; UID 0 не запрашивается", "unknown stock profile; UID 0 will not be requested"))
+
+
 def find_tftp(telnet: Telnet) -> str:
     rc, text = telnet.command("command -v tftp 2>/dev/null || true", echo=False)
     candidates = re.findall(r"(?:^|\r?\n)(/[A-Za-z0-9_./-]+)(?:\r?\n|$)", text)
     if not candidates:
-        raise Error("в stock firmware отсутствует BusyBox tftp; используйте USB через Samba/FTP")
+        raise Error("в stock firmware отсутствует BusyBox tftp; используйте USB-накопитель на Nokia через Samba/FTP")
     path = candidates[-1]
     _, help_text = telnet.command(f"{path} --help 2>&1 || true", timeout=10, echo=False)
     if "-p" not in help_text or "-g" not in help_text:
-        raise Error("stock tftp не поддерживает PUT/GET; используйте USB через Samba/FTP")
+        raise Error("stock tftp не поддерживает PUT/GET; используйте USB-накопитель на Nokia через Samba/FTP")
     return path
 
 
@@ -2047,6 +2802,193 @@ def backup_direct(telnet: Telnet, router_host: str, destination: Path, local_ip:
 
 
 
+def _stock_sysfs_mtd_snapshot(telnet: Telnet) -> dict[int, tuple[int, int, str]]:
+    command = (
+        'for d in /sys/class/mtd/mtd[0-9]*; do [ -d "$d" ] || continue; '
+        'dev=$(basename "$d"); case "$dev" in *ro) continue;; esac; '
+        'n=$(cat "$d/name" 2>/dev/null); s=$(cat "$d/size" 2>/dev/null); '
+        'e=$(cat "$d/erasesize" 2>/dev/null); '
+        'echo "SYSFS_MTD dev=$dev name=$n size=$s erasesize=$e"; done'
+    )
+    rc, text = telnet.command(command, timeout=45, echo=False)
+    if rc:
+        raise Error(tr("не удалось прочитать sysfs MTD", "failed to read sysfs MTD"))
+    out: dict[int, tuple[int, int, str]] = {}
+    for line in text.splitlines():
+        m = re.match(r"^SYSFS_MTD\s+dev=mtd(\d+)\s+name=(.*?)\s+size=(\d+)\s+erasesize=(\d+)\s*$", line.strip())
+        if m:
+            out[int(m.group(1))] = (int(m.group(3)), int(m.group(4)), m.group(2))
+    return out
+
+
+def _stock_live_geometry_preflight(telnet: Telnet, expected_family: str, require_ro: bool = True) -> tuple[dict[int, tuple[int, int, str]], str, str]:
+    rc, proc_text = telnet.command("cat /proc/mtd", timeout=20, echo=False)
+    proc = parse_proc_mtd_text(proc_text)
+    if rc or tuple(sorted(proc)) != EXPECTED_NUMBERS:
+        raise Error(tr("не удалось получить полную stock-разметку /proc/mtd", "failed to obtain the complete stock /proc/mtd map"))
+    sizes = {number: row[0] for number, row in proc.items()}
+    family = detect_stock_backup_family(sizes)
+    variant = detect_stock_backup_variant(sizes)
+    if family not in ("md", "mf"):
+        raise Error(tr("stock slot layout не распознан: " + _slot_layout_diagnostic(sizes), "stock slot layout is not recognized: " + _slot_layout_diagnostic(sizes)))
+    if expected_family in ("md", "mf") and family != expected_family:
+        raise Error(tr(
+            f"модель/разметка не совпали: Web={expected_family.upper()}, MTD={family.upper()} ({variant})",
+            f"model/layout mismatch: Web={expected_family.upper()}, MTD={family.upper()} ({variant})",
+        ))
+    for number, expected in FIXED_EXPECTED.items():
+        if proc[number][0] != expected:
+            raise Error(tr(
+                f"mtd{number}: размер 0x{proc[number][0]:08X}, ожидается 0x{expected:08X}; backup заблокирован",
+                f"mtd{number}: size 0x{proc[number][0]:08X}, expected 0x{expected:08X}; backup is blocked",
+            ))
+        if proc[number][1] != 0x20000:
+            raise Error(tr(f"mtd{number}: неожиданный erase size 0x{proc[number][1]:X}", f"mtd{number}: unexpected erase size 0x{proc[number][1]:X}"))
+    sysfs = _stock_sysfs_mtd_snapshot(telnet)
+    missing = []
+    mismatch = []
+    for number in EXPECTED_NUMBERS:
+        p = proc.get(number)
+        x = sysfs.get(number)
+        if p is None or x is None:
+            missing.append(number)
+            continue
+        if p[0] != x[0] or p[1] != x[1] or (x[2] and p[2] != x[2]):
+            mismatch.append(number)
+    if missing or mismatch:
+        raise Error(tr(
+            f"/proc/mtd и sysfs не согласованы (missing={missing}, mismatch={mismatch}); backup заблокирован",
+            f"/proc/mtd and sysfs disagree (missing={missing}, mismatch={mismatch}); backup is blocked",
+        ))
+    if family == "mf" and require_ro:
+        rc, ro_text = telnet.command(
+            'ok=1; n=0; while [ $n -le 16 ]; do [ -r /dev/mtd${n}ro ] || { echo MISSING_RO=$n; ok=0; }; n=$((n+1)); done; echo RO_OK=$ok',
+            timeout=20, echo=False)
+        if rc or "RO_OK=1" not in ro_text:
+            raise Error(tr("MF backup требует доступные /dev/mtd0ro..mtd16ro", "MF backup requires readable /dev/mtd0ro..mtd16ro"))
+    print(tr(
+        f"[OK] Stock geometry: {family.upper()} / {variant}; /proc/mtd == sysfs; restore span 0x{proc[16][0]:08X}.",
+        f"[OK] Stock geometry: {family.upper()} / {variant}; /proc/mtd == sysfs; restore span 0x{proc[16][0]:08X}.",
+    ))
+    return proc, family, variant
+
+
+def _human_transfer_size(value: int) -> str:
+    value = max(0, int(value))
+    if value < 1024:
+        return f"{value} B"
+    if value < 1024 * 1024:
+        return f"{value / 1024:.1f} KiB"
+    if value < 1024 * 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f} MiB"
+    return f"{value / (1024 * 1024 * 1024):.2f} GiB"
+
+
+def _read_transport_sha_sidecar(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.search(r"(?im)^router_stream_sha256=([0-9a-f]{64})$", text)
+    return m.group(1).lower() if m else None
+
+
+_MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}$")
+
+
+def _stock_interface_macs(telnet: Telnet) -> dict[str, str]:
+    """Read interface MAC addresses from stock Linux without changing device state."""
+    command = (
+        "for p in /sys/class/net/*/address; do "
+        "[ -r \"$p\" ] || continue; "
+        "i=${p%/address}; i=${i##*/}; [ \"$i\" = lo ] && continue; "
+        "a=$(cat \"$p\" 2>/dev/null | tr 'A-F' 'a-f'); "
+        "printf '__NOKIA_IFMAC__'; printf '%s=%s' \"$i\" \"$a\"; printf '__\\n'; "
+        "done"
+    )
+    rc, text = telnet.command(command, timeout=20, echo=False)
+    if rc:
+        return {}
+    result: dict[str, str] = {}
+    for value in _runtime_marker_values(text, "__NOKIA_IFMAC__"):
+        if "=" not in value:
+            continue
+        interface, mac = value.split("=", 1)
+        interface = interface.strip()
+        mac = mac.strip().lower()
+        if not interface or not _MAC_RE.fullmatch(mac):
+            continue
+        if mac in {"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}:
+            continue
+        result[interface] = mac
+    return dict(sorted(result.items()))
+
+
+def _backup_primary_mac(macs: dict[str, str]) -> tuple[str, str]:
+    for interface in ("eth0", "br0", "eth1", "eth2"):
+        if interface in macs:
+            return interface, macs[interface]
+    if macs:
+        interface = sorted(macs)[0]
+        return interface, macs[interface]
+    return "unknown", "UNKNOWN"
+
+
+def _read_backup_device_mac(path: Path) -> tuple[str, str] | None:
+    if not path.is_file():
+        return None
+    values: dict[str, str] = {}
+    try:
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            values[key.strip()] = value.strip()
+    except OSError:
+        return None
+    mac = values.get("primary_mac", "").lower()
+    interface = values.get("primary_interface", "unknown")
+    if _MAC_RE.fullmatch(mac):
+        return interface, mac
+    return None
+
+
+def _write_backup_device_mac(destination: Path, telnet: Telnet, model_name: str, family: str) -> tuple[str, str]:
+    macs = _stock_interface_macs(telnet)
+    interface, mac = _backup_primary_mac(macs)
+    existing = _read_backup_device_mac(destination / "DEVICE_MAC.txt")
+    if existing is not None and mac != "UNKNOWN" and existing[1] != mac:
+        raise Error(tr(
+            f"backup-каталог уже привязан к другому MAC: {existing[1]} != {mac}",
+            f"backup directory is already bound to a different MAC: {existing[1]} != {mac}",
+        ))
+    lines = [
+        f"model={model_name}",
+        f"family={family}",
+        f"captured_at_local={time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
+        f"captured_at_utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "source=stock-linux-sysfs",
+        f"primary_interface={interface}",
+        f"primary_mac={mac}",
+    ]
+    for name, value in macs.items():
+        lines.append(f"interface_{name}={value}")
+    write_text(destination / "DEVICE_MAC.txt", "\n".join(lines) + "\n")
+    if mac == "UNKNOWN":
+        print(tr(
+            "[WARNING] Не удалось определить MAC stock-устройства; DEVICE_MAC.txt создан с primary_mac=UNKNOWN.",
+            "[WARNING] Could not determine the stock device MAC; DEVICE_MAC.txt was created with primary_mac=UNKNOWN.",
+        ))
+    else:
+        print(tr(
+            f"[OK] Backup source MAC: {mac} ({interface}); сохранён в DEVICE_MAC.txt.",
+            f"[OK] Backup source MAC: {mac} ({interface}); saved to DEVICE_MAC.txt.",
+        ))
+    return interface, mac
+
+
 def backup_tftp(
     access: StockAccess,
     router_host: str,
@@ -2054,6 +2996,7 @@ def backup_tftp(
     local_ip: str | None = None,
     port: int = 1069,
     block_size: int = 4096,
+    expected_family: str = "md",
 ) -> Path:
     """Create a direct TFTP backup while reusing a healthy root session.
 
@@ -2068,12 +3011,36 @@ def backup_tftp(
 
     telnet: Telnet | None = None
     try:
-        telnet = login_root_md(access)
+        telnet = login_root_family(access, expected_family)
         tftp = find_tftp(telnet)
-        rc, proc_text = telnet.command("cat /proc/mtd", timeout=15, echo=False)
-        proc = parse_proc_mtd_text(proc_text)
-        if rc or tuple(sorted(proc)) != EXPECTED_NUMBERS:
-            raise Error("не удалось получить точную stock-разметку /proc/mtd")
+        if expected_family == "md":
+            # Preserve the hardware-confirmed MD backup/install preflight.
+            rc, proc_text = telnet.command("cat /proc/mtd", timeout=15, echo=False)
+            proc = parse_proc_mtd_text(proc_text)
+            if rc or tuple(sorted(proc)) != EXPECTED_NUMBERS:
+                raise Error("не удалось получить точную stock-разметку /proc/mtd")
+            sizes = {number: row[0] for number, row in proc.items()}
+            detected_family = detect_stock_backup_family(sizes)
+            detected_variant = detect_stock_backup_variant(sizes)
+        else:
+            proc, detected_family, detected_variant = _stock_live_geometry_preflight(telnet, expected_family)
+            rc, stream_tools = telnet.command(
+                'ok=1; for x in tee sha256sum; do command -v "$x" >/dev/null 2>&1 || { echo MISSING_STREAM_TOOL=$x; ok=0; }; done; '
+                '(command -v mkfifo >/dev/null 2>&1 || command -v mknod >/dev/null 2>&1) || { echo MISSING_STREAM_TOOL=mkfifo_or_mknod; ok=0; }; '
+                'echo STREAM_TOOLS_OK=$ok',
+                timeout=20, echo=False,
+            )
+            if rc or "STREAM_TOOLS_OK=1" not in stream_tools:
+                raise Error(tr(
+                    "MF TFTP backup требует tee/sha256sum и mkfifo или mknod для проверки ровно переданного gzip-потока",
+                    "MF TFTP backup requires tee/sha256sum plus mkfifo or mknod to verify the exact transmitted gzip stream",
+                ))
+        if detected_family == "mf":
+            # A failed/resumed run must never leave an old success marker behind.
+            for stale_marker in ("BACKUP_COMPLETE", "BACKUP_HW_VALIDATED"):
+                (destination / stale_marker).unlink(missing_ok=True)
+        model_name = "Nokia XG-040G-MD" if detected_family == "md" else "Nokia XG-040G-MF"
+        _write_backup_device_mac(destination, telnet, model_name, detected_family)
         write_text(destination / "proc_mtd.txt", "\n".join(
             f'mtd{n}: {size:08x} {erase:08x} "{name}"' for n, (size, erase, name) in sorted(proc.items())
         ) + "\n")
@@ -2102,13 +3069,33 @@ def backup_tftp(
             if target.is_file():
                 try:
                     validate_gzip_size(target, size)
-                    print(tr(
-                        f"[{number}/16] Сохранён ранее проверенный {target.name}.",
-                        f"[{number}/16] Existing validated {target.name} retained.",
-                    ))
-                    continue
+                    if detected_family == "mf" and number == 16:
+                        transport_sidecar = destination / "mtd16_transport_sha256.txt"
+                        saved_stream_sha = _read_transport_sha_sidecar(transport_sidecar)
+                        local_stream_sha = sha_file(target)
+                        if not saved_stream_sha or saved_stream_sha != local_stream_sha:
+                            print(tr(
+                                "[WARNING] Для сохранённого mtd16 нет валидного transport-stream SHA256; mtd16 будет снят заново без сравнения с изменяемым live NAND.",
+                                "[WARNING] The retained mtd16 has no valid transport-stream SHA256; mtd16 will be recaptured without comparing it to mutable live NAND.",
+                            ))
+                            target.unlink(missing_ok=True)
+                            transport_sidecar.unlink(missing_ok=True)
+                        else:
+                            print(tr(
+                                f"[{number + 1}/{len(EXPECTED_NUMBERS)}] Сохранён ранее проверенный {target.name}; gzip/size/transport SHA256 PASS.",
+                                f"[{number + 1}/{len(EXPECTED_NUMBERS)}] Existing validated {target.name} retained; gzip/size/transport SHA256 PASS.",
+                            ))
+                            continue
+                    else:
+                        print(tr(
+                            f"[{number + 1}/{len(EXPECTED_NUMBERS)}] Сохранён ранее проверенный {target.name}.",
+                            f"[{number + 1}/{len(EXPECTED_NUMBERS)}] Existing validated {target.name} retained.",
+                        ))
+                        continue
                 except Error:
                     target.unlink(missing_ok=True)
+                    if detected_family == "mf" and number == 16:
+                        (destination / "mtd16_transport_sha256.txt").unlink(missing_ok=True)
 
             for attempt in range(1, 4):
                 partial.unlink(missing_ok=True)
@@ -2117,7 +3104,7 @@ def backup_tftp(
                         f"[WAIT] Открываю новый UID 0 Telnet-сеанс для повтора mtd{number}.",
                         f"[WAIT] Opening a new UID-0 Telnet session to retry mtd{number}.",
                     ))
-                    telnet = login_root_md(access)
+                    telnet = login_root_family(access, expected_family)
 
                 ready = threading.Event()
                 cancel = threading.Event()
@@ -2136,25 +3123,55 @@ def backup_tftp(
                 attempt_error: Exception | str | None = None
                 marker_ok = False
                 session_broken = False
+                source_stream_sha: str | None = None
                 try:
-                    print(f"[{number}/16] TFTP mtd{number} ({name}), попытка {attempt}. Для mtd16 это может занять долго...")
-                    command = (
-                        f"dd if=/dev/mtd{number} bs=131072 2>/tmp/nokia-dd-{number}.log | gzip -1 | "
-                        f"{shlex.quote(tftp)} -p -l - -r {shlex.quote(target.name)} -b {block_size} "
-                        f"{shlex.quote(local_ip)} {port}"
-                    )
-                    telnet.send_line(command + f"; __rc=$?; echo __TFTP_PUT_{number}_${{__rc}}__")
+                    suffix = tr(" Для mtd16 это может занять долго...", " mtd16 may take a while...") if number == 16 else ""
+                    print(tr(
+                        f"[{number + 1}/{len(EXPECTED_NUMBERS)}] TFTP mtd{number} ({name}), попытка {attempt}.{suffix}",
+                        f"[{number + 1}/{len(EXPECTED_NUMBERS)}] TFTP mtd{number} ({name}), attempt {attempt}.{suffix}",
+                    ))
+                    print(tr(
+                        f"[TRANSFER] mtd{number}: приём начат; raw {_human_transfer_size(size)}.",
+                        f"[TRANSFER] mtd{number}: receive started; raw {_human_transfer_size(size)}.",
+                    ))
+                    read_device = f"/dev/mtd{number}ro" if detected_family == "mf" else f"/dev/mtd{number}"
+                    if detected_family == "mf" and number == 16:
+                        fifo = f"/tmp/nokia-stream-{number}.fifo"
+                        hash_file = f"/tmp/nokia-stream-{number}.sha"
+                        command = (
+                            f"rm -f {shlex.quote(fifo)} {shlex.quote(hash_file)}; "
+                            f"if (command -v mkfifo >/dev/null 2>&1 && mkfifo {shlex.quote(fifo)}) || "
+                            f"(command -v mknod >/dev/null 2>&1 && mknod {shlex.quote(fifo)} p); then "
+                            f"sha256sum < {shlex.quote(fifo)} > {shlex.quote(hash_file)} & __hpid=$!; "
+                            f"dd if={shlex.quote(read_device)} bs=131072 2>/tmp/nokia-dd-{number}.log | gzip -1 | "
+                            f"tee {shlex.quote(fifo)} | {shlex.quote(tftp)} -p -l - -r {shlex.quote(target.name)} -b {block_size} "
+                            f"{shlex.quote(local_ip)} {port}; __trc=$?; wait $__hpid; __hrc=$?; "
+                            f"set -- $(cat {shlex.quote(hash_file)} 2>/dev/null); __sh=$1; "
+                            f"rm -f {shlex.quote(fifo)} {shlex.quote(hash_file)}; "
+                            f"[ $__hrc -eq 0 ] || __sh=FAIL; echo __TFTP_PUT_{number}_${{__trc}}_SHA_${{__sh}}__; "
+                            f"else echo __TFTP_PUT_{number}_91_SHA_FAIL__; fi"
+                        )
+                        marker_pattern = rf"__TFTP_PUT_{number}_(\d+)_SHA_([0-9a-fA-F]{{64}}|FAIL)__"
+                    else:
+                        command = (
+                            f"dd if={shlex.quote(read_device)} bs=131072 2>/tmp/nokia-dd-{number}.log | gzip -1 | "
+                            f"{shlex.quote(tftp)} -p -l - -r {shlex.quote(target.name)} -b {block_size} "
+                            f"{shlex.quote(local_ip)} {port}"
+                        )
+                        command += f"; __rc=$?; echo __TFTP_PUT_{number}_${{__rc}}__"
+                        marker_pattern = rf"__TFTP_PUT_{number}_(\d+)__"
+                    telnet.send_line(command)
                     started = time.time()
                     deadline = started + 7200
-                    last_report = -15
-                    last_bytes = -4 * 1024 * 1024
+                    last_report = 0
+                    last_bytes = 0
                     while thread.is_alive() and time.time() < deadline:
                         elapsed = int(time.time() - started)
                         done = int(result.bytes_transferred)
-                        if elapsed >= last_report + 15 or done >= last_bytes + 4 * 1024 * 1024:
+                        if done > 0 and (elapsed >= last_report + 15 or done >= last_bytes + 4 * 1024 * 1024):
                             print(tr(
-                                f"[TRANSFER] mtd{number}: принято {done / 1048576:.1f} MiB сжатых данных, прошло {elapsed}s...",
-                                f"[TRANSFER] mtd{number}: received {done / 1048576:.1f} MiB compressed, elapsed {elapsed}s...",
+                                f"[TRANSFER] mtd{number}: принято {_human_transfer_size(done)} сжатых данных, прошло {elapsed}s...",
+                                f"[TRANSFER] mtd{number}: received {_human_transfer_size(done)} compressed, elapsed {elapsed}s...",
                             ))
                             last_report = elapsed
                             last_bytes = done
@@ -2168,11 +3185,16 @@ def backup_tftp(
                         attempt_error = result.error
                         session_broken = True
                     else:
-                        marker_text = telnet.wait_regex(rf"__TFTP_PUT_{number}_(\d+)__", 90, echo=False)
-                        marker_match = re.search(rf"__TFTP_PUT_{number}_(\d+)__", marker_text)
+                        marker_text = telnet.wait_regex(marker_pattern, 90, echo=False)
+                        marker_match = re.search(marker_pattern, marker_text)
                         if marker_match:
                             marker_ok = marker_match.group(1) == "0"
-                            if not marker_ok:
+                            if detected_family == "mf" and number == 16:
+                                source_stream_sha = marker_match.group(2).lower()
+                                if source_stream_sha == "fail":
+                                    marker_ok = False
+                                    attempt_error = "router stream sha256 failed"
+                            if not marker_ok and attempt_error is None:
                                 attempt_error = "router tftp rc != 0"
                         else:
                             attempt_error = "completion marker not received"
@@ -2209,8 +3231,33 @@ def backup_tftp(
                         f"[WARNING] {exc}; the shell remains synchronised and only mtd{number} is retried.",
                     ))
                     continue
+                compressed_sha = sha_file(partial)
+                if detected_family == "mf" and number == 16:
+                    if not source_stream_sha or source_stream_sha != compressed_sha:
+                        partial.unlink(missing_ok=True)
+                        raise Error(tr(
+                            f"MF mtd16: SHA256 переданного gzip-потока не совпал с файлом на ПК: router={source_stream_sha or 'missing'}, PC={compressed_sha}",
+                            f"MF mtd16: transmitted gzip-stream SHA256 does not match the PC file: router={source_stream_sha or 'missing'}, PC={compressed_sha}",
+                        ))
                 partial.replace(target)
-                print(f"  OK: {target.name}, {target.stat().st_size} bytes, SHA256 {sha_file(target)}")
+                print(tr(
+                    f"  OK: {target.name}; raw {_human_transfer_size(size)}; compressed {_human_transfer_size(target.stat().st_size)}; SHA256 {compressed_sha}",
+                    f"  OK: {target.name}; raw {_human_transfer_size(size)}; compressed {_human_transfer_size(target.stat().st_size)}; SHA256 {compressed_sha}",
+                ))
+                if detected_family == "mf" and number == 16:
+                    write_text(
+                        destination / "mtd16_transport_sha256.txt",
+                        f"router_stream_sha256={source_stream_sha}\npc_file_sha256={compressed_sha}\nraw_size={size}\ncompressed_size={target.stat().st_size}\n",
+                    )
+                    (destination / "mtd16_second_read_sha256.txt").unlink(missing_ok=True)
+                    print(tr(
+                        f"[OK] MF mtd16 transport SHA256 PASS: router gzip stream == PC file ({compressed_sha}).",
+                        f"[OK] MF mtd16 transport SHA256 PASS: router gzip stream == PC file ({compressed_sha}).",
+                    ))
+                    print(tr(
+                        "[INFO] Повторный full-NAND SHA256 не является fatal gate: live stock может менять config/data/log во время backup.",
+                        "[INFO] A second full-NAND SHA256 is not a fatal gate: live stock may change config/data/log during backup.",
+                    ))
                 break
             else:
                 raise Error(f"не удалось надёжно снять mtd{number} через TFTP после трёх попыток")
@@ -2221,21 +3268,38 @@ def backup_tftp(
         for path in sorted(p for p in destination.iterdir() if p.is_file() and p.name not in ("SHA256SUMS.txt", "BACKUP_COMPLETE")):
             sums.append(f"{sha_file(path)}  {path.name}")
         write_text(destination / "SHA256SUMS.txt", "\n".join(sums) + "\n")
-        write_text(destination / "BACKUP_COMPLETE", "Nokia XG-040G-MD direct TFTP backup complete\n")
-        verify_backup(destination)
+        if detected_family == "md":
+            # Preserve the established MD backup/install validator behavior.
+            verify_backup(destination)
+            write_text(destination / "BACKUP_COMPLETE", "Nokia XG-040G-MD direct TFTP backup complete\n")
+        else:
+            validation = verify_stock_restore_backup(destination)
+            if str(validation.get("stock_family")) != detected_family:
+                raise Error(tr("итоговый validator определил другую family", "the final validator detected a different family"))
+            write_text(destination / "BACKUP_COMPLETE", f"{model_name} direct TFTP backup complete ({detected_variant})\n")
+            write_text(destination / "BACKUP_HW_VALIDATED", f"family={detected_family}\nvariant={detected_variant}\nvalidator=verify_stock_restore_backup\n")
+            print(tr(
+                f"[OK] {model_name} / {detected_variant}: полный stock backup прошёл restore-validator.",
+                f"[OK] {model_name} / {detected_variant}: full stock backup passed the restore validator.",
+            ))
         return destination
     finally:
         if telnet is not None:
             telnet.close()
 
-def backup_to_usb(telnet: Telnet, usb_mount: str) -> str:
+def backup_to_usb(telnet: Telnet, usb_mount: str, family: str = "md") -> str:
     telnet.upload_text("/tmp/nokia-backup-agent.sh", BACKUP_AGENT.read_text())
     # Disable terminal input echo while the agent command is entered. Runtime
     # output remains visible, but the shell command itself is not printed.
     telnet.command("stty -echo 2>/dev/null || true", timeout=10, echo=False)
     try:
         rc, text = telnet.command(
-            f"NOKIA_LANG={shlex.quote(ensure_language())} NOKIA_USB_QUIET=1 ash /tmp/nokia-backup-agent.sh {shlex.quote(usb_mount)}",
+            f"NOKIA_LANG={shlex.quote(ensure_language())} NOKIA_USB_QUIET=1 "
+            f"NOKIA_MODEL_NAME={shlex.quote('Nokia XG-040G-MF' if family == 'mf' else 'Nokia XG-040G-MD')} "
+            f"NOKIA_BACKUP_PREFIX={shlex.quote('nokia-xg040gmf-backup' if family == 'mf' else 'nokia-xg040gmd-backup')} "
+            f"NOKIA_BACKUP_FAMILY={shlex.quote(family)} "
+            f"NOKIA_PREFER_RO_MTD={'1' if family == 'mf' else '0'} "
+            f"ash /tmp/nokia-backup-agent.sh {shlex.quote(usb_mount)}",
             timeout=7200,
             echo=True,
         )
@@ -3105,7 +4169,7 @@ def ssh_run(host: str, command: str, input_text: str | None = None, timeout: int
     if batch_mode:
         argv.extend(["-o", "BatchMode=yes"])
     if minimal_auth:
-        # The corrected rc7 manual transition starts Dropbear with -B because
+        # The manual transition starts Dropbear with -B because
         # its root shadow password is intentionally empty. OpenSSH always sends
         # the protocol-level "none" request first; Dropbear may then accept the
         # blank-password account without an interactive prompt. Avoid local keys,
@@ -3161,11 +4225,15 @@ def scp_executable() -> str:
 
 
 def ssh_run_with_progress(host: str, command: str, timeout: int, label: str,
-                          counter=None, total: int | None = None) -> tuple[int, str]:
+                          counter=None, total: int | None = None, *,
+                          restore_auth: bool = False) -> tuple[int, str]:
     holder: dict[str, object] = {}
     def worker() -> None:
         try:
-            holder["result"] = ssh_run(host, command, timeout=timeout, quiet=True)
+            if restore_auth:
+                holder["result"] = _restore_probe_ssh(host, command, timeout=timeout, quiet=True)
+            else:
+                holder["result"] = ssh_run(host, command, timeout=timeout, quiet=True)
         except BaseException as exc:
             holder["error"] = exc
     thread = threading.Thread(target=worker, daemon=True)
@@ -3197,8 +4265,14 @@ def scp_copy_to_recovery(host: str, source: Path, remote_path: str, timeout: int
     argv = [
         scp, "-O", "-o", "StrictHostKeyChecking=no", "-o", f"UserKnownHostsFile={null}",
         "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=15",
-        "-o", "ServerAliveCountMax=4", str(source), f"root@{host}:{remote_path}",
+        "-o", "ServerAliveCountMax=4",
     ]
+    if _RESTORE_SSH_MINIMAL_AUTH.get(host) is True:
+        argv.extend([
+            "-o", "BatchMode=yes", "-o", "ConnectionAttempts=1",
+            "-o", "PubkeyAuthentication=no", "-o", "PasswordAuthentication=no",
+        ])
+    argv.extend([str(source), f"root@{host}:{remote_path}"])
     print(tr(
         f"[SCP] Копирую {source.name}: {source.stat().st_size / 1048576:.1f} MiB в оперативную память системы восстановления...",
         f"[SCP] Copying {source.name}: {source.stat().st_size / 1048576:.1f} MiB into recovery-system memory with legacy SCP...",
@@ -3222,99 +4296,198 @@ def scp_copy_to_recovery(host: str, source: Path, remote_path: str, timeout: int
     print(tr("[SCP] Передача завершена.", "[SCP] Transfer completed."))
 
 
-def run_stage1(telnet: Telnet, remote_dir: str, nand_unknown: bool, manual_transition: bool = False) -> None:
+def _stage1_rearm_after_confirmation(
+    telnet: Telnet, access: "StockAccess", remote_dir: str, profile: InstallProfile
+) -> tuple[Telnet, bool]:
+    """Re-prove the stock root channel immediately before destructive handoff.
+
+    The operator may spend minutes reading the final confirmation text. Stock
+    telnetd can close an idle shell during that interval. RC19 then sent the
+    flash command through a stale socket and surfaced WinError 10053. RC20
+    never treats the pre-confirmation session as durable: it probes it,
+    reconnects if necessary, and repeats the read-only INSTALL --preflight
+    before dispatching --flash.
+    """
+    active = telnet
+    replacement = False
+    nonce = f"__NOKIA_STAGE1_REARM_{time.time_ns():x}__"
+    try:
+        rc, out = active.command(f"printf '%s\\n' {shlex.quote(nonce)}", timeout=12, echo=False)
+        if rc != 0 or nonce not in out:
+            raise Error("stock Telnet nonce proof failed")
+        print(tr(
+            "[OK] Stock Telnet-сеанс после подтверждения всё ещё жив.",
+            "[OK] The stock Telnet session is still alive after confirmation.",
+        ))
+    except Exception as exc:
+        _write_session_only(f"[STAGE1-REARM] stale Telnet: {exc.__class__.__name__}: {exc}")
+        print(tr(
+            "[WAIT] Stock Telnet-сеанс истёк, пока ожидалось подтверждение. Переподключаюсь ДО любых NAND-write.",
+            "[WAIT] The stock Telnet session expired while waiting for confirmation. Reconnecting BEFORE any NAND write.",
+        ))
+        try:
+            active.close()
+        except Exception:
+            pass
+        active = login_root_family(access, profile.family)
+        replacement = True
+
+    # Confirmation authorizes the operation, but it does not waive freshness.
+    # Repeat the complete read-only device/package preflight on the fresh shell.
+    rc, output = active.command_clean(
+        f"cd {shlex.quote(remote_dir)} && NOKIA_LANG={shlex.quote(ensure_language())} ash ./INSTALL.sh --preflight",
+        timeout=900,
+    )
+    _write_session_only(f"[{profile.family.upper()}-PREFLIGHT-REARM-RAW]\n" + output)
+    if rc or "PREFLIGHT PASSED" not in output:
+        raise Error(tr(
+            "Повторный pre-destructive preflight после подтверждения не пройден; NAND write не запускался.",
+            "The repeated pre-destructive preflight after confirmation failed; NAND writing was not started.",
+        ))
+    print(tr(
+        "[OK] Свежий pre-destructive preflight PASS; NAND всё ещё не изменялась.",
+        "[OK] Fresh pre-destructive preflight PASS; NAND is still unchanged.",
+    ))
+    return active, replacement
+
+
+def run_stage1(telnet: Telnet, remote_dir: str, nand_unknown: bool, manual_transition: bool = False, profile: InstallProfile = MD_INSTALL_PROFILE, access: "StockAccess" | None = None) -> str:
     rc, output = telnet.command_clean(
         f"cd {shlex.quote(remote_dir)} && NOKIA_LANG={shlex.quote(ensure_language())} ash ./INSTALL.sh --preflight",
         timeout=900,
     )
-    if output:
-        print(output)
+    _write_session_only(f"[{profile.family.upper()}-PREFLIGHT-RAW]\n" + output)
     if rc or "PREFLIGHT PASSED" not in output:
-        raise Error("stage 1 preflight не пройден")
+        errors = [line.strip() for line in output.splitlines() if re.search(r"(?:ОШИБКА|ERROR|CRITICAL|КРИТИЧ)", line, re.I)]
+        if errors:
+            print(errors[-1])
+        raise Error(tr("MF preflight не пройден", "MF preflight failed"))
+
+    print(tr(
+        f"[OK] {profile.model}: backup, root, MTD-разметка, transition и environment проверены.",
+        f"[OK] {profile.model}: backup, root, MTD layout, transition and environment verified.",
+    ))
+    print(tr(
+        "[OK] Preflight завершён. NAND ещё не изменялся.",
+        "[OK] Preflight complete. NAND has not been modified yet.",
+    ))
 
     if manual_transition:
         print(tr(
-            "\n[READY] Проверки завершены. Будет записан ручной transition; после перезагрузки мастер предложит выбрать sysupgrade на ПК.",
-            "\n[READY] Checks passed. The manual transition will be written; after reboot the wizard will ask for a sysupgrade file on the PC.",
+            "[READY] Будет записан transition; sysupgrade выберете после загрузки OpenWrt в RAM.",
+            "[READY] The transition will be written; you will select sysupgrade after RAM OpenWrt boots.",
         ))
     else:
         print(tr(
-            "\n[READY] Проверки завершены. Далее будет записан переходный образ, затем роутер автоматически установит OpenWrt.",
-            "\n[READY] Checks passed. The transition image will be written, then the router will install OpenWrt automatically.",
+            "[READY] После подтверждения начнётся переход на OpenWrt UBI.",
+            "[READY] After confirmation, the OpenWrt UBI migration will begin.",
         ))
     print(tr(
-        "[ВАЖНО] Отключите оптику, обеспечьте стабильное питание и сохраните полный backup на ПК.",
-        "[IMPORTANT] Disconnect fiber, use stable power, and keep the complete backup on the PC.",
+        "[ВАЖНО] Не отключайте питание. UART и полный stock backup должны быть доступны для отката.",
+        "[IMPORTANT] Do not interrupt power. Keep UART and the full stock backup available for rollback.",
     ))
     if nand_unknown:
         print(tr(
-            "[ПРЕДУПРЕЖДЕНИЕ] NAND не распознана; совместимость подтверждает оператор.",
-            "[WARNING] NAND was not identified; compatibility remains the operator's responsibility.",
+            f"[ПРЕДУПРЕЖДЕНИЕ] Модель NAND не экспортируется stock kernel; остальные {profile.family.upper()} gates пройдены.",
+            f"[WARNING] The stock kernel does not expose the NAND model; all other {profile.family.upper()} gates passed.",
         ))
 
     if manual_transition:
         confirm = input(tr(
-            "Записать ручной transition и перезагрузить роутер? [y/N]: ",
-            "Write the manual transition and reboot the router? [y/N]: ",
+            "Записать transition и перезагрузить роутер? [y/N]: ",
+            "Write the transition and reboot the router? [y/N]: ",
         )).strip().lower()
         if confirm not in ("y", "yes", "д", "да"):
             raise Error(tr("операция отменена", "operation cancelled"))
     else:
         confirm = input(tr(
-            "[INPUT] Введите точно CONFIRM FORMAT AND FLASH: ",
-            "[INPUT] Type exactly CONFIRM FORMAT AND FLASH: ",
+            "Введите точно CONFIRM FORMAT AND FLASH: ",
+            "Type exactly CONFIRM FORMAT AND FLASH: ",
         )).strip()
         if confirm != "CONFIRM FORMAT AND FLASH":
             raise Error(tr("операция отменена", "operation cancelled"))
 
-    stage_header("5", "Запись переходного образа", "Writing the transition image")
+    stage_header("5", "Запись transition", "Writing transition")
+    if access is None:
+        raise Error("internal error: stage1 access context is required")
     print(tr(
-        "[WAIT] Подготавливаю RAM-worker и запускаю запись переходного образа. Не выключайте питание.",
-        "[WAIT] Preparing the RAM worker and writing the transition image. Do not power off.",
+        "[WAIT] После подтверждения заново проверяю stock root-сеанс и read-only preflight.",
+        "[WAIT] Re-checking the stock root session and read-only preflight after confirmation.",
     ))
-    auth = shlex.quote("CONFIRM FORMAT AND FLASH")
-    command = (
-        f"cd {shlex.quote(remote_dir)} && "
-        f"NOKIA_FORMAT_AND_FLASH_AUTH={auth} "
-        f"NOKIA_LANG={shlex.quote(ensure_language())} ash ./INSTALL.sh --flash"
-    )
-    telnet.send_line(command + "; __rc=$?; printf '\\n__STAGE1_%s__\\n' \"$__rc\"")
-    # The worker marker and launcher transcript are protocol details. Keep them
-    # out of the operator console; show the transcript only when startup fails.
-    stage_output = telnet.wait_regex(
-        r"__NOKIA_RAM_WORKER_STARTED__\d+__|__STAGE1_\d+__",
-        900,
-        echo=False,
-    )
-    worker = re.search(r"__NOKIA_RAM_WORKER_STARTED__(\d+)__", stage_output)
-    stage_rc = re.search(r"__STAGE1_(\d+)__", stage_output)
-    if worker:
-        if manual_transition:
-            print(tr(
-                "[OK] Ручной transition записывается. После перезагрузки автоматическая прошивка не начнётся.",
-                "[OK] The manual transition is being written. Automatic flashing will not start after reboot.",
-            ))
-        else:
-            print(tr(
-                "[OK] Автономная прошивка запущена. Telnet может отключиться.",
-                "[OK] Autonomous flashing started. Telnet may disconnect.",
-            ))
-        return
-    if stage_rc and int(stage_rc.group(1)) == 0:
+    stage_telnet = telnet
+    replacement = False
+    try:
+        stage_telnet, replacement = _stage1_rearm_after_confirmation(telnet, access, remote_dir, profile)
         print(tr(
-            "[ПРЕДУПРЕЖДЕНИЕ] Launcher завершился без worker-маркера; продолжаю проверку загрузки.",
-            "[WARNING] The launcher exited without a worker marker; continuing boot verification.",
+            "[WAIT] Подготавливаю автономный RAM-worker. Не выключайте питание.",
+            "[WAIT] Preparing the autonomous RAM worker. Do not power off.",
         ))
-        return
+        auth = shlex.quote("CONFIRM FORMAT AND FLASH")
+        command = (
+            f"cd {shlex.quote(remote_dir)} && "
+            f"NOKIA_FORMAT_AND_FLASH_AUTH={auth} "
+            f"NOKIA_LANG={shlex.quote(ensure_language())} ash ./INSTALL.sh --flash"
+        )
+        dispatch_attempted = True
+        try:
+            stage_telnet.send_line(command + "; __rc=$?; printf '\\n__STAGE1_%s__\\n' \"$__rc\"")
+            stage_output = stage_telnet.wait_regex(
+                r"__NOKIA_RAM_WORKER_STARTED__\d+__|__STAGE1_\d+__",
+                900,
+                echo=False,
+            )
+        except (OSError, Error) as exc:
+            # Once send_line has been attempted, bytes may already be in the
+            # stock shell even when Windows reports WSAECONNABORTED/10053.
+            # Retrying --flash would therefore violate the destructive-state
+            # invariant. Continue only with read-only transition/production
+            # observation.
+            _write_session_only(
+                f"[STAGE1-HANDOFF-UNKNOWN] {exc.__class__.__name__}: {exc}"
+            )
+            print(tr(
+                "[ПРЕДУПРЕЖДЕНИЕ] Telnet оборвался после отправки команды запуска RAM-worker. "
+                "Состояние handoff НЕИЗВЕСТНО; автоматически повторять --flash запрещено.",
+                "[WARNING] Telnet disconnected after the RAM-worker launch command was dispatched. "
+                "The handoff state is UNKNOWN; automatically retrying --flash is forbidden.",
+            ))
+            print(tr(
+                "[STATE] STAGE1_HANDOFF_UNKNOWN — питание не трогать; мастер переходит только к read-only наблюдению transition/production.",
+                "[STATE] STAGE1_HANDOFF_UNKNOWN — do not touch power; the wizard will continue with read-only transition/production observation only.",
+            ))
+            return "handoff-unknown"
 
-    diagnostic = re.sub(r"__NOKIA_RAM_WORKER_STARTED__\d+__|__STAGE1_\d+__", "", stage_output).strip()
-    if diagnostic:
-        print(diagnostic[-4000:])
-    rc_text = stage_rc.group(1) if stage_rc else "unknown"
-    raise Error(tr(
-        f"RAM worker stage 1 не стартовал; launcher rc={rc_text}",
-        f"stage 1 RAM worker did not start; launcher rc={rc_text}",
-    ))
+        _write_session_only(f"[{profile.family.upper()}-STAGE1-RAW]\n" + stage_output)
+        worker = re.search(r"__NOKIA_RAM_WORKER_STARTED__(\d+)__", stage_output)
+        stage_rc = re.search(r"__STAGE1_(\d+)__", stage_output)
+        if worker:
+            print(tr(
+                "[OK] RAM-worker запущен. Дальнейшая запись идёт автономно; Telnet может отключиться.",
+                "[OK] RAM worker started. Flashing now continues autonomously; Telnet may disconnect.",
+            ))
+            return "worker-confirmed"
+        if stage_rc and int(stage_rc.group(1)) == 0:
+            print(tr(
+                "[ПРЕДУПРЕЖДЕНИЕ] Worker-маркер не получен, но stock shell вернул rc=0; повторный запуск запрещён, продолжаю read-only проверку загрузки.",
+                "[WARNING] The worker marker was not received, but the stock shell returned rc=0; relaunch is forbidden and read-only boot verification will continue.",
+            ))
+            return "stage1-rc0-unmarked"
+
+        cleaned = _clean_telnet_protocol(stage_output)
+        errors = [line.strip() for line in cleaned.splitlines() if re.search(r"(?:ОШИБКА|ERROR|CRITICAL|КРИТИЧ)", line, re.I)]
+        if errors:
+            print(errors[-1])
+        rc_text = stage_rc.group(1) if stage_rc else "unknown"
+        raise Error(tr(
+            f"RAM-worker не стартовал; rc={rc_text}. NAND write не продолжен.",
+            f"RAM worker did not start; rc={rc_text}. NAND writing did not continue.",
+        ))
+    finally:
+        if replacement:
+            try:
+                stage_telnet.close()
+            except Exception:
+                pass
 
 
 def choose_custom_sysupgrade() -> Path:
@@ -3630,19 +4803,17 @@ _MANUAL_SSH_MINIMAL_AUTH: dict[str, bool] = {}
 
 
 def _manual_transition_probe(host: str, timeout: int = 8) -> tuple[bool, str, str, str]:
-    """Probe the manual initramfs without letting one SSH attempt stall the wizard.
+    """Content-probe the manual initramfs and return READY/state/board/diagnostics.
 
-    The transition image has its own marker/state files. They are stronger evidence
-    than an HTTP port or a board-name string inherited from our own DTB. First try a
-    deterministic no-key/no-prompt OpenSSH path; if a platform needs the ordinary
-    BatchMode path, try it once with the same short command timeout.
+    Raw TCP openness is telemetry only.  Identity comes from the manual state
+    protocol emitted by the transition image.  The device-side readiness monitor
+    is persistent, so a delayed Ethernet/PHY probe can still become READY later.
     """
     command = (
         "echo NOKIA_MANUAL_PROBE_BEGIN; "
+        "cat /tmp/NOKIA_MANUAL_STATE 2>/dev/null || true; "
         "[ -f /tmp/NOKIA_MANUAL_TRANSITION_READY ] && echo MANUAL_READY; "
-        "printf 'STATE='; cat /tmp/NOKIA_MANUAL_STATE 2>/dev/null || true; echo; "
         "[ -x /usr/sbin/nokia-ubi-installer ] && echo INSTALLER=1 || echo INSTALLER=0; "
-        "printf 'BOARD='; cat /tmp/sysinfo/board_name 2>/dev/null || true; echo; "
         "echo NOKIA_MANUAL_PROBE_END"
     )
     errors: list[str] = []
@@ -3658,14 +4829,34 @@ def _manual_transition_probe(host: str, timeout: int = 8) -> tuple[bool, str, st
         if "NOKIA_MANUAL_PROBE_BEGIN" not in out or "NOKIA_MANUAL_PROBE_END" not in out:
             errors.append(("minimal" if minimal else "batch") + ": incomplete probe output")
             continue
-        state_match = re.search(r"(?:^|[\r\n])STATE=([^\r\n]*)", out)
-        board_match = re.search(r"(?:^|[\r\n])BOARD=([^\r\n]*)", out)
-        state = state_match.group(1).strip() if state_match else ""
-        board = board_match.group(1).strip() if board_match else ""
-        ready = "MANUAL_READY" in out and "INSTALLER=1" in out and bool(state)
+        def kv(name: str) -> str:
+            match = re.search(rf"(?m)^{re.escape(name)}=([^\r\n]*)", out)
+            return match.group(1).strip() if match else ""
+        protocol = kv("MEDVEFLASHER_MANUAL_PROTOCOL")
+        mode = kv("MODE")
+        state = kv("STATE")
+        board = kv("BOARD")
+        reason = kv("REASON")
+        deferred = kv("DEFERRED")
+        br_lan = kv("BR_LAN_PRESENT")
+        lan_ip = kv("LAN_192_168_1_1")
+        ssh22 = kv("SSH22_LISTEN")
+        installer = "INSTALLER=1" in out
+        identity = protocol == "1" and mode == "TRANSITION" and installer
+        ready = identity and "MANUAL_READY" in out and state == "WAITING_FOR_CUSTOM_IMAGE"
+        detail_parts = []
+        if identity and not ready:
+            if state: detail_parts.append(f"state={state}")
+            if reason: detail_parts.append(f"reason={reason}")
+            if deferred: detail_parts.append(f"deferred={deferred}")
+            if br_lan: detail_parts.append(f"br-lan={br_lan}")
+            if lan_ip: detail_parts.append(f"lan-ip={lan_ip}")
+            if ssh22: detail_parts.append(f"ssh22={ssh22}")
+        elif not identity:
+            detail_parts.append("manual protocol/installer identity incomplete")
         if ready:
             _MANUAL_SSH_MINIMAL_AUTH[host] = minimal
-        return ready, state, board, ""
+        return ready, state, board, "; ".join(detail_parts)
     return False, "", "", "; ".join(errors)[-1400:]
 
 
@@ -3686,12 +4877,55 @@ def _manual_ssh_run(host: str, command: str, timeout: int = 900,
     )
 
 
-def wait_manual_transition(host: str, timeout: int = 600) -> None:
+
+def _manual_transition_http_probe(host: str) -> tuple[bool, str, str, str]:
+    """Read the manual transition ASCII state over HTTP when available.
+
+    HTTP is diagnostic/control-plane evidence only; READY still requires the SSH
+    content probe before custom image transfer. Raw port openness is never identity.
+    """
+    errors: list[str] = []
+    for port in (80, 443):
+        try:
+            body = _http_get_body(host, port, "/medveflasher-manual.status", timeout=1.6, max_bytes=8192).decode("ascii", "replace")
+        except (OSError, ssl.SSLError, ValueError) as exc:
+            errors.append(f"http:{port}: {str(exc)[-160:]}")
+            continue
+        def kv(name: str) -> str:
+            match = re.search(rf"(?m)^{re.escape(name)}=([^\r\n]*)", body)
+            return match.group(1).strip() if match else ""
+        protocol = kv("MEDVEFLASHER_MANUAL_PROTOCOL")
+        mode = kv("MODE")
+        if protocol != "1" or mode != "TRANSITION":
+            errors.append(f"http:{port}: marker mismatch")
+            continue
+        state = kv("STATE")
+        board = kv("BOARD")
+        detail_parts = [f"transport=http:{port}"]
+        for field, label in (("REASON", "reason"), ("DEFERRED", "deferred"), ("BR_LAN_PRESENT", "br-lan"), ("LAN_192_168_1_1", "lan-ip"), ("SSH22_LISTEN", "ssh22")):
+            value = kv(field)
+            if value:
+                detail_parts.append(f"{label}={value}")
+        return True, state, board, "; ".join(detail_parts)
+    return False, "", "", " | ".join(errors)[-800:]
+
+def wait_manual_transition(host: str, timeout: int = 600, expected_board: str | None = None) -> None:
     stage_header("6", "Ожидание ручного transition", "Waiting for the manual transition")
     started=time.time(); next_report=started; next_error_report=started
     last_error = ""
     while time.time()-started < timeout:
         ports=(_tcp_open(host,22),_tcp_open(host,80),_tcp_open(host,443),_tcp_open(host,23))
+        http_identified, http_state, http_board, http_detail = _manual_transition_http_probe(host)
+        if http_identified:
+            if expected_board and http_board and http_board != expected_board:
+                raise Error(tr(f"manual transition HTTP board mismatch: {http_board} != {expected_board}", f"manual transition HTTP board mismatch: {http_board} != {expected_board}"))
+            if http_detail and time.time() >= next_error_report:
+                print(tr(
+                    f"[WAIT] Manual transition виден по content-based HTTP status: state={http_state or 'UNKNOWN'}; {http_detail}",
+                    f"[WAIT] Manual transition is visible through content-based HTTP status: state={http_state or 'UNKNOWN'}; {http_detail}",
+                ))
+                _write_session_only(f"[MANUAL-HTTP] state={http_state!r} board={http_board!r} {http_detail}")
+                next_error_report = time.time() + 30
         if ports[0]:
             ready, state, board, detail = _manual_transition_probe(host, timeout=8)
             if ready:
@@ -3699,22 +4933,31 @@ def wait_manual_transition(host: str, timeout: int = 600) -> None:
                     f"[OK] Ручной transition готов; состояние {state}. Автоматическая запись NAND не запущена.",
                     f"[OK] Manual transition is ready; state {state}. No automatic NAND write has started.",
                 ))
-                if board and board != "nokia,xg-040g-md-ubi":
+                if expected_board and board and board != expected_board:
+                    raise Error(tr(f"manual transition board mismatch: {board} != {expected_board}", f"manual transition board mismatch: {board} != {expected_board}"))
+                if board and board not in ("nokia,xg-040g-md-ubi", "nokia,xg-040g-mf-ubi"):
                     _write_session_only(f"[MANUAL-SSH] ready marker accepted; board_name={board!r}")
                 return
             if detail:
                 last_error = detail
                 if time.time() >= next_error_report:
-                    short = detail[-500:]
-                    print(tr(
-                        f"[WAIT] SSH 22 открыт, но служебная метка ручного transition пока не прочитана: {short}",
-                        f"[WAIT] SSH 22 is open, but the transition marker is not readable yet: {short}",
-                    ))
-                    next_error_report = time.time() + 60
-                    _write_session_only(f"[MANUAL-SSH] probe failed: {detail}")
+                    short = detail[-700:]
+                    if state:
+                        print(tr(
+                            f"[WAIT] Manual transition распознан, но ещё не READY: {short}",
+                            f"[WAIT] Manual transition is identified but not READY yet: {short}",
+                        ))
+                        _write_session_only(f"[MANUAL-STATE] not ready: {detail}")
+                    else:
+                        print(tr(
+                            f"[WAIT] SSH 22 открыт, но content-probe manual transition не прошёл: {short}",
+                            f"[WAIT] SSH 22 is open, but the manual-transition content probe did not pass: {short}",
+                        ))
+                        _write_session_only(f"[MANUAL-SSH] probe failed: {detail}")
+                    next_error_report = time.time() + 30
         if time.time() >= next_report:
             elapsed=int(time.time()-started)
-            print(tr(f"[WAIT] {elapsed//60:02d}:{elapsed%60:02d} — {_port_summary(*ports)}.", f"[WAIT] {elapsed//60:02d}:{elapsed%60:02d} — {_port_summary(*ports)}."))
+            print(tr(f"[NET] {elapsed//60:02d}:{elapsed%60:02d} — {_port_summary(*ports)}.", f"[NET] {elapsed//60:02d}:{elapsed%60:02d} — {_port_summary(*ports)}."))
             next_report=time.time()+30
         time.sleep(3)
     suffix = f"; последняя ошибка SSH: {last_error[-700:]}" if last_error else ""
@@ -3724,8 +4967,8 @@ def wait_manual_transition(host: str, timeout: int = 600) -> None:
     ))
 
 
-def run_custom_stage2(host: str, local_ip: str | None, port: int, block_size: int) -> str:
-    wait_manual_transition(host)
+def run_custom_stage2(host: str, local_ip: str | None, port: int, block_size: int, expected_board: str = "nokia,xg-040g-md-ubi") -> str:
+    wait_manual_transition(host, expected_board=expected_board)
     stage_header("7", "Выбор и проверка sysupgrade", "Selecting and validating sysupgrade")
     image=choose_custom_sysupgrade(); digest=sha_file(image); size=image.stat().st_size
     print(tr(f"[IMAGE] {image.name}; {size/1048576:.1f} MiB; SHA256 {digest}", f"[IMAGE] {image.name}; {size/1048576:.1f} MiB; SHA256 {digest}"))
@@ -3758,7 +5001,7 @@ def run_custom_stage2(host: str, local_ip: str | None, port: int, block_size: in
     # The existing monitor understands the same installer milestones. Manual
     # transition has no autoflash service, so expose its installer log through
     # the same markers while monitoring.
-    return run_stage2(host, manual_mode=True)
+    return run_stage2(host, manual_mode=True, expected_board=expected_board)
 
 def _tcp_open(host: str, port: int, timeout: float = 1.2) -> bool:
     try:
@@ -3794,6 +5037,55 @@ def _probe_luci(host: str, port: int, timeout: float = 2.5) -> bool:
         return False
 
 
+def _http_get_body(host: str, port: int, path: str, timeout: float = 2.0, max_bytes: int = 131072) -> bytes:
+    raw = socket.create_connection((host, port), timeout=timeout)
+    raw.settimeout(timeout)
+    if port == 443:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        sock = context.wrap_socket(raw, server_hostname=host)
+    else:
+        sock = raw
+    with sock:
+        request = f"GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+        sock.sendall(request.encode("ascii", "strict"))
+        data = bytearray()
+        while len(data) < max_bytes + 8192:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data.extend(chunk)
+    head, sep, body = bytes(data).partition(b"\r\n\r\n")
+    if not sep or not re.match(br"HTTP/\d(?:\.\d)? 200(?: |\r?$)", head.split(b"\r\n", 1)[0]):
+        raise OSError("HTTP status is not 200")
+    return body[:max_bytes]
+
+
+def _auto_transition_http_probe(host: str) -> tuple[str, str]:
+    """Content-addressed transition control plane; raw port openness is never identity."""
+    errors: list[str] = []
+    for port in (80, 443):
+        try:
+            status = _http_get_body(host, port, "/medveflasher-transition.status", timeout=1.6, max_bytes=4096).decode("ascii", "replace")
+            if "MEDVEFLASHER_TRANSITION_PROTOCOL=1" not in status or "MODE=TRANSITION" not in status:
+                errors.append(f"http:{port}: marker mismatch")
+                continue
+            try:
+                log = _http_get_body(host, port, "/medveflasher-transition.log", timeout=1.6, max_bytes=120000).decode("ascii", "replace")
+            except OSError:
+                log = ""
+            state = re.search(r"(?m)^STATE=([^\r\n]+)", status)
+            safe = re.search(r"(?m)^SAFE_TO_POWER_CYCLE=([01])", status)
+            output = "MODE=TRANSITION\nAUTO_STATE=" + (state.group(1).strip() if state else "UNKNOWN") + "\n"
+            if safe:
+                output += "SAFE_TO_POWER_CYCLE=" + safe.group(1) + "\n"
+            output += "AUTOFLOG_BEGIN\n" + log.rstrip("\r\n") + "\nAUTOFLOG_END\n"
+            return output, f"http:{port}"
+        except (OSError, ssl.SSLError, ValueError) as exc:
+            errors.append(f"http:{port}: {str(exc)[-180:]}")
+    return "TRANSITION_HTTP_PROBE_ERROR=" + " | ".join(errors)[-600:], ""
+
 
 def _recover_rc27_false_fudan(host: str, probe_output: str) -> bool:
     """Continue a verified RC27 migration stopped by its self-poisoned NAND scan."""
@@ -3820,7 +5112,7 @@ def _recover_rc27_false_fudan(host: str, probe_output: str) -> bool:
     _, diagnostics = ssh_run(host, command, timeout=90, quiet=True, batch_mode=True)
     required = (
         "BOARD=nokia,xg-040g-md-ubi", "MIGRATION=complete", "AUTH=present",
-        "IMAGE_SIZE=9531670", f"IMAGE_SHA={EXPECTED_PROD_SHA}",
+        f"IMAGE_SIZE={EXPECTED_PROD_SIZE}", f"IMAGE_SHA={EXPECTED_PROD_SHA}",
         "SKYHIGH_PRECHECK=present", "MIGRATION_LOG=present",
         "FALSE_FUDAN_SIGNATURE=present",
         "VOL=ubootenv", "VOL=ubootenv2", "VOL=bosa",
@@ -3892,9 +5184,11 @@ def _transition_state_label(state: str) -> str:
         "NOT_STARTED": tr("transition загружен; ожидается запуск автоматики", "transition booted; waiting for automation"),
         "CHECKING": tr("проверка платы, NAND и встроенного образа", "checking the board, NAND and embedded image"),
         "FORMATTING_AND_FLASHING": tr("форматирование UBI и запись загрузочных данных", "formatting UBI and writing boot data"),
-        "WAITING_FOR_SYSTEM": tr("установка основной OpenWrt и перезагрузка", "production sysupgrade and reboot"),
+        "BOOTING": tr("ранний запуск transition initramfs", "early transition initramfs boot"),
+        "WAITING_FOR_SYSTEM": tr("transition ожидает завершения normal init", "transition is waiting for normal init to complete"),
         "STARTING": tr("запуск проверки выбранного образа", "starting validation of the selected image"),
         "FAILED": tr("установка остановлена с ошибкой", "installation stopped with an error"),
+        "FULLFLASH_RETURNED_0": tr("fullflash вернул 0 без reboot; требуется проверка production", "fullflash returned 0 without reboot; production verification is required"),
     }
     return labels.get(state, state.replace("_", " ").lower())
 
@@ -3962,9 +5256,87 @@ def _new_autoflash_events(probe_output: str, seen: set[str]) -> list[tuple[str, 
     return events
 
 
-def run_stage2(host: str, manual_mode: bool = False) -> str:
+
+_AUTO_TRANSITION_SSH_MINIMAL_AUTH: dict[str, bool] = {}
+
+def _transition_telnet_run(host: str, command: str, timeout: int = 12) -> tuple[int, str]:
+    """Best-effort OpenWrt-transition command channel for stage2 monitoring.
+
+    It is never an authorization channel for destructive actions. It only reads
+    state/log files if transition telnetd is available while SSH is not.
+    """
+    telnet = Telnet(host, 23, timeout=min(6, timeout))
+    try:
+        dialogue = telnet.read(0.8, echo=False)
+        if not dialogue:
+            telnet.send_bytes(b"\r\n")
+            dialogue += telnet.read(0.8, echo=False)
+        if re.search(r"(?i)(?:login|username)\s*:", dialogue):
+            telnet.send_login_line("root")
+            dialogue += telnet.read(0.8, echo=False)
+        if re.search(r"(?i)password\s*:", dialogue[-1200:]):
+            telnet.send_login_line("")
+            dialogue += telnet.read(0.8, echo=False)
+        if re.search(r"(?i)login incorrect|authentication failed|access denied", dialogue):
+            raise Error("transition Telnet authentication failed")
+        return telnet.command_clean(command, timeout=timeout)
+    finally:
+        telnet.close()
+
+
+def _auto_transition_probe(host: str, probe_cmd: str, port22: bool, port23: bool) -> tuple[str, str]:
+    """Read auto-transition status over deterministic SSH, then Telnet fallback."""
+    errors: list[str] = []
+    if port22:
+        preferred = _AUTO_TRANSITION_SSH_MINIMAL_AUTH.get(host)
+        modes = [preferred] if preferred is not None else [True, False]
+        for minimal in modes:
+            try:
+                _, out = ssh_run(
+                    host, probe_cmd, timeout=12, allow_disconnect=True, quiet=True,
+                    batch_mode=True, minimal_auth=bool(minimal),
+                )
+                if "MODE=" in out:
+                    if "MODE=TRANSITION" in out:
+                        _AUTO_TRANSITION_SSH_MINIMAL_AUTH[host] = bool(minimal)
+                    return out, "ssh"
+                errors.append("ssh: incomplete probe")
+            except Error as exc:
+                errors.append("ssh: " + str(exc).replace("\n", " ")[-500:])
+        # If a cached mode stopped working after reboot, allow the other mode once.
+        if preferred is not None:
+            other = not preferred
+            try:
+                _, out = ssh_run(
+                    host, probe_cmd, timeout=12, allow_disconnect=True, quiet=True,
+                    batch_mode=True, minimal_auth=other,
+                )
+                if "MODE=" in out:
+                    if "MODE=TRANSITION" in out:
+                        _AUTO_TRANSITION_SSH_MINIMAL_AUTH[host] = other
+                    return out, "ssh"
+            except Error as exc:
+                errors.append("ssh-alt: " + str(exc).replace("\n", " ")[-500:])
+    if port23:
+        try:
+            _, out = _transition_telnet_run(host, probe_cmd, timeout=12)
+            if "MODE=" in out:
+                return out, "telnet"
+            errors.append("telnet: incomplete probe")
+        except Error as exc:
+            errors.append("telnet: " + str(exc).replace("\n", " ")[-500:])
+        except OSError as exc:
+            errors.append("telnet: " + str(exc)[-500:])
+    return "TRANSITION_PROBE_ERROR=" + " | ".join(errors)[-1400:], ""
+
+def run_stage2(host: str, manual_mode: bool = False, expected_board: str = "nokia,xg-040g-md-ubi", initial_handoff_unknown: bool = False) -> str:
     if not manual_mode:
         stage_header("6", "Ожидание OpenWrt", "Waiting for OpenWrt")
+    if initial_handoff_unknown:
+        print(tr(
+            "[STATE] STAGE1_HANDOFF_UNKNOWN: команда --flash могла быть принята stock shell. Автоповтор запрещён; выполняется только наблюдение.",
+            "[STATE] STAGE1_HANDOFF_UNKNOWN: the stock shell may have accepted --flash. Automatic retry is forbidden; observation only.",
+        ))
     print(tr(
         "[WAIT] Выбранный образ устанавливается; роутер перезагрузится автоматически. Не выключайте питание." if manual_mode else
         "[WAIT] Роутер загружает переходную систему, затем установит OpenWrt. Не выключайте питание.",
@@ -3989,6 +5361,12 @@ def run_stage2(host: str, manual_mode: bool = False) -> str:
     handoff_explicit = False
     handoff_outage_seen = False
     services_returned_announced = False
+    last_transition_progress = started
+    safe_to_power_cycle = False
+    safe_retry_prompted = False
+    last_probe_error = ""
+    post_sysupgrade_reboot_prompted = False
+    handoff_started_at: float | None = None
 
     while True:
         now = time.time()
@@ -3999,13 +5377,14 @@ def run_stage2(host: str, manual_mode: bool = False) -> str:
         ports = (port22, port80, port443, port23)
         if ports != previous_ports:
             previous_ports = ports
-            print(tr("[NET] Порты: ", "[NET] Ports: ") + _port_summary(*ports) + ".")
+            print(tr("[NET] TCP-порты: ", "[NET] TCP ports: ") + _port_summary(*ports) + ".")
 
         if transition_seen and not handoff_announced and not any(ports) and (
             highest_step >= 6 or previous_state in ("FORMATTING_AND_FLASHING", "WAITING_FOR_SYSTEM")
         ):
             handoff_announced = True
             handoff_outage_seen = True
+            handoff_started_at = now
             current_phase = tr(
                 "перезагрузка после записи UBI",
                 "reboot after writing UBI",
@@ -4018,124 +5397,167 @@ def run_stage2(host: str, manual_mode: bool = False) -> str:
             handoff_outage_seen = True
 
         detected_mode = ""
-        if port22:
-            try:
-                state_cmd = (
-                    "cat /tmp/NOKIA_MANUAL_STATE 2>/dev/null || echo STARTING; "
-                    if manual_mode else
-                    "cat /tmp/NOKIA_AUTOFLASH_STATE 2>/dev/null || echo NOT_STARTED; "
-                )
-                failure_cmd = (
-                    "[ ! -f /tmp/NOKIA_MANUAL_FLASH_FAILED ] || { printf 'AUTO_FAILURE='; cat /tmp/NOKIA_MANUAL_FLASH_FAILED; }; "
-                    if manual_mode else
-                    "[ ! -f /tmp/NOKIA_AUTOFLASH_FAILED ] || { printf 'AUTO_FAILURE='; cat /tmp/NOKIA_AUTOFLASH_FAILED; }; "
-                )
-                log_cmd = (
-                    "cat /tmp/nokia-ubi-installer.log /tmp/nokia-manual-flash.log 2>/dev/null; "
-                    if manual_mode else
-                    "cat /tmp/nokia-autoflash.log 2>/dev/null; "
-                )
-                probe_cmd = (
-                    "if [ -x /usr/sbin/nokia-ubi-installer ]; then "
-                    "echo MODE=TRANSITION; printf 'AUTO_STATE='; " + state_cmd + failure_cmd +
-                    "echo AUTOFLOG_BEGIN; " + log_cmd + "echo AUTOFLOG_END; "
-                    "else echo MODE=PRODUCTION; echo BOARD=$(cat /tmp/sysinfo/board_name 2>/dev/null); "
-                    "ubinfo -a 2>/dev/null | awk '$1 == \"Name:\" {print \"VOL=\" $2}'; "
-                    "grep -E 'DISTRIB_RELEASE|DISTRIB_REVISION' /etc/openwrt_release 2>/dev/null; fi"
-                )
-                if manual_mode:
+        probe_transport = ""
+        http_output = ""
+        if not manual_mode:
+            http_output, http_transport = _auto_transition_http_probe(host)
+        if http_output and "MODE=TRANSITION" in http_output:
+            output = http_output
+            probe_transport = http_transport
+        elif port22 or (not manual_mode and port23):
+            state_cmd = (
+                "cat /tmp/NOKIA_MANUAL_STATE 2>/dev/null || echo STARTING; "
+                if manual_mode else
+                "cat /tmp/NOKIA_AUTOFLASH_STATE 2>/dev/null || echo NOT_STARTED; "
+            )
+            failure_cmd = (
+                "[ ! -f /tmp/NOKIA_MANUAL_FLASH_FAILED ] || { printf 'AUTO_FAILURE='; cat /tmp/NOKIA_MANUAL_FLASH_FAILED; }; "
+                if manual_mode else
+                "[ ! -f /tmp/NOKIA_AUTOFLASH_FAILED ] || { printf 'AUTO_FAILURE='; cat /tmp/NOKIA_AUTOFLASH_FAILED; }; "
+            )
+            log_cmd = (
+                "cat /tmp/nokia-ubi-installer.log /tmp/nokia-manual-flash.log 2>/dev/null; "
+                if manual_mode else
+                "cat /tmp/nokia-autoflash.log 2>/dev/null; "
+            )
+            probe_cmd = (
+                "if [ -x /usr/sbin/nokia-ubi-installer ]; then "
+                "echo MODE=TRANSITION; printf 'AUTO_STATE='; " + state_cmd + failure_cmd +
+                "echo AUTOFLOG_BEGIN; " + log_cmd + "echo AUTOFLOG_END; "
+                "else echo MODE=PRODUCTION; echo BOARD=$(cat /tmp/sysinfo/board_name 2>/dev/null); "
+                "ubinfo -a 2>/dev/null | awk '$1 == \"Name:\" {print \"VOL=\" $2}'; "
+                "grep -E 'DISTRIB_RELEASE|DISTRIB_REVISION' /etc/openwrt_release 2>/dev/null; fi"
+            )
+            if manual_mode and port22:
+                try:
                     _, output = _manual_ssh_run(
                         host, probe_cmd, timeout=20, allow_disconnect=True, quiet=True,
                     )
-                else:
-                    _, output = ssh_run(
-                        host, probe_cmd,
-                        timeout=90, allow_disconnect=True, quiet=True, batch_mode=True,
-                    )
-            except Error as exc:
-                output = f"SSH_PROBE_ERROR={exc}"
+                    probe_transport = "ssh"
+                except Error as exc:
+                    output = f"SSH_PROBE_ERROR={exc}"
+            elif not manual_mode:
+                output, probe_transport = _auto_transition_probe(host, probe_cmd, port22, port23)
+            else:
+                output = "SSH_PROBE_ERROR=SSH port closed"
+        elif not manual_mode:
+            output = http_output or "CONTROL_PROBE_UNAVAILABLE"
+        else:
+            output = "SSH_PROBE_ERROR=SSH port closed"
 
-            if "MODE=PRODUCTION" in output:
-                detected_mode = "production"
-                current_phase = tr("проверка основной OpenWrt", "verifying production OpenWrt")
-                if "BOARD=nokia,xg-040g-md-ubi" in output and "VOL=fit" in output:
+        if "TRANSITION_PROBE_ERROR=" in output or "TRANSITION_HTTP_PROBE_ERROR=" in output or "SSH_PROBE_ERROR=" in output:
+            compact = output.replace("\r", " ").replace("\n", " ")[-1000:]
+            if compact != last_probe_error:
+                last_probe_error = compact
+                _write_session_only("[CONTROL] " + compact)
+
+        if "MODE=PRODUCTION" in output:
+            detected_mode = "production"
+            current_phase = tr("проверка основной OpenWrt", "verifying production OpenWrt")
+            required_volumes = ("VOL=ubootenv", "VOL=ubootenv2", "VOL=bosa", "VOL=ri", "VOL=fip", "VOL=fit", "VOL=rootfs_data")
+            strong_identity = f"BOARD={expected_board}" in output and all(v in output for v in required_volumes) and "DISTRIB_RELEASE=" in output
+            if strong_identity:
+                if highest_step < 7:
                     print(tr(
-                        "[OK] Перезагрузка завершена; основная OpenWrt подтверждена по SSH.",
-                        "[OK] Reboot completed; production OpenWrt was verified over SSH.",
+                        "[STEP 7/8] запись BL2 последней — подтверждено post-boot инвариантом production board/UBI.",
+                        "[STEP 7/8] BL2 written last — reconciled from the production board/UBI post-boot invariant.",
                     ))
-                    return "production-ssh"
+                    highest_step = 7
+                if highest_step < 8:
+                    print(tr(
+                        "[STEP 8/8] completion state — подтверждено успешной загрузкой production из новой UBI-разметки.",
+                        "[STEP 8/8] completion state — reconciled by successful production boot from the new UBI layout.",
+                    ))
+                    highest_step = 8
+                luci_ok = _probe_luci(host, 80, timeout=2.0) or _probe_luci(host, 443, timeout=2.0)
+                if luci_ok:
+                    print(tr(
+                        "[OK] Production OpenWrt подтверждена по SSH: board/UBI/release PASS; LuCI подтверждена HTTP-content probe.",
+                        "[OK] Production OpenWrt verified over SSH: board/UBI/release PASS; LuCI verified by an HTTP content probe.",
+                    ))
+                    return "production-ssh+luci"
                 print(tr(
-                    "[ПРЕДУПРЕЖДЕНИЕ] OpenWrt отвечает, но итоговая проверка ещё не пройдена; продолжаю ждать.",
-                    "[WARNING] OpenWrt responds, but final verification has not passed yet; continuing to wait.",
+                    "[WAIT] Production board/UBI уже подтверждены; жду LuCI content probe.",
+                    "[WAIT] Production board/UBI are already verified; waiting for the LuCI content probe.",
                 ))
+            print(tr(
+                "[ПРЕДУПРЕЖДЕНИЕ] OpenWrt отвечает, но итоговая проверка ещё не пройдена; продолжаю ждать.",
+                "[WARNING] OpenWrt responds, but final verification has not passed yet; continuing to wait.",
+            ))
 
-            if "MODE=TRANSITION" in output:
-                detected_mode = "transition"
-                if not transition_seen:
-                    transition_seen = True
+        if "MODE=TRANSITION" in output:
+            detected_mode = "transition"
+            if not transition_seen:
+                transition_seen = True
+                last_transition_progress = now
+                channel = "HTTP control" if probe_transport.startswith("http:") else "SSH" if probe_transport == "ssh" else "Telnet" if probe_transport == "telnet" else "control channel"
+                print(tr(
+                    f"[OK] Переходная система загружена; live-progress доступен через {channel}.",
+                    f"[OK] The transition system has booted; live progress is available over {channel}.",
+                ))
+            match = re.search(r"AUTO_STATE=([^\r\n]+)", output)
+            state = match.group(1).strip() if match else "UNKNOWN"
+            safe_match = re.search(r"SAFE_TO_POWER_CYCLE=([01])", output)
+            safe_to_power_cycle = bool(safe_match and safe_match.group(1) == "1")
+            if state != previous_state:
+                last_transition_progress = now
+                previous_state = state
+                current_phase = _transition_state_label(state)
+                if state == "NOT_STARTED":
                     print(tr(
-                        "[OK] Переходная система загружена; SSH доступен.",
-                        "[OK] The transition system has booted; SSH is available.",
+                        "[WAIT] Переходная система ожидает запуск установки.",
+                        "[WAIT] The transition system is waiting for installation to start.",
                     ))
-                match = re.search(r"AUTO_STATE=([^\r\n]+)", output)
-                state = match.group(1).strip() if match else "UNKNOWN"
-                if state != previous_state:
-                    previous_state = state
-                    current_phase = _transition_state_label(state)
-                    if state == "NOT_STARTED":
-                        print(tr(
-                            "[WAIT] Переходная система ожидает запуск установки.",
-                            "[WAIT] The transition system is waiting for installation to start.",
-                        ))
-                    elif state == "WAITING_FOR_SYSTEM":
-                        handoff_announced = True
-                        handoff_explicit = True
-                        print(tr(
-                            "[WAIT] Загрузочные данные записаны; запущена установка основной OpenWrt и последующая перезагрузка.",
-                            "[WAIT] Boot data has been written; production OpenWrt installation and the following reboot have started.",
-                        ))
-                    elif state != "FAILED":
-                        print(tr(
-                            f"[WAIT] Переходная система: {current_phase}.",
-                            f"[WAIT] Transition system: {current_phase}.",
-                        ))
-
-                raw_log = _extract_autoflash_log(output)
-                if raw_log and raw_log != last_raw_log:
-                    new_tail = raw_log[len(last_raw_log):] if raw_log.startswith(last_raw_log) else raw_log
-                    _write_session_only("[TRANSITION-RAW]\n" + new_tail)
-                    last_raw_log = raw_log
-                for message, phase, event_key in _new_autoflash_events(output, seen_autoflash_lines):
-                    current_phase = phase
-                    step_match = re.fullmatch(r"step:([1-8])", event_key)
-                    if step_match:
-                        highest_step = max(highest_step, int(step_match.group(1)))
-                    if event_key in ("sysupgrade-starting", "sysupgrade-writing", "sysupgrade-success"):
-                        handoff_announced = True
-                        handoff_explicit = True
-                    print(message)
-
-                if handoff_outage_seen and not handoff_explicit:
-                    # A brief service outage can happen while transition is
-                    # still running. If SSH identifies transition again, do
-                    # not mistake that outage for the production reboot.
-                    handoff_announced = False
-                    handoff_outage_seen = False
-                    services_returned_announced = False
-
-                if state == "FAILED":
-                    print(output, end="" if output.endswith("\n") else "\n")
-                    if not manual_mode and _recover_rc27_false_fudan(host, output):
-                        previous_state = "RC27_FALSE_FUDAN_RECOVERY"
-                        current_phase = tr("продолжение установки основной OpenWrt после проверки", "continuing production sysupgrade after validation")
-                        time.sleep(5)
-                        continue
-                    raise Error(tr(
-                        "установка выбранного образа остановлена; ручная переходная система доступна по SSH." if manual_mode else
-                        "автоматическая прошивка не завершилась; переходная система оставлена доступной по SSH. Полный /tmp/nokia-autoflash.log сохранён в журнале сеанса на ПК.",
-                        "installation of the selected image stopped; the manual transition remains available over SSH." if manual_mode else
-                        "automatic flashing did not complete; the transition system remains available over SSH. The complete /tmp/nokia-autoflash.log was saved in the PC session log.",
+                elif state == "WAITING_FOR_SYSTEM":
+                    print(tr(
+                        "[WAIT] Transition initramfs загружен; автоматика ждёт завершения normal init. Destructive stage ещё не подтверждён.",
+                        "[WAIT] Transition initramfs is running; automation is waiting for normal init. The destructive stage has not been observed yet.",
                     ))
+                elif state != "FAILED":
+                    print(tr(
+                        f"[WAIT] Переходная система: {current_phase}.",
+                        f"[WAIT] Transition system: {current_phase}.",
+                    ))
+
+            raw_log = _extract_autoflash_log(output)
+            if raw_log and raw_log != last_raw_log:
+                last_transition_progress = now
+                new_tail = raw_log[len(last_raw_log):] if raw_log.startswith(last_raw_log) else raw_log
+                _write_session_only("[TRANSITION-RAW]\n" + new_tail)
+                last_raw_log = raw_log
+            for message, phase, event_key in _new_autoflash_events(output, seen_autoflash_lines):
+                current_phase = phase
+                step_match = re.fullmatch(r"step:([1-8])", event_key)
+                if step_match:
+                    highest_step = max(highest_step, int(step_match.group(1)))
+                if event_key in ("sysupgrade-starting", "sysupgrade-writing", "sysupgrade-success"):
+                    handoff_announced = True
+                    handoff_explicit = True
+                    if handoff_started_at is None:
+                        handoff_started_at = now
+                print(message)
+
+            if handoff_outage_seen and not handoff_explicit:
+                # A brief service outage can happen while transition is
+                # still running. If SSH identifies transition again, do
+                # not mistake that outage for the production reboot.
+                handoff_announced = False
+                handoff_outage_seen = False
+                services_returned_announced = False
+
+            if state == "FAILED":
+                print(output, end="" if output.endswith("\n") else "\n")
+                if not manual_mode and _recover_rc27_false_fudan(host, output):
+                    previous_state = "RC27_FALSE_FUDAN_RECOVERY"
+                    current_phase = tr("продолжение установки основной OpenWrt после проверки", "continuing production sysupgrade after validation")
+                    time.sleep(5)
+                    continue
+                raise Error(tr(
+                    "установка выбранного образа остановлена; ручная переходная система доступна по SSH." if manual_mode else
+                    "автоматическая прошивка не завершилась; переходная система оставлена запущенной для диагностики. Полный /tmp/nokia-autoflash.log сохранён в журнале сеанса на ПК.",
+                    "installation of the selected image stopped; the manual transition remains available over SSH." if manual_mode else
+                    "automatic flashing did not complete; the transition system remains running for diagnostics. The complete /tmp/nokia-autoflash.log was saved in the PC session log.",
+                ))
 
         if handoff_announced and handoff_outage_seen and any(ports) and detected_mode != "transition" and not services_returned_announced:
             services_returned_announced = True
@@ -4160,6 +5582,23 @@ def run_stage2(host: str, manual_mode: bool = False) -> str:
                 ))
                 return "production-web"
 
+        if (not post_sysupgrade_reboot_prompted and handoff_announced and handoff_outage_seen
+                and handoff_started_at is not None and now - handoff_started_at >= 240
+                and detected_mode != "production"):
+            post_sysupgrade_reboot_prompted = True
+            print(tr(
+                "[REBOOT-CHECK] Перезагрузка production не подтверждена более 4 минут. Сам по себе тайм-аут НЕ разрешает отключать питание.",
+                "[REBOOT-CHECK] Production reboot has not been verified for more than 4 minutes. Timeout alone does NOT authorize a power cycle.",
+            ))
+            print(tr(
+                "[SAFE-REBOOT OPTION] Если подключён UART и на нём уже есть точная строка 'sysupgrade successful', а после неё несколько минут нет reboot, разрешён один ручной power-cycle: питание OFF 5 секунд → ON, Reset не нажимать. Если этой строки нет — питание НЕ трогать.",
+                "[SAFE-REBOOT OPTION] If UART is connected and already shows the exact line 'sysupgrade successful', followed by several minutes without reboot, one manual power cycle is allowed: power OFF for 5 seconds → ON, do not press Reset. If that exact line is absent, do NOT touch power.",
+            ))
+            print(tr(
+                "[INFO] Мастер продолжает мониторинг; после ручного power-cycle ничего вводить не нужно.",
+                "[INFO] Monitoring continues; no input is required after the manual power cycle.",
+            ))
+
         if now >= next_report:
             elapsed = int(now - started)
             print(tr(
@@ -4167,6 +5606,29 @@ def run_stage2(host: str, manual_mode: bool = False) -> str:
                 f"[WAIT] {elapsed // 60:02d}:{elapsed % 60:02d} — {current_phase}.",
             ))
             next_report = now + 30
+
+        if not manual_mode and transition_seen and not safe_retry_prompted and highest_step == 0 and safe_to_power_cycle and previous_state in ("BOOTING", "WAITING_FOR_SYSTEM", "CHECKING") and now - last_transition_progress >= 120:
+            safe_retry_prompted = True
+            print(tr(
+                "[BOOT-TIMEOUT] 120 секунд нет прогресса, но transition control-plane последний раз явно сообщил SAFE_TO_POWER_CYCLE=1 и destructive step 1/8 ещё не наблюдался.",
+                "[BOOT-TIMEOUT] No progress for 120 seconds, but the transition control plane last explicitly reported SAFE_TO_POWER_CYCLE=1 and destructive step 1/8 has not been observed.",
+            ))
+            answer = input(tr(
+                "Разрешён один контролируемый power-cycle. Y — выполнить его вручную сейчас и продолжить мониторинг; Enter — не трогать питание: ",
+                "One controlled power cycle is permitted. Y — perform it manually now and continue monitoring; Enter — keep power unchanged: ",
+            )).strip().lower()
+            if answer in ("y", "yes", "д", "да"):
+                input(tr(
+                    "Отключите питание на 5 секунд, включите Nokia снова и нажмите Enter. Мастер продолжит мониторинг: ",
+                    "Remove power for 5 seconds, power the Nokia on again, then press Enter. The wizard will continue monitoring: ",
+                ))
+                current_phase = tr("повторный безопасный запуск transition", "safe transition boot retry")
+                last_transition_progress = time.time()
+                previous_state = ""
+                transition_seen = False
+                safe_to_power_cycle = False
+            else:
+                print(tr("[INFO] Питание не трогаем; продолжаю мониторинг.", "[INFO] Power remains unchanged; continuing monitoring."))
 
         if now >= next_checkpoint:
             answer = input(tr(
@@ -4181,7 +5643,13 @@ def run_stage2(host: str, manual_mode: bool = False) -> str:
                 return "post-install-unverified"
             next_checkpoint = time.time() + 1800
 
-        time.sleep(5)
+        # Steps 7/8 and 8/8 can complete in well under one second after step 6.
+        # Poll aggressively only in this narrow transition window; otherwise keep
+        # the low-overhead 5-second cadence.
+        if detected_mode == "transition" and 6 <= highest_step < 8:
+            time.sleep(0.35)
+        else:
+            time.sleep(5)
 
 def _raw_stream(path: Path):
     probe = path.open("rb")
@@ -4225,13 +5693,19 @@ def _read_raw_range(path: Path, offset: int, length: int) -> bytes:
 def verify_stock_restore_backup(directory: Path) -> dict:
     """Validate a complete, internally consistent stock backup.
 
-    Besides cross-checking mtd16 against the individual stock partitions, RC16
+    Besides cross-checking mtd16 against the individual stock partitions, RC11
     rejects the two known OpenWrt BL2 layouts.  A backup containing the OpenWrt
     preloader at offset 0 (the historical brick) or at offset 0x800 (the proper
     all-in-UBI BL2 container) is not an original stock backup and must never be
     used to restore stock firmware.
     """
-    validation = verify_backup(directory)
+    validation = verify_backup(directory, require_md_slot_layout=False)
+    family = str(validation.get("stock_family", "unknown"))
+    if family not in ("md", "mf"):
+        raise Error(tr(
+            "mtd2..mtd5 не совпали с известными stock-профилями MD/MF; brick recovery запрещён. " + _slot_layout_diagnostic({int(k): int(v) for k, v in validation["sizes"].items()}),
+            "mtd2..mtd5 do not match a known MD/MF stock profile; brick recovery is blocked. " + _slot_layout_diagnostic({int(k): int(v) for k, v in validation["sizes"].items()}),
+        ))
     files = {int(k): Path(v) for k, v in validation["files"].items()}
     expected_hashes: dict[int, str] = {}
     for number in STOCK_RAW_SLICES:
@@ -4259,8 +5733,8 @@ def verify_stock_restore_backup(directory: Path) -> dict:
                 if left < right:
                     slice_hashes[number].update(chunk[left - start:right - start])
             total = end
-    if total != STOCK_ALL_FLASH_SIZE:
-        raise Error(f"mtd16/all_flash: распакованный размер {total}, ожидается {STOCK_ALL_FLASH_SIZE}")
+    if total != STOCK_RESTORE_SPAN:
+        raise Error(f"mtd16/all_flash: распакованный размер {total}, ожидается {STOCK_RESTORE_SPAN}")
     live_differences: list[int] = []
     for number, digest in slice_hashes.items():
         actual = digest.hexdigest()
@@ -4289,18 +5763,23 @@ def verify_stock_restore_backup(directory: Path) -> dict:
         ))
 
     stock_bl2 = _read_raw_range(files[16], 0, STOCK_BL2_SIZE)
-    no_shift = hashlib.sha256(stock_bl2[:OPENWRT_PRELOADER_SIZE]).hexdigest()
-    shifted = hashlib.sha256(stock_bl2[0x800:0x800 + OPENWRT_PRELOADER_SIZE]).hexdigest()
-    if no_shift == OPENWRT_PRELOADER_SHA:
-        raise Error(
-            "выбранный backup содержит OpenWrt preloader в начале BL2 без смещения. "
-            "Это копия повреждённого OpenWrt BL2, а не исходный stock backup"
-        )
-    if shifted == OPENWRT_PRELOADER_SHA and stock_bl2[:0x800] == b"\xff" * 0x800:
-        raise Error(
-            "выбранный backup содержит OpenWrt all-in-UBI BL2 (FF 0x800 + preloader), "
-            "а не исходный stock BL2"
-        )
+    known_openwrt_preloaders = (
+        (OPENWRT_PRELOADER_SIZE, OPENWRT_PRELOADER_SHA, "AN7581/MD"),
+        (MF_RECOVERY_PRELOADER_SIZE, MF_RECOVERY_PRELOADER_SHA, "AN7583/MF"),
+    )
+    for preloader_size, preloader_sha, preloader_label in known_openwrt_preloaders:
+        no_shift = hashlib.sha256(stock_bl2[:preloader_size]).hexdigest()
+        shifted = hashlib.sha256(stock_bl2[0x800:0x800 + preloader_size]).hexdigest()
+        if no_shift == preloader_sha:
+            raise Error(
+                f"выбранный backup содержит OpenWrt preloader {preloader_label} в начале BL2 без смещения. "
+                "Это копия повреждённого OpenWrt BL2, а не исходный stock backup"
+            )
+        if shifted == preloader_sha and stock_bl2[:0x800] == b"\xff" * 0x800:
+            raise Error(
+                f"выбранный backup содержит OpenWrt all-in-UBI BL2 {preloader_label} "
+                "(FF 0x800 + preloader), а не исходный stock BL2"
+            )
 
     result = dict(validation)
     result["stock_restore"] = {
@@ -4311,7 +5790,8 @@ def verify_stock_restore_backup(directory: Path) -> dict:
         "live_slice_differences": live_differences,
         "bl2_size": STOCK_BL2_SIZE,
         "bl2_sha256": hashlib.sha256(stock_bl2).hexdigest(),
-        "bl2_provenance": "does not match either known OpenWrt preloader placement",
+        "bl2_provenance": "does not match known AN7581/AN7583 OpenWrt preloader placements",
+        "device_family": family,
         "ibu_size": STOCK_IBU_SIZE,
     }
     return result
@@ -4348,18 +5828,19 @@ def prepare_stock_restore_payloads(directory: Path) -> tuple[Path, dict]:
                 ibu_out.write(chunk)
                 ibu_hash.update(chunk)
             total = end
-    if total != STOCK_ALL_FLASH_SIZE:
+    if total != STOCK_RESTORE_SPAN:
         raise Error("mtd16 изменился во время подготовки файлов восстановления")
     manifest = {
         "kit_version": APP_VERSION,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "backup_directory": str(Path(directory).resolve()),
         "all_flash_sha256": validation["stock_restore"]["all_flash_sha256"],
-        "all_flash_size": STOCK_ALL_FLASH_SIZE,
+        "all_flash_size": STOCK_RESTORE_SPAN,
         "bl2": {"file": bl2_gz.name, "raw_size": STOCK_BL2_SIZE, "raw_sha256": bl2_hash.hexdigest(), "gzip_sha256": sha_file(bl2_gz)},
         "ibu": {"file": ibu_gz.name, "raw_size": STOCK_IBU_SIZE, "raw_sha256": ibu_hash.hexdigest(), "gzip_sha256": sha_file(ibu_gz)},
         "write_order": ["ibu", "bl2"],
         "source_validation": {
+            "device_family": validation["stock_restore"]["device_family"],
             "verified_static_slices": validation["stock_restore"]["verified_static_slices"],
             "live_slices_checked_by_manifest": validation["stock_restore"]["live_slices_checked_by_manifest"],
             "live_slice_differences": validation["stock_restore"]["live_slice_differences"],
@@ -4424,7 +5905,7 @@ def prepare_uboot_restore_chunks(payload_dir: Path, manifest: dict) -> list[dict
         "chunks": [{k: (str(v) if isinstance(v, Path) else v) for k, v in c.items()} for c in chunks],
         "bl2_file": str(bl2_raw),
         "bl2_sha256": digest.hexdigest(),
-        "method": "RAM U-Boot, whole ubi erase, aligned chunk write/readback, exact stock BL2 last",
+        "method": "RAM U-Boot, whole ubi erase, bad-block-aware physical-span write/readback, exact stock BL2 last",
     }
     write_text(payload_dir / "restore-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     return chunks
@@ -4734,10 +6215,16 @@ def probe_serial_port(port: str) -> None:
         probe.close()
 
 
-def recovery_dependency_preflight() -> None:
+def recovery_dependency_preflight(*, require_ssh: bool = True) -> None:
     print("Проверяю программные зависимости recovery...")
     if os.name == "nt":
         print("[OK] COM/XMODEM: встроенный Win32-бэкенд, pyserial и pip не нужны.")
+    if not require_ssh:
+        print(tr(
+            "[OK] BootROM backup: SSH не используется; UART управляет RAM shell, данные идут по TFTP.",
+            "[OK] BootROM backup: SSH is not used; UART controls the RAM shell and data uses TFTP.",
+        ))
+        return
     try:
         ssh = ssh_executable()
     except Error as exc:
@@ -4763,14 +6250,18 @@ def _uart_log_write(log, data: bytes, echo: bool = True) -> None:
             print(data.decode("utf-8", "replace"), end="", flush=True)
 
 
-def wait_bootrom_xmodem(serial_port: RecoverySerial, log, phase: str, timeout: int = 180) -> None:
+def wait_bootrom_xmodem(serial_port: RecoverySerial, log, phase: str, timeout: int = 180, *, discard_stale: bool = True) -> None:
     print(tr(
         f"\nОжидание BootROM XMODEM для {phase}. Символ C означает готовность приёмника.",
         f"\nWaiting for BootROM XMODEM for {phase}. Character C means the receiver is ready.",
     ))
-    # Discard stale ACK/C bytes from the preceding XMODEM phase. BootROM or the
-    # preloader keeps transmitting C while it is genuinely ready.
-    serial_port.reset_input()
+    # Between XMODEM stages, discard stale ACK/C bytes left by the preceding
+    # transfer.  For the *first* BootROM wait this must be disabled: the router
+    # may already be printing ``Press x`` / ``C`` while the operator has both
+    # hands on Reset and power, and flushing RX here can throw away the exact
+    # readiness indication we are trying to auto-detect.
+    if discard_stale:
+        serial_port.reset_input()
     deadline = time.time() + timeout
     c_count = 0
     text_tail = b""
@@ -4885,12 +6376,28 @@ def xmodem_send(serial_port: RecoverySerial, path: Path, label: str, log) -> Non
 
 
 def _uboot_prompt_present(data: bytes) -> bool:
-    if b"AN7581>" in data:
+    """Return True when a real interactive RAM U-Boot prompt is visible.
+
+    AN7581 Nokia builds commonly use ``AN7581>`` while the AN7583 OpenWrt
+    reference U-Boot used by MF recovery has been hardware-observed to use
+    ``U-Boot>``.  During prompt acquisition a Ctrl-C can already be in flight,
+    so accept ``<INTERRUPT>`` immediately after the prompt as well and stop
+    sending breaks at once.
+    """
+    tail = data[-2048:]
+    named = re.search(
+        rb"(?:^|[\r\n])(?:AN7581|AN7583|U-Boot)>[ \t]*(?=$|[\r\n]|<INTERRUPT>)",
+        tail,
+    )
+    if named is not None:
         return True
-    # Generic fallback for U-Boot builds that use the default prompt. Match it
-    # only at a line boundary to avoid treating arrows or command output as a
-    # prompt.
-    return re.search(rb"(?:^|[\r\n])=>[ \t]*(?:\x1b\[[0-9;?]*[A-Za-z])*$", data[-1024:]) is not None
+    # Generic fallback for U-Boot builds that use the default ``=>`` prompt.
+    # Keep the same line-boundary requirement to avoid matching arrows in
+    # ordinary command output.
+    return re.search(
+        rb"(?:^|[\r\n])=>[ \t]*(?=$|[\r\n]|<INTERRUPT>)",
+        tail,
+    ) is not None
 
 
 def _uboot_send_break(serial_port: RecoverySerial, menu_visible: bool = False) -> None:
@@ -4906,26 +6413,48 @@ def _uboot_send_break(serial_port: RecoverySerial, menu_visible: bool = False) -
         serial_port.write(b"\x1b")
 
 
+def _uboot_wait_quiet(serial_port: RecoverySerial, log, quiet: float = 0.45, timeout: float = 4.0) -> bytes:
+    """Drain late UART output until U-Boot has been quiet for ``quiet`` seconds.
+
+    This is important after autoboot interception: Ctrl-C bytes already accepted by
+    the router can still produce additional prompts even after the first prompt was
+    seen.  No new break is sent here.
+    """
+    deadline = time.time() + timeout
+    quiet_deadline = time.time() + quiet
+    transcript = bytearray()
+    while time.time() < deadline:
+        data = serial_port.read(4096, min(0.10, max(0.01, quiet_deadline - time.time())))
+        if data:
+            _uart_log_write(log, data)
+            transcript.extend(data)
+            quiet_deadline = time.time() + quiet
+            continue
+        if time.time() >= quiet_deadline:
+            break
+    return bytes(transcript)
+
+
 def wait_uboot_prompt(serial_port: RecoverySerial, log, timeout: int = 180) -> str:
     """Acquire deterministic control of RAM U-Boot.
 
-    Returns ``prompt`` after a stable AN7581> prompt. Returns ``production``
-    only when Linux has already started despite the break sequence, allowing
-    the caller to use the production-OpenWrt fallback instead of abandoning the
-    restore workflow.
+    Break traffic starts only when U-Boot itself becomes visible (banner/menu), never
+    while BL31/U-Boot is still initializing.  A paced Ctrl-C/ESC series continues until a prompt
+    appears, the UART must remain quiet before commands are allowed.  This avoids
+    the hardware-observed AN7583 failure where queued Ctrl-C bytes kept generating
+    ``U-Boot>`` prompts and corrupted the first scripted command.
     """
     print("\nОжидаю U-Boot, запущенный из RAM, и останавливаю автоматическую загрузку...")
-    print("[UART][UBOOT_SYNC] Ctrl-C/ESC используются для остановки autoboot; Enter не отправляется.")
+    print("[UART][UBOOT_SYNC] До banner UART не трогаю; после banner посылаю paced Ctrl-C до prompt. После prompt требуется тишина UART.")
     deadline = time.time() + timeout
     tail = b""
     uboot_seen = False
     menu_visible = False
-    production_read_started = False
-    last_break = 0.0
-    # Start breaking immediately after the XMODEM EOT ACK. U-Boot appears only
-    # a moment later and its menu countdown is three seconds on this profile.
-    _uboot_send_break(serial_port)
-    last_break = time.time()
+    break_sent = False
+    menu_break_sent = False
+    production_break_sent = False
+    last_break_at = 0.0
+    break_count = 0
 
     while time.time() < deadline:
         data = serial_port.read(4096, 0.12)
@@ -4935,27 +6464,52 @@ def wait_uboot_prompt(serial_port: RecoverySerial, log, timeout: int = 180) -> s
             low = tail.lower()
 
             if _uboot_prompt_present(tail):
-                print("\n[UART][UBOOT_PROMPT] Получено приглашение U-Boot; загрузка с NAND не запускалась.")
+                # Do not return on the first prompt immediately.  Let any Ctrl-C
+                # already received by the router drain and require a quiet console.
+                _uboot_wait_quiet(serial_port, log, quiet=0.45, timeout=4.0)
+                serial_port.reset_input()
+                print("\n[UART][UBOOT_PROMPT] Получено устойчивое приглашение U-Boot; очередь break очищена, загрузка с NAND не запускалась.")
                 return "prompt"
 
             if b"u-boot 20" in low or b"hit any key to stop autoboot" in low:
                 if not uboot_seen:
-                    print("\n[UART][UBOOT_BANNER] Обнаружен RAM U-Boot; прерываю autoboot.")
+                    print("\n[UART][UBOOT_BANNER] Обнаружен RAM U-Boot; начинаю страховочную серию Ctrl-C до устойчивого prompt.")
                 uboot_seen = True
+                if not break_sent:
+                    _uboot_send_break(serial_port)
+                    break_sent = True
+                    last_break_at = time.time()
+                    break_count = 1
 
             if (b"press up/down to move" in low or
                     b"run default boot command" in low or
                     b"boot system via tftp" in low):
                 if not menu_visible:
-                    print("\n[UART][UBOOT_MENU] Меню U-Boot обнаружено; отправляю ESC, не Enter.")
+                    print("\n[UART][UBOOT_MENU] Меню U-Boot обнаружено; отправляю Ctrl-C+ESC один раз, не Enter.")
                 uboot_seen = True
                 menu_visible = True
+                if not menu_break_sent:
+                    _uboot_send_break(serial_port, menu_visible=True)
+                    menu_break_sent = True
+                    break_sent = True
 
             if (b"read " in low and b" bytes from volume fit" in low) or b"## checking image at" in low:
-                if not production_read_started:
-                    print("\n[UART][UBOOT_NAND_BOOT] Началось чтение production FIT; посылаю Ctrl-C до передачи управления ядру.")
-                production_read_started = True
+                if not production_break_sent:
+                    print("\n[UART][UBOOT_NAND_BOOT] Началось чтение production FIT; отправляю аварийный Ctrl-C один раз.")
+                    _uboot_send_break(serial_port)
+                    production_break_sent = True
                 uboot_seen = True
+
+            if uboot_seen and not _uboot_prompt_present(tail) and time.time() - last_break_at >= 0.20 and break_count < 40:
+                _uboot_send_break(serial_port, menu_visible=menu_visible)
+                last_break_at = time.time()
+                break_count += 1
+
+            if uboot_seen and (b"erasing 0x" in low or b"mtd erase ubi" in low):
+                raise Error(tr(
+                    "RAM U-Boot начал destructive autoboot до доказанного prompt. Этот FIP запрещён для recovery; NAND capability не выдавалась.",
+                    "RAM U-Boot started destructive autoboot before a proven prompt. This FIP is forbidden for recovery; NAND capability was never granted.",
+                ))
 
             if b"starting kernel" in low or b"booting linux on physical cpu" in low:
                 print("\n[UART][PRODUCTION_FALLBACK] Обычная OpenWrt уже начала загрузку; продолжу через SSH и аварийный RAM-образ без повторного XMODEM.")
@@ -4964,21 +6518,25 @@ def wait_uboot_prompt(serial_port: RecoverySerial, log, timeout: int = 180) -> s
             if b"press x to load bl31" in low and not uboot_seen:
                 raise Error("после передачи FIP устройство вернулось в BootROM вместо RAM U-Boot")
 
-        now = time.time()
-        interval = 0.12 if (uboot_seen or production_read_started) else 0.25
-        if now - last_break >= interval:
-            _uboot_send_break(serial_port, menu_visible=menu_visible)
-            last_break = now
-
     raise Error("U-Boot prompt не появился после передачи FIP; autoboot не считается успешно перехваченным")
 
 
-def uboot_command(serial_port: RecoverySerial, log, command: str, timeout: int = 30) -> bytes:
-    """Run one U-Boot command and require rc=0 plus the following prompt."""
-    marker = f"__MEDVEFLASHER_RESTORE_{time.time_ns():x}__"
-    wire = f"{command}; echo {marker}_RC_$?"
-    print(f"[U-Boot] {command}")
-    serial_port.write(wire.encode("ascii") + b"\r")
+def _uboot_send_line(serial_port: RecoverySerial, line: str) -> None:
+    """Send one U-Boot command as an isolated, paced UART line."""
+    if not line or any(ch in line for ch in "\r\n"):
+        raise Error("внутренняя ошибка: некорректная строка U-Boot-команды")
+    encoded = line.encode("ascii")
+    # Small chunks make the command path tolerant of shallow UART RX FIFOs and
+    # keep CR separate from the payload.  The cost is negligible next to NAND/TFTP.
+    for offset in range(0, len(encoded), 16):
+        serial_port.write(encoded[offset:offset + 16])
+        time.sleep(0.003)
+    time.sleep(0.010)
+    serial_port.write(b"\r")
+
+
+def _uboot_read_until_prompt(serial_port: RecoverySerial, log, timeout: int, command: str) -> bytes:
+    """Collect output generated after one command until a fresh prompt returns."""
     deadline = time.time() + timeout
     transcript = bytearray()
     while time.time() < deadline:
@@ -4987,20 +6545,87 @@ def uboot_command(serial_port: RecoverySerial, log, command: str, timeout: int =
             continue
         _uart_log_write(log, data)
         transcript.extend(data)
-        if len(transcript) > 262144:
-            del transcript[:-131072]
+        if len(transcript) > 524288:
+            del transcript[:-262144]
         raw = bytes(transcript)
-        marker_bytes = re.escape(marker.encode("ascii"))
-        match = re.search(rb"(?:^|[\r\n])" + marker_bytes + rb"_RC_([0-9]+)(?:[\r\n])", raw)
-        if match and _uboot_prompt_present(raw[match.end():]):
-            rc = int(match.group(1))
-            if rc != 0:
-                raise Error(f"U-Boot-команда завершилась с кодом {rc}: {command}")
-            return raw
-        low = raw.lower()
-        if b"starting kernel" in low or b"booting linux on physical cpu" in low:
+        if b"starting kernel" in raw.lower() or b"booting linux on physical cpu" in raw.lower():
             raise Error(f"U-Boot command unexpectedly started Linux: {command}")
+        if _uboot_prompt_present(raw):
+            return raw
     raise Error(f"тайм-аут U-Boot-команды или prompt не вернулся: {command}")
+
+
+def uboot_command(serial_port: RecoverySerial, log, command: str, timeout: int = 30) -> bytes:
+    """Run one U-Boot command, then query its return code on a separate line.
+
+    Do not chain ``command; echo marker``.  Real AN7583 hardware showed the first
+    scripted line being corrupted after prompt acquisition.  Each command now gets
+    its own CR-terminated line and prompt; only then is ``$?`` queried separately.
+    """
+    marker = f"__MEDVEFLASHER_RESTORE_{time.time_ns():x}__"
+    print(f"[U-Boot] {command}")
+
+    # There must be no leftover prompt/break traffic before the next command.
+    _uboot_wait_quiet(serial_port, log, quiet=0.18, timeout=1.0)
+    serial_port.reset_input()
+    _uboot_send_line(serial_port, command)
+    command_transcript = _uboot_read_until_prompt(serial_port, log, timeout, command)
+
+    status_line = f"echo {marker}_RC_$?"
+    _uboot_wait_quiet(serial_port, log, quiet=0.10, timeout=0.5)
+    serial_port.reset_input()
+    _uboot_send_line(serial_port, status_line)
+    status_transcript = _uboot_read_until_prompt(serial_port, log, 10, f"status for {command}")
+
+    marker_bytes = re.escape(marker.encode("ascii"))
+    match = re.search(marker_bytes + rb"_RC_([0-9]+)(?:[\r\n]|$)", status_transcript)
+    if match is None:
+        raise Error(f"U-Boot не вернул код завершения отдельной status-командой: {command}")
+    rc = int(match.group(1))
+    if rc != 0:
+        raise Error(f"U-Boot-команда завершилась с кодом {rc}: {command}")
+    return command_transcript + status_transcript
+
+
+def prove_recovery_safe_uboot(serial_port: RecoverySerial, log) -> None:
+    """Grant recovery capabilities only to the RC18 SAFE RAM U-Boot.
+
+    A banner or visual prompt is not sufficient.  The release-pinned BL33 must
+    expose the compiled SAFE marker, negative bootdelay and inert bootcmd.  A
+    fresh nonce command then proves that the PC owns the interactive prompt.
+    Until this function returns, callers must not issue any NAND write/erase or
+    saveenv command.
+    """
+    print(tr(
+        "[GATE] Проверяю RC18 RECOVERY_SAFE BL33 до любых NAND-capability...",
+        "[GATE] Proving the RC18 RECOVERY_SAFE BL33 before any NAND capability...",
+    ))
+    transcript = uboot_command(
+        serial_port, log,
+        "printenv medveflasher_recovery_safe bootdelay bootcmd preboot",
+        timeout=20,
+    )
+    required = (
+        rb"(?:^|[\r\n])medveflasher_recovery_safe=rc18(?:[\r\n]|$)",
+        rb"(?:^|[\r\n])bootdelay=-1(?:[\r\n]|$)",
+        rb"(?:^|[\r\n])bootcmd=echo RECOVERY_SAFE_RC18(?:[\r\n]|$)",
+    )
+    if not all(re.search(pattern, transcript) for pattern in required):
+        raise Error(tr(
+            "RAM U-Boot prompt найден, но RC18 RECOVERY_SAFE marker/bootdelay/bootcmd не доказаны; NAND write/erase запрещены.",
+            "The RAM U-Boot prompt exists, but the RC18 RECOVERY_SAFE marker/bootdelay/bootcmd were not proven; NAND write/erase is blocked.",
+        ))
+    nonce = f"MEDVEFLASHER_RC18_PROMPT_{time.time_ns():x}"
+    proof = uboot_command(serial_port, log, f"echo {nonce}", timeout=15)
+    if re.search(rb"(?:^|[\r\n])" + re.escape(nonce.encode("ascii")) + rb"(?:[\r\n]|$)", proof) is None:
+        raise Error(tr(
+            "не удалось доказать владение интерактивным U-Boot prompt по nonce; NAND capability заблокирована",
+            "failed to prove ownership of the interactive U-Boot prompt with a nonce; NAND capability is blocked",
+        ))
+    print(tr(
+        "[OK][CAP_GATE] RC18 RECOVERY_SAFE BL33 + устойчивый prompt доказаны. Read-only geometry разрешена; NAND write остаётся gated дальнейшими проверками.",
+        "[OK][CAP_GATE] RC18 RECOVERY_SAFE BL33 + stable prompt proven. Read-only geometry is allowed; NAND write remains gated by subsequent checks.",
+    ))
 
 
 def wait_recovery_kernel_layout(serial_port: RecoverySerial, log, timeout: int = 180) -> None:
@@ -5103,9 +6728,25 @@ def uboot_command_with_progress(serial_port: RecoverySerial, log, command: str, 
     return holder["value"]  # type: ignore[return-value]
 
 
-def _uboot_require_hash(transcript: bytes, expected_sha: str, label: str) -> None:
-    if expected_sha.lower().encode("ascii") not in transcript.lower():
-        raise Error(f"U-Boot SHA256 не совпал для {label}")
+def _file_crc32(path: Path) -> str:
+    value = 0
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            value = zlib.crc32(chunk, value)
+    return f"{value & 0xffffffff:08x}"
+
+
+def _uboot_require_crc32(transcript: bytes, expected_crc: str, label: str) -> None:
+    expected = expected_crc.lower().encode("ascii")
+    # U-Boot prints e.g. "CRC32 for 90000000 ... ==> deadbeef".  The
+    # command itself does not contain the expected checksum, so an exact
+    # 8-hex token match cannot be satisfied by UART echo alone.
+    tokens = re.findall(rb"(?i)(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])", transcript)
+    if expected not in [token.lower() for token in tokens]:
+        raise Error(f"U-Boot CRC32 не совпал для {label}: ожидается {expected_crc}")
 
 
 def _uboot_tftp_load(serial_port: RecoverySerial, log, local_ip: str, router_ip: str,
@@ -5128,12 +6769,15 @@ def _uboot_tftp_load(serial_port: RecoverySerial, log, local_ip: str, router_ip:
         if (not thread.is_alive() and not result.error and
                 result.bytes_transferred == source.stat().st_size and
                 (b"bytes transferred" in transcript.lower() or b"done" in transcript.lower())):
+            if sha_file(source).lower() != expected_sha.lower():
+                raise Error(f"PC SHA256 исходного файла изменился перед TFTP: {remote_name}")
+            expected_crc = _file_crc32(source)
             digest = uboot_command(
                 serial_port, log,
-                f"hash sha256 0x{UBOOT_LOAD_ADDRESS:x} 0x{source.stat().st_size:x}",
+                f"crc32 0x{UBOOT_LOAD_ADDRESS:x} 0x{source.stat().st_size:x}",
                 timeout=120,
             )
-            _uboot_require_hash(digest, expected_sha, remote_name)
+            _uboot_require_crc32(digest, expected_crc, remote_name)
             return
         print(tr(
             f"TFTP {remote_name} не завершился, повтор {attempt}/3.",
@@ -5144,6 +6788,153 @@ def _uboot_tftp_load(serial_port: RecoverySerial, log, local_ip: str, router_ip:
     raise Error(f"не удалось передать {remote_name} в RAM U-Boot")
 
 
+
+def _parse_uboot_bad_blocks(transcript: bytes, partition: str, partition_size: int,
+                            erase_size: int = UBOOT_ERASE_SIZE) -> list[int]:
+    """Parse `mtd bad <partition>` without trusting echoed commands/nonces."""
+    offsets: list[int] = []
+    text = transcript.decode("utf-8", errors="replace")
+    for line in text.splitlines():
+        match = re.fullmatch(r"\s*0x([0-9a-fA-F]+)\s*", line)
+        if not match:
+            continue
+        offset = int(match.group(1), 16)
+        if offset < 0 or offset >= partition_size or offset % erase_size:
+            raise Error(
+                f"mtd bad {partition}: некорректное смещение bad block 0x{offset:x}; "
+                "запись NAND запрещена"
+            )
+        offsets.append(offset)
+    if len(offsets) != len(set(offsets)):
+        raise Error(f"mtd bad {partition}: повторяющиеся bad-block offsets; запись NAND запрещена")
+    return sorted(offsets)
+
+
+def _uboot_bad_blocks(serial_port: RecoverySerial, log, partition: str,
+                      partition_size: int) -> list[int]:
+    transcript = uboot_command(serial_port, log, f"mtd bad {partition}", timeout=180)
+    return _parse_uboot_bad_blocks(transcript, partition, partition_size)
+
+
+def _validate_stock_ubi_bad_blocks(offsets: list[int]) -> None:
+    """Allow bad blocks only where stock uses UBI-backed mutable storage.
+
+    Offsets are relative to the RAM-U-Boot `ubi` partition, whose physical base
+    is 0x20000. A block beyond the canonical stock mtd16 span is irrelevant to
+    the restored stock image and is therefore allowed to remain bad/erased.
+    """
+    unsafe: list[int] = []
+    for offset in offsets:
+        if offset >= STOCK_IBU_SIZE:
+            continue
+        if STOCK_BADBLOCK_SAFE_UBI_START <= offset < STOCK_BADBLOCK_SAFE_UBI_END:
+            continue
+        unsafe.append(offset)
+    if unsafe:
+        rendered = ", ".join(f"ubi+0x{x:08x}/phys=0x{x + STOCK_BL2_SIZE:08x}" for x in unsafe)
+        raise Error(tr(
+            "Обнаружены bad blocks в raw-critical stock-области: " + rendered + ". "
+            "OpenWrt RAM U-Boot не доказывает stock BMT mapping для этих адресов; "
+            "автоматический restore остановлен fail-closed до записи BL2.",
+            "Bad blocks were found in a raw-critical stock region: " + rendered + ". "
+            "The OpenWrt RAM U-Boot does not prove stock BMT mapping for these addresses; "
+            "automatic restore is stopped fail-closed before BL2 is written.",
+        ))
+
+
+def _chunk_good_spans(offset: int, size: int, bad_blocks: list[int],
+                      erase_size: int = UBOOT_ERASE_SIZE) -> list[tuple[int, int]]:
+    """Return absolute good NAND spans inside one physical-image chunk."""
+    end = offset + size
+    cursor = offset
+    spans: list[tuple[int, int]] = []
+    for bad in bad_blocks:
+        if bad < offset or bad >= end:
+            continue
+        if bad > cursor:
+            spans.append((cursor, bad - cursor))
+        cursor = max(cursor, bad + erase_size)
+    if cursor < end:
+        spans.append((cursor, end - cursor))
+    return spans
+
+
+def _file_crc32_range(path: Path, offset: int, size: int) -> str:
+    value = 0
+    remaining = size
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        while remaining:
+            chunk = fh.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise Error(f"неожиданный EOF при CRC32 диапазона {path.name} 0x{offset:x}+0x{size:x}")
+            value = zlib.crc32(chunk, value)
+            remaining -= len(chunk)
+    return f"{value & 0xffffffff:08x}"
+
+
+def _uboot_restore_physical_chunk(serial_port: RecoverySerial, log, chunk: dict,
+                                  bad_blocks: list[int], index: int, total_chunks: int) -> None:
+    """Write/readback a physical mtd16-derived IBU chunk without crossing bad PEBs."""
+    offset = int(chunk["offset"])
+    size = int(chunk["size"])
+    path = Path(chunk["file"])
+    spans = _chunk_good_spans(offset, size, bad_blocks)
+    bad_here = [x for x in bad_blocks if offset <= x < offset + size]
+    print(tr(
+        f"[IBU {index}/{total_chunks}] Физическое смещение ubi+0x{offset:08x}, размер 0x{size:x}",
+        f"[IBU {index}/{total_chunks}] Physical offset ubi+0x{offset:08x}, size 0x{size:x}",
+    ))
+    if bad_here:
+        rendered = ", ".join(f"0x{x:08x}" for x in bad_here)
+        print(tr(
+            f"[BADBLOCK] IBU {index}/{total_chunks}: пропускаю {len(bad_here)} bad eraseblock(s) "
+            f"без сдвига соседних данных: {rendered}",
+            f"[BADBLOCK] IBU {index}/{total_chunks}: skipping {len(bad_here)} bad eraseblock(s) "
+            f"without shifting adjacent data: {rendered}",
+        ))
+    if not spans and size:
+        raise Error(f"IBU {index}: весь chunk попал в bad blocks; restore заблокирован")
+    for span_index, (span_offset, span_size) in enumerate(spans, 1):
+        local = span_offset - offset
+        ram = UBOOT_LOAD_ADDRESS + local
+        write_out = uboot_command_with_progress(
+            serial_port, log,
+            f"mtd write ubi 0x{ram:x} 0x{span_offset:x} 0x{span_size:x}",
+            600,
+            f"запись IBU {index}/{total_chunks}, good-span {span_index}/{len(spans)}",
+            f"writing IBU {index}/{total_chunks}, good-span {span_index}/{len(spans)}",
+        )
+        low = write_out.lower()
+        if b"skipping bad block" in low or b"skip bad block" in low or b"new bad block" in low:
+            raise Error(tr(
+                f"IBU {index}: во время записи появился новый bad block; BL2 не будет записан. "
+                "Повторный restore разрешён только с новым bad-block scan после полного erase ubi.",
+                f"IBU {index}: a new bad block appeared during write; BL2 will not be written. "
+                "A retry is allowed only after a fresh bad-block scan and a full ubi erase.",
+            ))
+        uboot_command(serial_port, log, f"mw.b 0x{ram:x} 0x00 0x{span_size:x}", timeout=120)
+        readback = uboot_command_with_progress(
+            serial_port, log,
+            f"mtd read ubi 0x{ram:x} 0x{span_offset:x} 0x{span_size:x}",
+            600,
+            f"чтение IBU {index}/{total_chunks}, good-span {span_index}/{len(spans)}",
+            f"reading IBU {index}/{total_chunks}, good-span {span_index}/{len(spans)}",
+        )
+        low = readback.lower()
+        if b"error" in low or b"failed" in low or b"failure while reading" in low:
+            raise Error(f"U-Boot сообщил ошибку чтения IBU {index}, good-span {span_index}")
+        expected_crc = _file_crc32_range(path, local, span_size)
+        digest = uboot_command_with_progress(
+            serial_port, log,
+            f"crc32 0x{ram:x} 0x{span_size:x}",
+            180,
+            f"CRC32 IBU {index}/{total_chunks}, good-span {span_index}/{len(spans)}",
+            f"CRC32 IBU {index}/{total_chunks}, good-span {span_index}/{len(spans)}",
+        )
+        _uboot_require_crc32(digest, expected_crc, f"IBU {index} good-span {span_index}")
+
+
 def perform_stock_restore_in_uboot(serial_port: RecoverySerial, log, local_ip: str, router_ip: str,
                                     payload_dir: Path, manifest: dict) -> None:
     """Restore stock directly from RAM U-Boot, with no Linux recovery stage."""
@@ -5152,8 +6943,8 @@ def perform_stock_restore_in_uboot(serial_port: RecoverySerial, log, local_ip: s
         "\nStock firmware will be restored directly from U-Boot running in memory.",
     ))
     print(tr(
-        "Основная область NAND будет очищена целиком, записана блоками по 8 MiB и проверена чтением обратно. Точный stock BL2 записывается последним без смещения 0x800.",
-        "The main NAND area will be erased completely, written in 8 MiB chunks, and read back for verification. The exact stock BL2 is written last without a 0x800 offset.",
+        "Основная область NAND будет очищена целиком. Данные передаются блоками по 8 MiB, но запись разбивается по физическим good-span и никогда не пересекает известный bad eraseblock. Каждый good-span проверяется чтением обратно. Точный stock BL2 записывается последним без смещения 0x800.",
+        "The main NAND area will be erased completely. Data is transferred in 8 MiB chunks, but writes are split into physical good spans and never cross a known bad eraseblock. Every good span is read back. The exact stock BL2 is written last without a 0x800 offset.",
     ))
 
     listing = uboot_command(serial_port, log, "mtd list", timeout=60)
@@ -5168,6 +6959,23 @@ def perform_stock_restore_in_uboot(serial_port: RecoverySerial, log, local_ip: s
             "RAM U-Boot не показал точную геометрию bl2=0x20000, ubi=0xffe0000, erase=0x20000; запись запрещена",
             "RAM U-Boot did not report the exact bl2=0x20000, ubi=0xffe0000, erase=0x20000 geometry; writing is blocked",
         ))
+
+    bl2_bad = _uboot_bad_blocks(serial_port, log, "bl2", STOCK_BL2_SIZE)
+    if bl2_bad:
+        raise Error(tr(
+            "BL2 eraseblock помечен bad; автоматический stock restore запрещён до любых erase/write.",
+            "The BL2 eraseblock is marked bad; automatic stock restore is blocked before any erase/write.",
+        ))
+    pre_erase_bad = _uboot_bad_blocks(serial_port, log, "ubi", PHYSICAL_NAND_SIZE - STOCK_BL2_SIZE)
+    _validate_stock_ubi_bad_blocks(pre_erase_bad)
+    if pre_erase_bad:
+        rendered = ", ".join(f"0x{x:08x}" for x in pre_erase_bad)
+        print(tr(
+            f"[BADBLOCK] До erase обнаружено {len(pre_erase_bad)} bad eraseblock(s) в ubi: {rendered}",
+            f"[BADBLOCK] Before erase, {len(pre_erase_bad)} bad eraseblock(s) were found in ubi: {rendered}",
+        ))
+    else:
+        print(tr("[OK] До erase bad blocks в ubi не обнаружены.", "[OK] No bad blocks were found in ubi before erase."))
 
     uboot_command(serial_port, log, "setenv ethaddr 02:00:00:04:0d:10")
     uboot_command(serial_port, log, "setenv eth1addr 02:00:00:04:0d:11")
@@ -5191,23 +6999,49 @@ def perform_stock_restore_in_uboot(serial_port: RecoverySerial, log, local_ip: s
     print(tr("[1/3] Полностью очищаю раздел ubi, чтобы удалить остатки all-in-UBI за концом stock-образа.", "[1/3] Erasing the complete ubi partition to remove all-in-UBI remnants beyond the stock image."))
     uboot_command_with_progress(serial_port, log, "mtd erase ubi", 1200, "стирание ubi", "erasing ubi")
 
-    print(tr("[2/3] Записываю и проверяю основную область stock NAND.", "[2/3] Writing and verifying the main stock NAND area."))
+    post_erase_bad = _uboot_bad_blocks(serial_port, log, "ubi", PHYSICAL_NAND_SIZE - STOCK_BL2_SIZE)
+    _validate_stock_ubi_bad_blocks(post_erase_bad)
+    if not set(pre_erase_bad).issubset(post_erase_bad):
+        raise Error(tr(
+            "Bad-block map после erase потерял ранее отмеченный блок; запись IBU запрещена.",
+            "The bad-block map lost a previously marked block after erase; IBU writing is blocked.",
+        ))
+    added = sorted(set(post_erase_bad) - set(pre_erase_bad))
+    if added:
+        rendered = ", ".join(f"0x{x:08x}" for x in added)
+        print(tr(
+            f"[BADBLOCK] Erase обнаружил новые bad eraseblock(s): {rendered}. Карта пересчитана до первой записи IBU.",
+            f"[BADBLOCK] Erase discovered new bad eraseblock(s): {rendered}. The map was rebuilt before the first IBU write.",
+        ))
+
+    print(tr(
+        "[2/3] Записываю физические диапазоны mtd16 без пересечения bad blocks и проверяю каждый good-span чтением/CRC32.",
+        "[2/3] Writing physical mtd16 ranges without crossing bad blocks and verifying every good span by readback/CRC32.",
+    ))
     for index, chunk in enumerate(chunks):
         if index != 0:
             _uboot_tftp_load(serial_port, log, local_ip, router_ip, chunk["file"], chunk["remote_name"], chunk["sha256"])
-        offset = int(chunk["offset"])
-        size = int(chunk["size"])
-        print(tr(
-            f"[IBU {index + 1}/{len(chunks)}] Смещение 0x{offset:08x}, размер 0x{size:x}",
-            f"[IBU {index + 1}/{len(chunks)}] Offset 0x{offset:08x}, size 0x{size:x}",
+        _uboot_restore_physical_chunk(serial_port, log, chunk, post_erase_bad, index + 1, len(chunks))
+
+    final_bad = _uboot_bad_blocks(serial_port, log, "ubi", PHYSICAL_NAND_SIZE - STOCK_BL2_SIZE)
+    if final_bad != post_erase_bad:
+        added = sorted(set(final_bad) - set(post_erase_bad))
+        removed = sorted(set(post_erase_bad) - set(final_bad))
+        detail = []
+        if added:
+            detail.append("new=" + ",".join(f"0x{x:08x}" for x in added))
+        if removed:
+            detail.append("missing=" + ",".join(f"0x{x:08x}" for x in removed))
+        raise Error(tr(
+            "Bad-block map изменился во время IBU write/readback (" + "; ".join(detail) + "); "
+            "BL2 остаётся нетронутым. Требуется новый полный restore с новой картой bad blocks.",
+            "The bad-block map changed during IBU write/readback (" + "; ".join(detail) + "); "
+            "BL2 remains untouched. A fresh full restore with a new bad-block map is required.",
         ))
-        uboot_command_with_progress(serial_port, log, f"mtd write ubi 0x{UBOOT_LOAD_ADDRESS:x} 0x{offset:x} 0x{size:x}", 600, f"запись IBU {index + 1}/{len(chunks)}", f"writing IBU {index + 1}/{len(chunks)}")
-        uboot_command(serial_port, log, f"mw.b 0x{UBOOT_LOAD_ADDRESS:x} 0x00 0x{size:x}", timeout=120)
-        readback = uboot_command_with_progress(serial_port, log, f"mtd read ubi 0x{UBOOT_LOAD_ADDRESS:x} 0x{offset:x} 0x{size:x}", 600, f"чтение IBU {index + 1}/{len(chunks)}", f"reading IBU {index + 1}/{len(chunks)}")
-        if b"error" in readback.lower() or b"failed" in readback.lower():
-            raise Error(f"U-Boot сообщил ошибку чтения IBU-блока {index + 1}")
-        digest = uboot_command_with_progress(serial_port, log, f"hash sha256 0x{UBOOT_LOAD_ADDRESS:x} 0x{size:x}", 180, f"SHA256 IBU {index + 1}/{len(chunks)}", f"SHA256 IBU {index + 1}/{len(chunks)}")
-        _uboot_require_hash(digest, chunk["sha256"], f"IBU block {index + 1}")
+    print(tr(
+        f"[OK] IBU readback PASS; bad-block map стабильна ({len(final_bad)} block(s)); BL2 всё ещё не изменён.",
+        f"[OK] IBU readback PASS; bad-block map is stable ({len(final_bad)} block(s)); BL2 is still unchanged.",
+    ))
 
     bl2_path = Path(manifest["uboot_restore"]["bl2_file"])
     bl2_sha = manifest["uboot_restore"]["bl2_sha256"]
@@ -5217,13 +7051,117 @@ def perform_stock_restore_in_uboot(serial_port: RecoverySerial, log, local_ip: s
     uboot_command(serial_port, log, f"mtd write bl2 0x{UBOOT_LOAD_ADDRESS:x} 0x0 0x{STOCK_BL2_SIZE:x}", timeout=180)
     uboot_command(serial_port, log, f"mw.b 0x{UBOOT_LOAD_ADDRESS:x} 0x00 0x{STOCK_BL2_SIZE:x}", timeout=60)
     uboot_command(serial_port, log, f"mtd read bl2 0x{UBOOT_LOAD_ADDRESS:x} 0x0 0x{STOCK_BL2_SIZE:x}", timeout=180)
-    digest = uboot_command(serial_port, log, f"hash sha256 0x{UBOOT_LOAD_ADDRESS:x} 0x{STOCK_BL2_SIZE:x}", timeout=60)
-    _uboot_require_hash(digest, bl2_sha, "stock BL2")
+    digest = uboot_command(serial_port, log, f"crc32 0x{UBOOT_LOAD_ADDRESS:x} 0x{STOCK_BL2_SIZE:x}", timeout=60)
+    _uboot_require_crc32(digest, _file_crc32(bl2_path), "stock BL2")
 
-    print(tr("[OK] Все IBU-блоки и stock BL2 совпали при чтении обратно. Перезагружаю Nokia.", "[OK] Every IBU chunk and the stock BL2 matched on readback. Rebooting Nokia."))
-    serial_port.write(b"reset\r")
+    print(tr(
+        "[OK] Все good-span IBU и stock BL2 совпали при чтении обратно по CRC32; known bad blocks были физически пропущены без сдвига соседних данных; исходные файлы на ПК закреплены SHA256.",
+        "[OK] Every good IBU span and stock BL2 matched by readback CRC32; known bad blocks were physically skipped without shifting adjacent data; source files on the PC remain SHA256-pinned.",
+    ))
+    return _request_uboot_reset_and_confirm(serial_port, log)
 
-def inspect_restore_environment(host: str, quiet: bool = False) -> tuple[str, str]:
+def _uboot_reboot_evidence(data: bytes) -> bool:
+    """Recognize fresh boot output after a reset command.
+
+    A U-Boot prompt or the echoed word ``reset`` is deliberately not evidence:
+    RC17 could remain at RAM U-Boot while the PC incorrectly reported success.
+    """
+    low = data.lower()
+    markers = (
+        b"secure key does not exist",
+        b"hwconf is",
+        b"dram flow done",
+        b"an7583dramc",
+        b"notice:  bl21",
+        b"notice: bl21",
+    )
+    return any(marker in low for marker in markers)
+
+def _request_uboot_reset_and_confirm(serial_port: RecoverySerial, log, timeout: float = 15.0) -> bool:
+    """Send a paced U-Boot reset and require fresh UART boot evidence.
+
+    This is intentionally separate from NAND success.  If reset cannot be
+    confirmed, restoration remains successful but the operator is explicitly
+    told to power-cycle after all writes/readbacks are complete.
+    """
+    print(tr(
+        "[REBOOT] Отправляю reset в RAM U-Boot и отдельно подтверждаю начало новой загрузки по UART.",
+        "[REBOOT] Sending reset to RAM U-Boot and independently confirming a fresh boot on UART.",
+    ))
+    _uboot_wait_quiet(serial_port, log, quiet=0.18, timeout=1.0)
+    serial_port.reset_input()
+    print("[U-Boot] reset")
+    _uboot_send_line(serial_port, "reset")
+    deadline = time.time() + timeout
+    tail = bytearray()
+    while time.time() < deadline:
+        data = serial_port.read(4096, 0.25)
+        if not data:
+            continue
+        _uart_log_write(log, data)
+        tail.extend(data)
+        if len(tail) > 65536:
+            del tail[:-32768]
+        raw = bytes(tail)
+        if _uboot_reboot_evidence(raw):
+            print(tr(
+                "[OK] UART подтвердил выполнение reset: началась новая загрузка Nokia.",
+                "[OK] UART confirmed reset execution: a fresh Nokia boot has started.",
+            ))
+            return True
+        if _uboot_prompt_present(raw):
+            print(tr(
+                "[WARN] После команды reset снова получено приглашение U-Boot; автоматический reboot не подтверждён.",
+                "[WARN] A U-Boot prompt returned after reset; automatic reboot was not confirmed.",
+            ))
+            return False
+    print(tr(
+        "[WARN] За 15 секунд UART не подтвердил новый boot после команды reset.",
+        "[WARN] UART did not confirm a fresh boot within 15 seconds after the reset command.",
+    ))
+    return False
+
+def _probe_stock_web_fingerprint(host: str) -> tuple[bool, str]:
+    """Require the actual Nokia stock login page, not merely an open TCP port."""
+    try:
+        module = _load_stock_web_module()
+        client = module.StockWeb(host, timeout=1.5)
+        client.fetch_public_key()
+        return True, "stock-login-pubkey"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+_RESTORE_SSH_MINIMAL_AUTH: dict[str, bool] = {}
+
+def _restore_probe_ssh(host: str, command: str, timeout: int = 120, quiet: bool = True) -> tuple[int, str]:
+    """Deterministic SSH probe for transient recovery/production detection.
+
+    Recovery root is intentionally blank and Dropbear is pinned with -B in RC19.
+    Try the protocol-level none-auth path first, then one ordinary BatchMode path.
+    Host keys never come from the operator known_hosts file.
+    """
+    preferred = _RESTORE_SSH_MINIMAL_AUTH.get(host)
+    modes = [preferred] if preferred is not None else [True, False]
+    errors=[]
+    for minimal in modes:
+        try:
+            rc,out=ssh_run(host,command,timeout=timeout,quiet=quiet,batch_mode=True,minimal_auth=bool(minimal))
+            _RESTORE_SSH_MINIMAL_AUTH[host]=bool(minimal)
+            return rc,out
+        except Error as exc:
+            errors.append(str(exc).replace("\n"," ")[-700:])
+    if preferred is not None:
+        other=not preferred
+        try:
+            rc,out=ssh_run(host,command,timeout=timeout,quiet=quiet,batch_mode=True,minimal_auth=other)
+            _RESTORE_SSH_MINIMAL_AUTH[host]=other
+            return rc,out
+        except Error as exc:
+            errors.append(str(exc).replace("\n"," ")[-700:])
+    raise Error("restore SSH probe failed: " + " | ".join(errors)[-1600:])
+
+
+def inspect_restore_environment(host: str, expected_family: str | None = None, quiet: bool = False) -> tuple[str, str]:
     command = (
         "echo BOARD=$(cat /tmp/sysinfo/board_name 2>/dev/null || true); "
         "echo STATE=$(cat /tmp/NOKIA_AUTOFLASH_STATE 2>/dev/null || true); "
@@ -5231,8 +7169,10 @@ def inspect_restore_environment(host: str, quiet: bool = False) -> tuple[str, st
         "cat /proc/mtd; "
         "for c in mtd gzip sha256sum fw_printenv fw_setenv nc scp; do "
         "command -v $c >/dev/null 2>&1 && echo TOOL_$c=1 || echo TOOL_$c=0; done; "
-        "if command -v tftp >/dev/null 2>&1; then "
-        "echo TOOL_tftp=1; echo TFTP_IMPL=standalone; echo TFTP_PROBE_RC=0; "
+        'if [ -x /usr/bin/nokia-tftp ] && [ "$(command -v tftp 2>/dev/null)" = /usr/bin/tftp ]; then '
+        "echo TOOL_tftp=1; echo TFTP_IMPL=nokia-tftp-rc19; echo TFTP_PROBE_RC=0; "
+        "elif command -v tftp >/dev/null 2>&1; then "
+        "echo TOOL_tftp=1; echo TFTP_IMPL=standalone-other; echo TFTP_PROBE_RC=0; "
         "elif [ -x /bin/busybox ]; then "
         "/bin/busybox tftp --help >/dev/null 2>&1; bb_tftp_rc=$?; "
         "if [ \"$bb_tftp_rc\" -ne 127 ]; then "
@@ -5240,9 +7180,17 @@ def inspect_restore_environment(host: str, quiet: bool = False) -> tuple[str, st
         "else echo TOOL_tftp=0; echo TFTP_IMPL=missing; echo TFTP_PROBE_RC=$bb_tftp_rc; fi; "
         "else echo TOOL_tftp=0; echo TFTP_IMPL=missing; echo TFTP_PROBE_RC=127; fi"
     )
-    _, output = ssh_run(host, command, timeout=120, quiet=quiet)
+    _, output = _restore_probe_ssh(host, command, timeout=120, quiet=quiet)
     low = output.lower()
-    board_ok = "board=nokia,xg-040g-md-ubi" in low
+    family = (expected_family or "").strip().lower()
+    if family not in ("md", "mf"):
+        if "board=nokia,xg-040g-mf-ubi" in low:
+            family = "mf"
+        elif "board=nokia,xg-040g-md-ubi" in low:
+            family = "md"
+    if family not in ("md", "mf"):
+        raise Error(tr("OpenWrt обнаружен, но family MD/MF не определён", "OpenWrt was detected, but the MD/MF family could not be determined"))
+    board_ok = f"board=nokia,xg-040g-{family}-ubi" in low
     recovery_markers = (
         'mtd0: 10000000 00020000 "all_flash"',
         'mtd1: 00020000 00020000 "bl2"',
@@ -5257,14 +7205,16 @@ def inspect_restore_environment(host: str, quiet: bool = False) -> tuple[str, st
         return "recovery", output
     if board_ok and all(marker in low for marker in production_markers):
         return "production", output
-    raise Error("OpenWrt обнаружен, но его плата/MTD-разметка не соответствует Nokia XG-040G-MD recovery или all-in-UBI production")
+    raise Error(tr(
+        f"OpenWrt обнаружен, но board/MTD не соответствует Nokia XG-040G-{family.upper()} recovery или all-in-UBI production",
+        f"OpenWrt was detected, but its board/MTD layout does not match Nokia XG-040G-{family.upper()} recovery or all-in-UBI production",
+    ))
 
-
-def transition_preflight_for_restore(host: str, backup_ri_sha: str, timeout: int = 180) -> str:
+def transition_preflight_for_restore(host: str, backup_ri_sha: str, expected_family: str, timeout: int = 180) -> str:
     deadline = time.time() + timeout; last_output = ""; consecutive = 0
     while time.time() < deadline:
         try:
-            mode, output = inspect_restore_environment(host, quiet=True); last_output = output
+            mode, output = inspect_restore_environment(host, expected_family=expected_family, quiet=True); last_output = output
             consecutive = consecutive + 1 if mode == "recovery" else 0
             if consecutive >= 2: break
         except (Error, OSError, subprocess.SubprocessError) as exc:
@@ -5275,18 +7225,18 @@ def transition_preflight_for_restore(host: str, backup_ri_sha: str, timeout: int
     low=last_output.lower(); required=("tool_mtd=1","tool_gzip=1","tool_sha256sum=1")
     missing=[x.removeprefix("tool_").removesuffix("=1") for x in required if x not in low]
     if missing: raise Error(tr("в recovery отсутствуют: "+", ".join(missing), "recovery is missing: "+", ".join(missing)))
-    if "tool_tftp=1" in low:
-        transport="tftp"; print(tr("[OK] Система восстановления проверена. Способ передачи: TFTP.", "[OK] The recovery system is verified. Transfer method: TFTP."))
-    elif "tool_scp=1" in low:
-        scp_executable(); transport="scp"; print(tr("[ПРЕДУПРЕЖДЕНИЕ] TFTP недоступен; используется SCP.", "[WARNING] TFTP is unavailable; using SCP."))
+    if "tool_tftp=1" in low and "tftp_impl=nokia-tftp-rc19" in low:
+        transport="tftp"; print(tr("[OK] Система восстановления проверена. Способ передачи: встроенный AArch64 nokia-tftp.", "[OK] The recovery system is verified. Transfer method: bundled AArch64 nokia-tftp."))
     elif "tool_nc=1" in low:
-        transport="tcp-nc"; print(tr("[ПРЕДУПРЕЖДЕНИЕ] TFTP и SCP недоступны; используется TCP.", "[WARNING] TFTP and SCP are unavailable; using TCP."))
+        transport="tcp-nc"; print(tr("[ПРЕДУПРЕЖДЕНИЕ] Закреплённый nokia-tftp недоступен; используется TCP/nc.", "[WARNING] The pinned nokia-tftp client is unavailable; using TCP/nc."))
+    elif "tool_scp=1" in low:
+        scp_executable(); transport="scp"; print(tr("[ПРЕДУПРЕЖДЕНИЕ] nokia-tftp и nc недоступны; используется SCP staging.", "[WARNING] nokia-tftp and nc are unavailable; using SCP staging."))
     else:
-        raise Error(tr("в recovery нет транспорта tftp, scp или nc", "recovery has no tftp, scp, or nc transport"))
+        raise Error(tr("в recovery нет закреплённого nokia-tftp, nc или scp", "recovery has no pinned nokia-tftp, nc, or scp transport"))
     if "state=recovery_ready" not in low:
         _write_session_only("[RESTORE] recovery state file is absent; exact MTD layout confirmed")
     command=("printf RI_RAW_SHA=; if grep -q \"\"ri-stock\"\" /proc/mtd; then mtd -q -l 262144 dump ri-stock 2>/dev/null | sha256sum | awk '{print $1}'; else echo unavailable; fi")
-    _,output=ssh_run(host,command,timeout=120,quiet=True); match=re.search(r"RI_RAW_SHA=([0-9a-f]{64})",output)
+    _,output=_restore_probe_ssh(host,command,timeout=120,quiet=True); match=re.search(r"RI_RAW_SHA=([0-9a-f]{64})",output)
     if match and match.group(1)==backup_ri_sha: print(tr("[OK] RI совпадает с выбранным backup.", "[OK] RI matches the selected backup."))
     else:
         print(tr("[ПРЕДУПРЕЖДЕНИЕ] Не удалось подтвердить backup по RI. После перехода на UBI это ожидаемо; убедитесь, что выбран backup именно этого роутера.", "[WARNING] The backup could not be confirmed by RI. This is expected after migration to UBI; make sure the backup belongs to this router."))
@@ -5327,7 +7277,7 @@ def serve_tcp_get(bind_ip: str, port: int, source: Path, allowed_client_ip: str,
 def _verify_restore_readback(host: str, target: str, raw_size: int, raw_sha: str) -> None:
     print(tr(f"[VERIFY] {target}: считаю SHA256 прочитанной NAND-области 0x{raw_size:x}...", f"[VERIFY] {target}: hashing the 0x{raw_size:x}-byte NAND readback..."))
     cmd=f"mtd -q -l {raw_size} dump {shlex.quote(target)} | sha256sum | awk '{{print $1}}'"
-    _,output=ssh_run_with_progress(host,cmd,1200,f"VERIFY {target.upper()}")
+    _,output=ssh_run_with_progress(host,cmd,1200,f"VERIFY {target.upper()}",restore_auth=True)
     match=re.search(r"([0-9a-f]{64})",output)
     if not match or match.group(1)!=raw_sha:
         raise Error(tr(
@@ -5337,7 +7287,29 @@ def _verify_restore_readback(host: str, target: str, raw_size: int, raw_sha: str
     print(f"[OK] {target} readback SHA256: {raw_sha}")
 
 
-def _restore_stream_transport(host: str, local_ip: str, port: int, source: Path, remote_name: str, target: str, transport: str) -> None:
+def _restore_write_unknown(host: str, target: str, detail: str, expected_family: str | None = None) -> WriteStateUnknownError:
+    """Fail closed after an issued NAND write and record read-only post-failure identity."""
+    assessment="unavailable"
+    try:
+        mode,out=inspect_restore_environment(host,expected_family=expected_family,quiet=True)
+        mtd_lines="; ".join(line.strip() for line in out.splitlines() if line.lower().startswith("mtd"))
+        assessment=f"mode={mode}; {mtd_lines}"[-1800:]
+    except Exception as exc:
+        assessment=f"router could not be re-identified read-only: {exc}"[-1800:]
+    return WriteStateUnknownError(tr(
+        f"{target}: NAND write был запущен, но завершение/readback не доказаны. Автоматический fallback ЗАПРЕЩЁН. {detail}. После сбоя: {assessment}. Не запускайте второй write автоматически; если recovery не подтверждается, используйте BootROM/UART RECOVERY_SAFE full restore.",
+        f"{target}: the NAND write was started, but completion/readback is unproven. Automatic fallback is FORBIDDEN. {detail}. Post-failure: {assessment}. Do not start a second write automatically; if recovery cannot be proven, use BootROM/UART RECOVERY_SAFE full restore.",
+    ))
+
+
+def _restore_stream_transport(host: str, local_ip: str, port: int, source: Path, remote_name: str,
+                              target: str, transport: str, expected_family: str | None = None) -> None:
+    """Stream a gzip payload directly into mtd.
+
+    Only local server startup failures are pre-write transport failures.  Once
+    the SSH pipeline is issued, mtd may have started and any disconnect/error is
+    WRITE_STATE_UNKNOWN; no second transport may be attempted automatically.
+    """
     ready=threading.Event(); result=TftpResult()
     if transport=="tftp":
         thread=threading.Thread(target=serve_tftp_get,args=(local_ip,port,source,remote_name,host,ready,result),kwargs={"timeout":1800,"maximum_block_size":4096},daemon=True); label="TFTP"
@@ -5350,22 +7322,28 @@ def _restore_stream_transport(host: str, local_ip: str, port: int, source: Path,
     if not ready.wait(10): raise TransportError(f"{label} server did not start")
     if result.error: raise TransportError(f"{label} server: {result.error}")
     fifo=f"/tmp/nokia-restore-{target}.fifo"
-    command=(f"set +e; echo RESTORE_STAGE={target}; rm -f {fifo}; mkfifo {fifo}; "+receive+f"gzip -dc <{fifo} | mtd -f write - {shlex.quote(target)}; wr=$?; wait $tp; trc=$?; rm -f {fifo}; echo RESTORE_PIPELINE_TRANSPORT_RC=$trc RESTORE_PIPELINE_WRITE_RC=$wr; [ $trc -eq 0 ] && [ $wr -eq 0 ]")
+    # Marker is emitted before mtd is invoked.  From this point on the write state
+    # must be considered unknown on any channel loss.
+    command=(f"set +e; echo RESTORE_STAGE={target}; rm -f {fifo}; mkfifo {fifo}; "+receive+
+             f"echo RESTORE_WRITE_STARTED={target}; gzip -dc <{fifo} | mtd -f write - {shlex.quote(target)}; "
+             f"wr=$?; wait $tp; trc=$?; rm -f {fifo}; echo RESTORE_WRITE_FINISHED={target} RESTORE_PIPELINE_TRANSPORT_RC=$trc RESTORE_PIPELINE_WRITE_RC=$wr; "
+             f"[ $trc -eq 0 ] && [ $wr -eq 0 ]")
     try:
-        ssh_run_with_progress(host,command,2400,f"{label} {target}",result,source.stat().st_size)
+        ssh_run_with_progress(host,command,2400,f"{label} {target}",result,source.stat().st_size,restore_auth=True)
     except BaseException as exc:
-        raise TransportError(f"{label} pipeline failed: {exc}") from exc
+        raise _restore_write_unknown(host,target,f"{label} pipeline lost: {exc}",expected_family) from exc
     thread.join(30)
-    if thread.is_alive(): raise TransportError(f"{label} server did not stop")
-    if result.error: raise TransportError(f"{label}: {result.error}")
-    if result.bytes_transferred!=source.stat().st_size: raise TransportError(f"{label}: transferred {result.bytes_transferred}, expected {source.stat().st_size}")
+    if thread.is_alive(): raise _restore_write_unknown(host,target,f"{label} server did not stop after write command",expected_family)
+    if result.error: raise _restore_write_unknown(host,target,f"{label} server error after write command: {result.error}",expected_family)
+    if result.bytes_transferred!=source.stat().st_size:
+        raise _restore_write_unknown(host,target,f"{label} transferred {result.bytes_transferred}, expected {source.stat().st_size}",expected_family)
     print(tr(f"[FLASH] {target}: сжатый поток принят и записан.", f"[FLASH] {target}: compressed stream received and written."))
 
 
-def _restore_scp_transport(host: str, source: Path, target: str) -> None:
+def _restore_scp_transport(host: str, source: Path, target: str, expected_family: str | None = None) -> None:
     remote=f"/tmp/nokia-restore-{target}.gz"; size=source.stat().st_size
     try:
-        _,mem=ssh_run(host,"awk '/MemAvailable:/ {print $2; exit}' /proc/meminfo",timeout=30,quiet=True)
+        _,mem=_restore_probe_ssh(host,"awk '/MemAvailable:/ {print $2; exit}' /proc/meminfo",timeout=30,quiet=True)
     except Error as exc:
         raise TransportError(f"SCP preflight failed: {exc}") from exc
     m=re.search(r"([0-9]+)",mem); available=int(m.group(1))*1024 if m else 0
@@ -5374,38 +7352,51 @@ def _restore_scp_transport(host: str, source: Path, target: str) -> None:
             f"SCP: недостаточно RAM: available={available}, need={size + 32*1024*1024}",
             f"SCP: insufficient RAM: available={available}, need={size + 32*1024*1024}",
         ))
+    # Copy + compressed SHA verification are pre-write and may fall back safely.
     scp_copy_to_recovery(host,source,remote)
-    expected=sha_file(source); _,out=ssh_run(host,f"sha256sum {shlex.quote(remote)} | awk '{{print $1}}'",timeout=300,quiet=True)
-    if expected not in out: ssh_run(host,f"rm -f {shlex.quote(remote)}",timeout=30,quiet=True); raise TransportError("SCP compressed-file SHA256 mismatch")
+    expected=sha_file(source); _,out=_restore_probe_ssh(host,f"sha256sum {shlex.quote(remote)} | awk '{{print $1}}'",timeout=300,quiet=True)
+    if expected not in out:
+        try: _restore_probe_ssh(host,f"rm -f {shlex.quote(remote)}",timeout=30,quiet=True)
+        except Error: pass
+        raise TransportError("SCP compressed-file SHA256 mismatch")
     print(tr(f"[FLASH] {target}: распаковываю SCP-файл и записываю NAND...", f"[FLASH] {target}: decompressing the SCP file and writing NAND..."))
-    cmd=f"gzip -dc {shlex.quote(remote)} | mtd -f write - {shlex.quote(target)}; rc=$?; rm -f {shlex.quote(remote)}; exit $rc"
-    try: ssh_run_with_progress(host,cmd,2400,f"FLASH {target.upper()}")
-    except BaseException as exc: raise TransportError(f"SCP write pipeline failed: {exc}") from exc
+    cmd=(f"echo RESTORE_WRITE_STARTED={target}; gzip -dc {shlex.quote(remote)} | mtd -f write - {shlex.quote(target)}; "
+         f"rc=$?; rm -f {shlex.quote(remote)}; echo RESTORE_WRITE_FINISHED={target} RC=$rc; exit $rc")
+    try:
+        ssh_run_with_progress(host,cmd,2400,f"FLASH {target.upper()}",restore_auth=True)
+    except BaseException as exc:
+        raise _restore_write_unknown(host,target,f"SCP write pipeline lost: {exc}",expected_family) from exc
 
 
-def serve_restore_payload(host: str, local_ip: str, port: int, source: Path, remote_name: str, target: str, raw_size: int, raw_sha: str, transport: str) -> None:
-    order={"tftp":["tftp","scp","tcp-nc"],"scp":["scp","tcp-nc"],"tcp-nc":["tcp-nc","scp"]}.get(transport,[transport])
+def serve_restore_payload(host: str, local_ip: str, port: int, source: Path, remote_name: str,
+                          target: str, raw_size: int, raw_sha: str, transport: str,
+                          expected_family: str | None = None) -> None:
+    # RC19: fallback is legal only while NAND has not been touched.  Streaming
+    # transports become non-retryable as soon as their SSH mtd pipeline is issued.
+    order={"tftp":["tftp","tcp-nc","scp"],"tcp-nc":["tcp-nc","scp"],"scp":["scp"]}.get(transport,[transport])
     failures=[]
     for index,candidate in enumerate(order,1):
         print()
         print(tr(f"[TRANSFER] {target}: попытка {index}/{len(order)}, транспорт {candidate}.", f"[TRANSFER] {target}: attempt {index}/{len(order)}, transport {candidate}."))
         try:
-            if candidate=="scp": _restore_scp_transport(host,source,target)
-            else: _restore_stream_transport(host,local_ip,port,source,remote_name,target,candidate)
+            if candidate=="scp": _restore_scp_transport(host,source,target,expected_family)
+            else: _restore_stream_transport(host,local_ip,port,source,remote_name,target,candidate,expected_family)
             _verify_restore_readback(host,target,raw_size,raw_sha); return
+        except WriteStateUnknownError:
+            raise
         except TransportError as exc:
             failures.append(f"{candidate}: {exc}")
-            print(tr(f"[WARNING] {candidate} не сработал: {exc}", f"[WARNING] {candidate} failed: {exc}"))
-    raise Error(tr(
-        "все транспорты восстановления отказали: ",
-        "all restore transports failed: ",
-    ) + " | ".join(failures))
+            print(tr(f"[WARNING] {candidate} не сработал ДО начала NAND write: {exc}", f"[WARNING] {candidate} failed BEFORE NAND write started: {exc}"))
+    raise Error(tr("все безопасные pre-write транспорты восстановления отказали: ", "all safe pre-write restore transports failed: ") + " | ".join(failures))
 
 def perform_stock_restore_over_ssh(router_ip: str, local_ip: str, restore_port: int,
                                    backup_dir: Path, payload_dir: Path, manifest: dict) -> None:
     stage_header("R1", "Проверка системы восстановления", "Recovery-system checks")
     backup_ri_sha, _ = raw_sha256(Path(verify_backup(backup_dir)["files"]["7"]))
-    transport = transition_preflight_for_restore(router_ip, backup_ri_sha)
+    expected_family = str(manifest.get("source_validation", {}).get("device_family", "")).lower()
+    if expected_family not in ("md", "mf"):
+        raise Error(tr("backup family MD/MF не определён", "backup MD/MF family is not determined"))
+    transport = transition_preflight_for_restore(router_ip, backup_ri_sha, expected_family)
     print()
     print(tr("ПЕРЕД НАЧАЛОМ ПРОВЕРЬТЕ:", "CHECK BEFORE STARTING:"))
     print(tr("  • Стабильное питание до окончательной перезагрузки.", "  • Stable power until the final reboot."))
@@ -5413,22 +7404,23 @@ def perform_stock_restore_over_ssh(router_ip: str, local_ip: str, restore_port: 
     print(tr("  • Разрешите Python и OpenSSH в брандмауэре.", "  • Allow Python and OpenSSH through the firewall."))
     print(tr("  • Не нажимайте Reset и не закрывайте окно мастера.", "  • Do not press Reset or close the wizard window."))
     print(tr("  • Полная диагностика сохраняется в work/logs/LATEST.log.", "  • Full diagnostics are saved in work/logs/LATEST.log."))
+    print(tr("  • Транспорт: nokia-tftp → TCP/nc → SCP; fallback разрешён только ДО запуска mtd write.", "  • Transport: nokia-tftp → TCP/nc → SCP; fallback is allowed only BEFORE mtd write is started."))
     print()
     print(tr("ВНИМАНИЕ: выбранный полный backup будет записан во флеш-память роутера.", "WARNING: the selected complete backup will be written to the router flash."))
     print(tr("Основная область записывается и проверяется первой; загрузчик — строго последним.", "The main area is written and verified first; the bootloader is written strictly last."))
     confirm=input(tr("Введите точно RESTORE STOCK BACKUP: ", "Type exactly RESTORE STOCK BACKUP: ")).strip()
     if confirm!="RESTORE STOCK BACKUP": raise Error(tr("stock restore отменён", "stock restore cancelled"))
     stage_header("R2", "Передача, запись и проверка IBU", "Transfer, write, and verify IBU")
-    serve_restore_payload(router_ip,local_ip,restore_port,payload_dir/manifest["ibu"]["file"],manifest["ibu"]["file"],"ibu",manifest["ibu"]["raw_size"],manifest["ibu"]["raw_sha256"],transport)
+    serve_restore_payload(router_ip,local_ip,restore_port,payload_dir/manifest["ibu"]["file"],manifest["ibu"]["file"],"ibu",manifest["ibu"]["raw_size"],manifest["ibu"]["raw_sha256"],transport,expected_family)
     print(tr(
         "[OK] IBU полностью восстановлена и проверена. BL2 ещё не изменялся.",
         "[OK] IBU has been fully restored and verified. BL2 has not been modified yet.",
     ))
     stage_header("R3", "Запись stock BL2 последним", "Write stock BL2 last")
-    serve_restore_payload(router_ip,local_ip,restore_port,payload_dir/manifest["bl2"]["file"],manifest["bl2"]["file"],"bl2",manifest["bl2"]["raw_size"],manifest["bl2"]["raw_sha256"],transport)
+    serve_restore_payload(router_ip,local_ip,restore_port,payload_dir/manifest["bl2"]["file"],manifest["bl2"]["file"],"bl2",manifest["bl2"]["raw_size"],manifest["bl2"]["raw_sha256"],transport,expected_family)
     stage_header("R4", "Финальная проверка полного all_flash", "Final full all_flash verification")
-    full_cmd=f"mtd -q -l {STOCK_ALL_FLASH_SIZE} dump all_flash | sha256sum | awk '{{print $1}}'"
-    _,output=ssh_run_with_progress(router_ip,full_cmd,1800,"VERIFY ALL_FLASH")
+    full_cmd=f"mtd -q -l {STOCK_RESTORE_SPAN} dump all_flash | sha256sum | awk '{{print $1}}'"
+    _,output=ssh_run_with_progress(router_ip,full_cmd,1800,"VERIFY ALL_FLASH",restore_auth=True)
     match=re.search(r"([0-9a-f]{64})",output)
     if not match or match.group(1)!=manifest["all_flash_sha256"]:
         raise Error(tr(
@@ -5441,7 +7433,11 @@ def perform_stock_restore_over_ssh(router_ip: str, local_ip: str, restore_port: 
     ))
     stage_header("R5", "Перезагрузка в штатную прошивку", "Reboot into stock firmware")
     print(tr("[OK] Все записи подтверждены. Отправляю sync и reboot.", "[OK] All writes are verified. Sending sync and reboot."))
-    ssh_run(router_ip,"sync; reboot -f",timeout=30,allow_disconnect=True)
+    try:
+        _restore_probe_ssh(router_ip,"sync; reboot -f",timeout=30,quiet=True)
+    except Error:
+        # Expected: the verified stock reboot can close SSH before a status is returned.
+        pass
 
 
 
@@ -5475,13 +7471,13 @@ def wait_for_stable_openwrt(host: str, timeout: int, expected_mode: str | None =
     last_mode: str | None = None
     while time.time() < deadline:
         try:
-            rc, output = ssh_run(
-                host,
-                "echo __NOKIA_SSH_READY__; cat /tmp/sysinfo/board_name 2>/dev/null; cat /proc/mtd 2>/dev/null",
-                timeout=25,
-                allow_disconnect=True,
-                quiet=True,
-            )
+            probe_command = "echo __NOKIA_SSH_READY__; cat /tmp/sysinfo/board_name 2>/dev/null; cat /proc/mtd 2>/dev/null"
+            if expected_mode == "recovery":
+                rc, output = _restore_probe_ssh(host, probe_command, timeout=25, quiet=True)
+            else:
+                rc, output = ssh_run(
+                    host, probe_command, timeout=25, allow_disconnect=True, quiet=True
+                )
             if rc == 0 and "__NOKIA_SSH_READY__" in output:
                 low = output.lower()
                 mode = None
@@ -5663,9 +7659,10 @@ def stock_restore_running_wizard() -> None:
     print(tr("Подходит для установленной OpenWrt и уже запущенной системы восстановления.", "Use this with installed OpenWrt or an already running recovery system."))
     print(tr("Если работает обычная OpenWrt, мастер временно запустит систему восстановления; сам образ во флеш-память не записывается.", "If installed OpenWrt is running, the wizard temporarily starts the recovery system; the image itself is not written to flash."))
     print()
-    print(tr("Подключите стабильное питание и Ethernet напрямую к ПК. Задайте ПК 192.168.1.254/24; Wi-Fi/VPN временно отключите.", "Connect stable power and Ethernet directly to the PC. Set the PC to 192.168.1.254/24; temporarily disable Wi-Fi/VPN."))
+    transition_lan_policy_notice()
+    print(tr("Подключите стабильное питание и Ethernet напрямую к ПК через LAN2/LAN3/LAN4. Задайте ПК 192.168.1.254/24; Wi-Fi/VPN временно отключите.", "Connect stable power and Ethernet directly to the PC through LAN2/LAN3/LAN4. Set the PC to 192.168.1.254/24; temporarily disable Wi-Fi/VPN."))
     print(tr("Не нажимайте Reset. Окно остаётся открытым; прогресс и диагностика сохраняются в work/logs/LATEST.log.", "Do not press Reset. The window stays open; progress and diagnostics are saved in work/logs/LATEST.log."))
-    print(tr("Способ передачи выбирается автоматически: TFTP, затем резервные варианты.", "The transfer method is selected automatically: TFTP, then fallback methods."))
+    print(tr("Способ передачи: TFTP → TCP/nc → SCP. Fallback разрешён только ДО начала NAND write.", "Transfer order: TFTP → TCP/nc → SCP. Fallback is allowed only BEFORE NAND write starts."))
     ssh_executable()
     local_ip = input(tr("Статический IP компьютера [192.168.1.254]: ", "Static PC IP [192.168.1.254]: ")).strip() or "192.168.1.254"
     router_ip = input(tr("IP Nokia [192.168.1.1]: ", "Nokia IP [192.168.1.1]: ")).strip() or "192.168.1.1"
@@ -5687,7 +7684,11 @@ def stock_restore_running_wizard() -> None:
     _write_session_only(f"[RESTORE] verified working files: {payload_dir}")
     print(tr("[OK] Backup проверен.", "[OK] Backup verified."))
     print(tr("[WAIT] Проверяю состояние роутера по SSH...", "[WAIT] Checking the router state over SSH..."))
-    mode, _ = inspect_restore_environment(router_ip, quiet=True)
+    backup_family = str(manifest.get("source_validation", {}).get("device_family", "")).lower()
+    if backup_family not in ("md", "mf"):
+        raise Error(tr("backup family MD/MF не определён", "backup MD/MF family is not determined"))
+    print(tr(f"[OK] Backup family: {backup_family.upper()}; применяю только соответствующий recovery/production gate.", f"[OK] Backup family: {backup_family.upper()}; only the matching recovery/production gate will be used."))
+    mode, _ = inspect_restore_environment(router_ip, expected_family=backup_family, quiet=True)
     if mode == "production":
         print(tr("[OK] Установленная OpenWrt и разметка Nokia подтверждены.", "[OK] Installed OpenWrt and the Nokia layout are confirmed."))
         print(tr("[WAIT] Подготавливаю временный запуск системы восстановления.", "[WAIT] Preparing a temporary recovery-system boot."))
@@ -5716,11 +7717,790 @@ def stock_restore_selector_wizard() -> None:
         print(tr("Неверный выбор. Введите 1 или 2.", "Invalid selection. Enter 1 or 2."))
 
 
+
+BOOTROM_BACKUP_NAMES = {
+    0: "bootloader", 1: "romfile", 2: "kernel", 3: "rootfs",
+    4: "kernel_slave", 5: "rootfs_slave", 6: "bosa", 7: "ri",
+    8: "flag", 9: "flagback", 10: "config", 11: "data",
+    12: "oopsfs", 13: "log", 14: "nsb_master", 15: "nsb_slave",
+    16: "all_flash",
+}
+
+
+def _gzip_raw_info(path: Path) -> tuple[int, str]:
+    total = 0
+    digest = hashlib.sha256()
+    try:
+        with gzip.open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                digest.update(chunk)
+    except (OSError, EOFError) as exc:
+        raise Error(f"повреждён gzip {path.name}: {exc}") from exc
+    return total, digest.hexdigest()
+
+
+def _gzip_slice(raw_path: Path, offset: int, size: int, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with raw_path.open("rb") as src, output.open("wb") as raw_out:
+        src.seek(offset)
+        with gzip.GzipFile(filename="", mode="wb", compresslevel=1, fileobj=raw_out, mtime=0) as gz:
+            remaining = size
+            while remaining:
+                data = src.read(min(1024 * 1024, remaining))
+                if not data:
+                    raise Error(f"неожиданный EOF при создании {output.name}")
+                gz.write(data)
+                remaining -= len(data)
+
+
+def _bootrom_slot_geometry(slot: bytes, family: str, label: str) -> tuple[int, int, int]:
+    small_kernel = 0x003AF6DA if family == "md" else 0x003B6CC0
+    small_rootfs = 0x01CC0000 if family == "md" else 0x01D00000
+    candidates = (
+        (small_kernel, small_rootfs),
+        (0x00480000, 0x02400000),
+    )
+    squash_offsets: list[int] = []
+    start = 0x100000
+    while True:
+        pos = slot.find(b"hsqs", start, min(len(slot), 0x00800000))
+        if pos < 0:
+            break
+        squash_offsets.append(pos)
+        start = pos + 4
+    best: tuple[int, int, int, int] | None = None
+    for rootfs_offset in squash_offsets:
+        for kernel_size, rootfs_size in candidates:
+            delta = abs(rootfs_offset - kernel_size)
+            if delta <= 0x2000:
+                item = (delta, kernel_size, rootfs_offset, rootfs_size)
+                if best is None or item < best:
+                    best = item
+    if best is None:
+        raise Error(tr(
+            f"{label}: не найден известный stock kernel/rootfs split; backup сохранён, но полный набор mtd0..mtd16 не сформирован",
+            f"{label}: no known stock kernel/rootfs split was found; the all_flash backup was saved but mtd0..mtd16 could not be synthesized",
+        ))
+    _, kernel_size, rootfs_offset, rootfs_size = best
+    if rootfs_offset + rootfs_size > len(slot):
+        raise Error(f"{label}: rootfs выходит за границы stock slot")
+    return kernel_size, rootfs_offset, rootfs_size
+
+
+def _synthesize_bootrom_backup(destination: Path, family: str, chunk_files: list[Path], source_info: dict) -> dict:
+    """Build a conventional MedveFlasher backup from verified read-only chunks."""
+    full_gz = destination / "mtd16_all_flash.bin.gz"
+    with full_gz.open("wb") as out:
+        for chunk in chunk_files:
+            with chunk.open("rb") as fh:
+                shutil.copyfileobj(fh, out, 1024 * 1024)
+    full_size, full_sha = _gzip_raw_info(full_gz)
+    if full_size != STOCK_RESTORE_SPAN:
+        raise Error(f"BootROM backup all_flash: размер {full_size}, ожидается {STOCK_RESTORE_SPAN}")
+
+    raw_tmp = destination / ".mtd16-all-flash.raw.part"
+    try:
+        with gzip.open(full_gz, "rb") as src, raw_tmp.open("wb") as out:
+            shutil.copyfileobj(src, out, 1024 * 1024)
+        if raw_tmp.stat().st_size != STOCK_RESTORE_SPAN:
+            raise Error("внутренняя ошибка сборки raw all_flash")
+
+        # Fixed physical stock slices.
+        for number, (offset, size) in STOCK_RAW_SLICES.items():
+            name = BOOTROM_BACKUP_NAMES[number]
+            _gzip_slice(raw_tmp, offset, size, destination / f"mtd{number}_{name}.bin.gz")
+
+        # mtd2..mtd5 are parser-created overlapping views inside nsb_master/
+        # nsb_slave. A BootROM capture has no stock /proc/mtd, and the raw NSB
+        # images contain overlapping vendor views, so the active A/B view cannot
+        # be recovered reliably from raw bytes alone. Emit canonical accepted
+        # layout A for compatibility; mtd14/mtd15/mtd16 remain authoritative.
+        small_kernel = 0x003AF6DA if family == "md" else 0x003B6CC0
+        small_rootfs = 0x01CC0000 if family == "md" else 0x01D00000
+        master_base = STOCK_RAW_SLICES[14][0]
+        with raw_tmp.open("rb") as fh:
+            fh.seek(master_base)
+            master = fh.read(STOCK_RAW_SLICES[14][1])
+        # The vendor-reported small kernel size is not exactly the SquashFS
+        # byte offset on observed stock; locate the actual hsqs start so the
+        # synthesized mtd3 payload matches a normal stock dump byte-for-byte.
+        _, small_rootfs_offset, _ = _bootrom_slot_geometry(master, family, "mtd14")
+        slot_specs = [
+            (14, 2, 3, small_kernel, small_rootfs_offset, small_rootfs),
+            (15, 4, 5, 0x00480000, 0x00480000, 0x02400000),
+        ]
+        for slot_number, kernel_number, rootfs_number, kernel_size, rootfs_offset, rootfs_size in slot_specs:
+            slot_base = STOCK_RAW_SLICES[slot_number][0]
+            _gzip_slice(raw_tmp, slot_base, kernel_size, destination / f"mtd{kernel_number}_{BOOTROM_BACKUP_NAMES[kernel_number]}.bin.gz")
+            _gzip_slice(raw_tmp, slot_base + rootfs_offset, rootfs_size, destination / f"mtd{rootfs_number}_{BOOTROM_BACKUP_NAMES[rootfs_number]}.bin.gz")
+
+        # Convenience raw board-data copies.
+        with raw_tmp.open("rb") as fh:
+            for number, convenience in ((6, "bosa.bin"), (7, "ri.bin")):
+                offset, size = STOCK_RAW_SLICES[number]
+                fh.seek(offset)
+                (destination / convenience).write_bytes(fh.read(size))
+
+        sizes: dict[int, int] = dict(FIXED_EXPECTED)
+        for slot_number, kernel_number, rootfs_number, kernel_size, rootfs_offset, rootfs_size in slot_specs:
+            sizes[kernel_number] = kernel_size
+            sizes[rootfs_number] = rootfs_size
+        proc_lines = [
+            f'dev:    size   erasesize  name',
+        ]
+        for number in EXPECTED_NUMBERS:
+            proc_lines.append(f'mtd{number}: {sizes[number]:08x} 00020000 "{BOOTROM_BACKUP_NAMES[number]}"')
+        write_text(destination / "proc_mtd.txt", "\n".join(proc_lines) + "\n")
+
+        metadata = {
+            "format": "medveflasher-bootrom-backup-v1",
+            "kit_version": APP_VERSION,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "device_family": family,
+            "model": "Nokia XG-040G-MD" if family == "md" else "Nokia XG-040G-MF",
+            "soc": "AN7581" if family == "md" else "AN7583",
+            "capture": "BootROM -> XMODEM RAM U-Boot -> rdinit=/bin/sh RAM shell -> read-only all_flash chunks -> TFTP",
+            "nand_writes": False,
+            "all_flash_size": full_size,
+            "all_flash_sha256": full_sha,
+            "recovery_probe": source_info,
+            "chunks": [p.name for p in chunk_files],
+            "synthetic_slot_views": "normalized accepted layout A; raw NSB bytes contain overlapping vendor views, while mtd14/mtd15/mtd16 are authoritative",
+        }
+        write_text(destination / "BOOTROM_BACKUP.json", json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+        write_text(destination / "BACKUP_COMPLETE", f"Nokia {family.upper()} BootROM read-only backup complete\n")
+
+        sums = []
+        for path in sorted(x for x in destination.iterdir() if x.is_file() and x.name not in ("SHA256SUMS.txt",) and not x.name.startswith(".")):
+            sums.append(f"{sha_file(path)}  {path.name}")
+        write_text(destination / "SHA256SUMS.txt", "\n".join(sums) + "\n")
+
+        validation = verify_backup(destination, require_md_slot_layout=False)
+        if validation.get("stock_family") != family:
+            raise Error(tr(
+                f"синтезированный backup определился как {validation.get('stock_family')}, ожидался {family}",
+                f"the synthesized backup was detected as {validation.get('stock_family')}, expected {family}",
+            ))
+        return metadata
+    finally:
+        raw_tmp.unlink(missing_ok=True)
+
+
+def _ram_shell_send_line(serial_port: RecoverySerial, line: str) -> None:
+    """Send one ASCII command to the recovery ash console with conservative pacing."""
+    if any(ch in line for ch in "\r\n"):
+        raise Error("RAM shell command contains a newline")
+    encoded = line.encode("ascii")
+    for offset in range(0, len(encoded), 24):
+        serial_port.write(encoded[offset:offset + 24])
+        time.sleep(0.002)
+    serial_port.write(b"\r")
+
+
+def _assert_bootrom_backup_shell_safe(command: str) -> None:
+    """Fail closed if a BootROM-backup RAM-shell command can modify flash/NAND.
+
+    This is a runtime firewall, not a source-code grep.  Every command actually
+    sent through the minimal rdinit shell is checked immediately before UART TX.
+    """
+    normalized = re.sub(r"\s+", " ", command.strip().lower())
+    forbidden = (
+        r"\bmtd\s+(?:write|erase)\b",
+        r"\bnand\s+(?:write|erase)\b",
+        r"\bflash(?:cp)?\s+(?:write|erase)\b",
+        r"\bsaveenv\b",
+        r"\bubiformat\b",
+        r"\bubi(?:attach|detach|updatevol|mkvol|rmvol)\b",
+        r"\bsysupgrade\b",
+        r"\bdd\b[^;|\n]*\bof=/dev/(?:mtd|ubi|mmc|sd)",
+    )
+    for pattern in forbidden:
+        if re.search(pattern, normalized, re.I):
+            raise Error(tr(
+                f"BootROM backup safety gate заблокировал потенциально деструктивную RAM-shell команду: {command}",
+                f"BootROM backup safety gate blocked a potentially destructive RAM-shell command: {command}",
+            ))
+
+
+def _restore_transport_safety_selftest() -> None:
+    """Prove that fallback stops permanently once a NAND write may have started."""
+    global _restore_stream_transport, _restore_scp_transport, _verify_restore_readback
+    orig_stream = _restore_stream_transport
+    orig_scp = _restore_scp_transport
+    orig_verify = _verify_restore_readback
+    calls: list[str] = []
+    dummy = Path(__file__)
+    try:
+        def prewrite_then_ok(host, local_ip, port, source, remote_name, target, transport, expected_family=None):
+            calls.append(transport)
+            if transport == "tftp":
+                raise TransportError("synthetic pre-write failure")
+        def scp_ok(host, source, target, expected_family=None):
+            calls.append("scp")
+        def verify_ok(host, target, raw_size, raw_sha):
+            calls.append("verify")
+        _restore_stream_transport = prewrite_then_ok
+        _restore_scp_transport = scp_ok
+        _verify_restore_readback = verify_ok
+        serve_restore_payload("192.0.2.1", "192.0.2.2", 1069, dummy, "dummy.gz", "ibu", 1, "00"*32, "tftp", "md")
+        if calls != ["tftp", "tcp-nc", "verify"]:
+            raise Error(f"restore fallback selftest unexpected pre-write path: {calls}")
+
+        calls.clear()
+        def unknown_immediately(host, local_ip, port, source, remote_name, target, transport, expected_family=None):
+            calls.append(transport)
+            raise WriteStateUnknownError("synthetic post-write disconnect")
+        _restore_stream_transport = unknown_immediately
+        try:
+            serve_restore_payload("192.0.2.1", "192.0.2.2", 1069, dummy, "dummy.gz", "ibu", 1, "00"*32, "tftp", "md")
+        except WriteStateUnknownError:
+            pass
+        else:
+            raise Error("restore fallback selftest accepted post-write retry")
+        if calls != ["tftp"]:
+            raise Error(f"restore fallback selftest retried after WRITE_STATE_UNKNOWN: {calls}")
+    finally:
+        _restore_stream_transport = orig_stream
+        _restore_scp_transport = orig_scp
+        _verify_restore_readback = orig_verify
+
+
+
+def _uboot_badblock_restore_safety_selftest() -> None:
+    transcript = b"""MTD device ubi bad blocks list:\r\n\t0x05d00000\r\n\t0x05d20000\r\n\t0x05de0000\r\n"""
+    bad = _parse_uboot_bad_blocks(transcript, "ubi", PHYSICAL_NAND_SIZE - STOCK_BL2_SIZE)
+    expected_bad = [0x05D00000, 0x05D20000, 0x05DE0000]
+    if bad != expected_bad:
+        raise Error(f"bad-block parser selftest mismatch: {bad}")
+    _validate_stock_ubi_bad_blocks(bad)
+    spans = _chunk_good_spans(0x05800000, 0x00800000, bad)
+    expected_spans = [
+        (0x05800000, 0x00500000),
+        (0x05D40000, 0x000A0000),
+        (0x05E00000, 0x00200000),
+    ]
+    if spans != expected_spans:
+        raise Error(f"bad-block span selftest mismatch: {spans}")
+    # The next nominal 8-MiB chunk must remain at 0x06000000; skipped bad PEBs
+    # must never advance its physical start or compact the mtd16 image.
+    next_spans = _chunk_good_spans(0x06000000, 0x00800000, bad)
+    if not next_spans or next_spans[0][0] != 0x06000000:
+        raise Error(f"bad-block boundary selftest shifted next chunk: {next_spans}")
+    try:
+        _validate_stock_ubi_bad_blocks([0x00100000])
+    except Error:
+        pass
+    else:
+        raise Error("bad-block safety selftest accepted a raw-critical stock bad block")
+    try:
+        _parse_uboot_bad_blocks(b"0x00000800\n", "ubi", PHYSICAL_NAND_SIZE - STOCK_BL2_SIZE)
+    except Error:
+        pass
+    else:
+        raise Error("bad-block parser accepted a non-erase-aligned offset")
+    source = Path(__file__).read_text(encoding="utf-8")
+    start = source.index("def perform_stock_restore_in_uboot")
+    end = source.index("def _uboot_reboot_evidence", start)
+    body = source[start:end]
+    if "_uboot_restore_physical_chunk" not in body:
+        raise Error("bad-block-aware restore helper is not wired into BootROM restore")
+    legacy = 'mtd write ubi 0x{UBOOT_LOAD_ADDRESS:x} 0x{offset:x} 0x{size:x}'
+    if legacy in body:
+        raise Error("legacy fixed-offset whole-chunk U-Boot write returned")
+
+
+def _rc23_timestamp_backup_identity_selftest() -> None:
+    stamped = _timestamp_text("[OK] one\n[WAIT] two")
+    lines = stamped.splitlines()
+    if len(lines) != 2 or not all(re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ", line) for line in lines):
+        raise Error(f"RC23 timestamp selftest mismatch: {stamped!r}")
+    if _timestamp_text("\n") != "\n":
+        raise Error("RC23 timestamp selftest changed blank separator lines")
+    agent = BACKUP_AGENT.read_text(encoding="utf-8")
+    for token in ("DEVICE_MAC.txt", "primary_interface=", "primary_mac=", "NOKIA_BACKUP_FAMILY"):
+        if token not in agent:
+            raise Error(f"RC23 USB backup identity token missing: {token}")
+    source = Path(__file__).read_text(encoding="utf-8")
+    for token in ("_write_backup_device_mac(destination, telnet", "Backup source MAC", "DEVICE_MAC.txt"):
+        if token not in source:
+            raise Error(f"RC23 TFTP backup identity token missing: {token}")
+
+
+def _rc24_interactive_navigation_selftest() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    required = (
+        "_interactive_navigation_prompt",
+        "_run_interactive_action",
+        "[NAV] Задание завершено. Скрипт остаётся запущенным.",
+        "[NAV] Задание завершилось ошибкой. Скрипт остаётся запущенным.",
+        "_INTERACTIVE_DESTRUCTIVE_LATCH",
+        "[SAFETY-LATCH]",
+        "if choice == \"4\" and ok:",
+        "if nav == \"exit\":",
+    )
+    missing = [token for token in required if token not in source]
+    if missing:
+        raise Error("RC24 interactive navigation selftest missing: " + ", ".join(missing))
+    legacy_tokens = (
+        "if firmware_" + "menu(): return",
+        "if backup_" + "menu(): return",
+        "if service_" + "menu(): return",
+        "stock_recovery_" + "wizard()\n                return 0",
+        "raise Error(tr(" + "\"неверный режим запуска\"",
+    )
+    present = [token for token in legacy_tokens if token in source]
+    if present:
+        raise Error("RC24 interactive navigation selftest found exit-on-action legacy: " + ", ".join(present))
+    helper_start = source.index("def _run_interactive_action")
+    helper_end = source.index("def sha_file", helper_start)
+    helper = source[helper_start:helper_end]
+    if "except KeyboardInterrupt" in helper or "except BaseException" in helper:
+        raise Error("RC24 interactive wrapper must not swallow KeyboardInterrupt/BaseException during possible NAND activity")
+
+
+def _stage1_handoff_safety_selftest() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    required = (
+        "STAGE1_HANDOFF_UNKNOWN",
+        "_stage1_rearm_after_confirmation",
+        "automatically retrying --flash is forbidden",
+        "read-only preflight after confirmation",
+    )
+    missing = [item for item in required if item not in source]
+    if missing:
+        raise Error("stage1 handoff safety selftest missing: " + ", ".join(missing))
+    forbidden = "4 — Установить свой образ " + "OpenWrt (экспертный режим)"
+    # Ignore this selftest's own construction and reject an actual menu print.
+    if ('print(tr(\n            "' + forbidden + '"') in source:
+        raise Error("duplicate custom-sysupgrade access-menu entry returned")
+    menu = (
+        '1 — прямой TFTP между Nokia и ПК, USB не требуется (рекомендуется)',
+        '1 — полный backup напрямую на ПК через TFTP (рекомендуется)',
+    )
+    for text in menu:
+        if text not in source:
+            raise Error("TFTP-first menu invariant missing: " + text)
+
+
+def _bootrom_backup_safety_selftest() -> None:
+    safe = (
+        "/bin/busybox cat /proc/mtd",
+        "/bin/busybox dd if=/dev/mtd0 bs=4096 count=1 2>/dev/null | /bin/busybox sha256sum",
+        "/bin/busybox mount -t proc proc /proc",
+        "/bin/busybox ifconfig eth0 192.168.1.1 netmask 255.255.255.0 up",
+    )
+    blocked = (
+        "mtd erase ubi",
+        "mtd write image ubi",
+        "nand erase 0 0x20000",
+        "saveenv",
+        "ubiformat /dev/mtd2",
+        "ubiupdatevol /dev/ubi0_0 x",
+        "sysupgrade /tmp/x.itb",
+        "dd if=/tmp/x of=/dev/mtd0",
+    )
+    for command in safe:
+        _assert_bootrom_backup_shell_safe(command)
+    for command in blocked:
+        try:
+            _assert_bootrom_backup_shell_safe(command)
+        except Error:
+            continue
+        raise Error(f"BootROM safety selftest failed to block: {command}")
+    if _uboot_reboot_evidence(b"reset\r\nU-Boot>"):
+        raise Error("post-restore reboot selftest accepted a U-Boot prompt as reboot evidence")
+    if not _uboot_reboot_evidence(b"Secure key does not exist\r\nHWCONF is 1f\r\nAN7583DRAMC V0.6"):
+        raise Error("post-restore reboot selftest rejected known AN7583 boot evidence")
+    _verify_recovery_safe_fip(RECOVERY_FIP, "a81dbbe98acb1dabc2afcbf72e73ad87e24efa8dd88e559612a024c28ece920e", "df4803b9f70bb35050555947268fc35d61f1724814a1ea59b480689f056fa123", "AN7581 RC18 RECOVERY_SAFE FIP")
+    _verify_recovery_safe_fip(MF_RECOVERY_FIP, "6d97815b5cdf905eff874062f9364ebe41a2a11f4b25944a82aea4fcbdd71e35", "3bb4cf1aa950dd212e1b5781abf55c239ff61326d5ca0c19e9f2c010285f5bb1", "AN7583 RC18 RECOVERY_SAFE FIP")
+
+
+def _ram_shell_command(serial_port: RecoverySerial, log, command: str, timeout: int = 120, *, echo_label: bool = True) -> bytes:
+    """Run a command in the PID1 BusyBox ash recovery shell and return its transcript.
+
+    BootROM backup deliberately does not use SSH.  A unique marker is emitted on
+    the UART after each command, so command completion and the shell exit status
+    are deterministic even when no visible prompt is printed.
+    """
+    _assert_bootrom_backup_shell_safe(command)
+    marker = f"__MEDVEFLASHER_RAMSH_{time.time_ns():x}__"
+    if echo_label:
+        print(f"[RAM-SHELL] {command}")
+    # Do not reset RX here: late kernel diagnostics are valuable evidence and do
+    # not confuse the unique completion marker.
+    line = f"{command}; __mf_rc=$?; echo {marker}_RC_$__mf_rc"
+    _ram_shell_send_line(serial_port, line)
+    deadline = time.time() + timeout
+    transcript = bytearray()
+    pattern = re.compile(re.escape(marker.encode("ascii")) + rb"_RC_([0-9]+)(?:[\r\n]|$)")
+    while time.time() < deadline:
+        data = serial_port.read(4096, 0.25)
+        if not data:
+            continue
+        _uart_log_write(log, data)
+        transcript.extend(data)
+        if len(transcript) > 2 * 1024 * 1024:
+            del transcript[:-1024 * 1024]
+        match = pattern.search(bytes(transcript))
+        if match is None:
+            continue
+        rc = int(match.group(1))
+        if rc != 0:
+            raise Error(f"RAM shell command failed with code {rc}: {command}")
+        return bytes(transcript)
+    raise Error(f"тайм-аут RAM shell-команды: {command}")
+
+
+def _wait_backup_recovery_shell(serial_port: RecoverySerial, log, timeout: int = 180) -> None:
+    """Wait for the rdinit=/bin/sh recovery shell and prove command execution."""
+    deadline = time.time() + timeout
+    tail = bytearray()
+    saw_kernel = False
+    saw_rdinit = False
+    while time.time() < deadline:
+        data = serial_port.read(4096, 0.25)
+        if data:
+            _uart_log_write(log, data)
+            tail.extend(data)
+            if len(tail) > 131072:
+                del tail[:-65536]
+            low = bytes(tail).lower()
+            if b"starting kernel" in low or b"booting linux on physical cpu" in low:
+                saw_kernel = True
+            if b"run /bin/sh as init process" in low or b"starting init: /bin/sh" in low:
+                saw_rdinit = True
+            if b"kernel panic" in low:
+                raise Error("RAM recovery kernel panic before shell")
+        if saw_rdinit:
+            break
+    if not saw_kernel:
+        raise Error("не подтверждён запуск RAM recovery kernel")
+    if not saw_rdinit:
+        raise Error("RAM recovery kernel не подтвердил rdinit=/bin/sh")
+    time.sleep(0.4)
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            out = _ram_shell_command(serial_port, log, "/bin/busybox echo MEDVEFLASHER_RAM_SHELL_READY", timeout=6, echo_label=False)
+            if b"MEDVEFLASHER_RAM_SHELL_READY" in out:
+                break
+        except Error as exc:
+            last_error = exc
+            _write_session_only(f"[RAM-SHELL] readiness attempt={attempt}/3 error={exc}")
+            time.sleep(0.5)
+    else:
+        raise Error(f"RAM recovery shell marker not returned: {last_error or 'no marker'}")
+    print(tr(
+        "[OK] Минимальная RAM shell готова; procd/Dropbear/UBI init не запускались.",
+        "[OK] Minimal RAM shell is ready; procd/Dropbear/UBI init were not started.",
+    ))
+
+
+def _boot_backup_recovery_fit(serial_port: RecoverySerial, log, local_ip: str, router_ip: str, profile: dict[str, object]) -> None:
+    source = Path(profile["backup_initramfs"])
+    expected_sha = str(profile["backup_initramfs_sha"])
+    if not source.is_file() or sha_file(source) != expected_sha:
+        raise Error(f"backup recovery FIT повреждён или отсутствует: {source}")
+    family = str(profile["family"])
+    remote_name = f"nokia-{family}-bootrom-backup-recovery.itb"
+    ready = threading.Event()
+    result = TftpResult()
+    thread = threading.Thread(
+        target=serve_tftp_get,
+        args=(local_ip, 69, source, remote_name, router_ip, ready, result),
+        kwargs={"timeout": 300, "maximum_block_size": 1468}, daemon=True,
+    )
+    thread.start()
+    if not ready.wait(10) or result.error:
+        raise Error(f"TFTP RAM recovery server не запустился: {result.error or 'timeout'}")
+    for command in (
+        "setenv ethaddr 02:00:00:04:0d:10",
+        "setenv eth1addr 02:00:00:04:0d:11",
+        f"setenv ipaddr {router_ip}",
+        f"setenv serverip {local_ip}",
+        "setenv netmask 255.255.255.0",
+        "setenv autoload no",
+        # Use only the initramfs as a minimal command environment.  In
+        # particular, do not pass ubi.mtd/root and do not run OpenWrt /init.
+        "setenv bootargs console=ttyS0,115200 rdinit=/bin/sh",
+    ):
+        uboot_command(serial_port, log, command)
+    transcript = uboot_command(serial_port, log, f"tftpboot 0x{UBOOT_LOAD_ADDRESS:x} {remote_name}", timeout=360)
+    thread.join(10)
+    if thread.is_alive() or result.error or result.bytes_transferred != source.stat().st_size:
+        raise Error(f"RAM recovery FIT передан не полностью: {result.error or result.bytes_transferred}")
+    if b"bytes transferred" not in transcript.lower() and b"done" not in transcript.lower():
+        raise Error("U-Boot не подтвердил TFTP RAM recovery FIT")
+    info = uboot_command(serial_port, log, f"iminfo 0x{UBOOT_LOAD_ADDRESS:x}", timeout=60)
+    if b"fit image found" not in info.lower() or b"bad" in info.lower():
+        raise Error("iminfo не подтвердил RAM recovery FIT")
+    print(tr(
+        "[U-Boot] FIT проверен; запускаю минимальную read-only RAM shell (rdinit=/bin/sh).",
+        "[U-Boot] FIT verified; booting the minimal read-only RAM shell (rdinit=/bin/sh).",
+    ))
+    serial_port.write(f"bootm 0x{UBOOT_LOAD_ADDRESS:x}\r".encode("ascii"))
+    _wait_backup_recovery_shell(serial_port, log)
+
+
+def _probe_backup_recovery(serial_port: RecoverySerial, log, router_ip: str, local_ip: str, family: str, port: int) -> dict:
+    expected_model = "Nokia XG-040G-MD" if family == "md" else "Nokia XG-040G-MF"
+    # Mount pseudo filesystems only.  No NAND filesystem/UBI volume is mounted.
+    for command in (
+        "/bin/busybox mount -t proc proc /proc 2>/dev/null || /bin/busybox true",
+        "/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null || /bin/busybox true",
+        "/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || /bin/busybox true",
+        f"/bin/busybox ifconfig eth0 {router_ip} netmask 255.255.255.0 up",
+    ):
+        _ram_shell_command(serial_port, log, command, timeout=30)
+    probe_cmd = (
+        "/bin/busybox echo MODEL_BEGIN; "
+        "/bin/busybox cat /sys/firmware/devicetree/base/model 2>/dev/null || /bin/busybox true; "
+        "/bin/busybox echo; /bin/busybox echo MODEL_END; "
+        "/bin/busybox cat /proc/mtd; "
+        "for x in dd gzip tftp sha256sum ifconfig; do "
+        "/bin/busybox --list | /bin/busybox grep -qx \"$x\" && /bin/busybox echo APPLET_$x=1 || /bin/busybox echo APPLET_$x=0; "
+        "done"
+    )
+    out = _ram_shell_command(serial_port, log, probe_cmd, timeout=45)
+    text = out.decode("utf-8", "replace").replace("\x00", "")
+    low = text.lower()
+    if expected_model.lower() not in low:
+        raise Error(tr(
+            f"RAM recovery model mismatch: ожидался {expected_model}",
+            f"RAM recovery model mismatch: expected {expected_model}",
+        ))
+    if 'mtd0: 10000000 00020000 "all_flash"' not in low:
+        raise Error("RAM recovery не подтвердила all_flash=256MiB")
+    for applet in ("dd", "gzip", "tftp", "sha256sum", "ifconfig"):
+        if f"applet_{applet}=1" not in low:
+            raise Error(f"BusyBox RAM recovery не содержит обязательный applet: {applet}")
+
+    # Prove the Ethernet/TFTP PUT path using a tiny RAM-only payload before the
+    # first NAND read.  This is the transport gate for the whole backup.
+    remote_name = "medveflasher-ram-shell-probe.txt"
+    probe_target = WORK / remote_name
+    probe_target.unlink(missing_ok=True)
+    ready = threading.Event(); cancel = threading.Event(); result = TftpResult()
+    receiver = threading.Thread(
+        target=receive_tftp_put,
+        args=("0.0.0.0", port, probe_target, remote_name, router_ip, ready, result, cancel, 30, 1468),
+        daemon=True,
+    )
+    receiver.start()
+    if not ready.wait(5) or result.error:
+        cancel.set(); receiver.join(2)
+        raise Error(f"не удалось запустить TFTP probe receiver UDP/{port}: {result.error or 'timeout'}")
+    try:
+        _ram_shell_command(
+            serial_port, log,
+            f"/bin/busybox echo MEDVEFLASHER_TFTP_OK | /bin/busybox tftp -p -l - -r {remote_name} {local_ip} {port}",
+            timeout=30,
+        )
+        receiver.join(5)
+        if receiver.is_alive():
+            cancel.set(); receiver.join(2)
+            raise Error("RAM shell TFTP probe timeout")
+        if result.error or not probe_target.is_file() or b"MEDVEFLASHER_TFTP_OK" not in probe_target.read_bytes():
+            raise Error(f"RAM shell TFTP PUT probe failed: {result.error or 'invalid payload'}")
+    finally:
+        cancel.set(); receiver.join(1); probe_target.unlink(missing_ok=True)
+    print(tr(
+        f"[OK] {expected_model}: all_flash=256 MiB; UART shell и TFTP PUT UDP/{port} готовы.",
+        f"[OK] {expected_model}: all_flash=256 MiB; UART shell and TFTP PUT UDP/{port} are ready.",
+    ))
+    return {"model": expected_model, "transport": "UART shell + TFTP PUT", "raw_probe": text[-5000:]}
+
+
+def _capture_bootrom_chunks(serial_port: RecoverySerial, log, router_ip: str, local_ip: str, destination: Path, port: int = BOOTROM_BACKUP_TFTP_PORT) -> list[Path]:
+    destination.mkdir(parents=True, exist_ok=True)
+    chunk_blocks = UBOOT_RESTORE_CHUNK_SIZE // 0x20000
+    total_blocks = STOCK_RESTORE_SPAN // 0x20000
+    chunks: list[Path] = []
+    index = 0
+    start_block = 0
+    while start_block < total_blocks:
+        count_blocks = min(chunk_blocks, total_blocks - start_block)
+        raw_size = count_blocks * 0x20000
+        remote_name = f"bootrom-allflash-{index:02d}.bin.gz"
+        target = destination / remote_name
+        sidecar = destination / f"bootrom-allflash-{index:02d}.raw.sha256"
+        retained = False
+        if target.is_file() and sidecar.is_file():
+            try:
+                size, digest = _gzip_raw_info(target)
+                recorded = sidecar.read_text(encoding="ascii", errors="ignore").strip().lower()
+                if size == raw_size and digest == recorded:
+                    resume_verify = (
+                        f"/bin/busybox dd if=/dev/mtd0 bs=131072 skip={start_block} count={count_blocks} 2>/dev/null | "
+                        "/bin/busybox sha256sum"
+                    )
+                    resume_out = _ram_shell_command(serial_port, log, resume_verify, timeout=600, echo_label=False)
+                    current_hashes = re.findall(rb"(?i)\b[0-9a-f]{64}\b", resume_out)
+                    if current_hashes and current_hashes[-1].decode("ascii").lower() == recorded:
+                        print(tr(
+                            f"[BACKUP {index + 1:02d}] resume: блок совпадает с текущим NAND, повторная передача не нужна",
+                            f"[BACKUP {index + 1:02d}] resume: chunk matches the current NAND; retransmission is not needed",
+                        ))
+                        retained = True
+                    else:
+                        print(tr(
+                            f"[BACKUP {index + 1:02d}] resume-файл не совпадает с текущим NAND; блок будет снят заново",
+                            f"[BACKUP {index + 1:02d}] resume file does not match the current NAND; recapturing it",
+                        ))
+            except Exception:
+                retained = False
+        if not retained:
+            target.unlink(missing_ok=True)
+            sidecar.unlink(missing_ok=True)
+            partial = target.with_suffix(target.suffix + ".part")
+            for attempt in range(1, 4):
+                partial.unlink(missing_ok=True)
+                ready = threading.Event(); cancel = threading.Event(); result = TftpResult()
+                receiver = threading.Thread(
+                    target=receive_tftp_put,
+                    args=("0.0.0.0", port, partial, remote_name, router_ip, ready, result, cancel, 300, 4096),
+                    daemon=True,
+                )
+                receiver.start()
+                if not ready.wait(5) or result.error:
+                    cancel.set(); receiver.join(2)
+                    raise Error(f"не удалось запустить TFTP receiver UDP/{port}: {result.error or 'timeout'}")
+                print(tr(
+                    f"[BACKUP {index + 1:02d}] NAND blocks {start_block}..{start_block + count_blocks - 1}, попытка {attempt}/3",
+                    f"[BACKUP {index + 1:02d}] NAND blocks {start_block}..{start_block + count_blocks - 1}, attempt {attempt}/3",
+                ))
+                remote = (
+                    f"/bin/busybox dd if=/dev/mtd0 bs=131072 skip={start_block} count={count_blocks} 2>/tmp/bootrom-dd.log | "
+                    f"/bin/busybox gzip -1 | /bin/busybox tftp -p -l - -r {shlex.quote(remote_name)} -b 4096 {shlex.quote(local_ip)} {port}"
+                )
+                holder: dict[str, object] = {}
+                def run_remote() -> None:
+                    try:
+                        holder["value"] = _ram_shell_command(serial_port, log, remote, timeout=1200)
+                    except BaseException as exc:
+                        holder["error"] = exc
+                shell_thread = threading.Thread(target=run_remote, daemon=True)
+                shell_thread.start()
+                started = time.time(); last = -10
+                while receiver.is_alive() or shell_thread.is_alive():
+                    elapsed = int(time.time() - started)
+                    if elapsed >= last + 10:
+                        print(tr(
+                            f"[TRANSFER] block {index + 1:02d}: принято {result.bytes_transferred / 1048576:.1f} MiB gzip, {elapsed}s",
+                            f"[TRANSFER] chunk {index + 1:02d}: received {result.bytes_transferred / 1048576:.1f} MiB gzip, {elapsed}s",
+                        ))
+                        last = elapsed
+                    receiver.join(0.5); shell_thread.join(0)
+                    if elapsed > 1200:
+                        cancel.set(); raise Error("BootROM backup chunk timeout")
+                if result.error or "error" in holder:
+                    print(tr(f"[WARN] передача блока не удалась: {result.error or holder.get('error')}", f"[WARN] chunk transfer failed: {result.error or holder.get('error')}"))
+                    continue
+                try:
+                    raw_len, local_sha = _gzip_raw_info(partial)
+                except Error as exc:
+                    print(f"[WARN] {exc}")
+                    continue
+                if raw_len != raw_size:
+                    print(tr(f"[WARN] блок распаковывается в {raw_len}, ожидается {raw_size}", f"[WARN] chunk expands to {raw_len}, expected {raw_size}"))
+                    continue
+                verify_cmd = (
+                    f"/bin/busybox dd if=/dev/mtd0 bs=131072 skip={start_block} count={count_blocks} 2>/dev/null | "
+                    "/bin/busybox sha256sum"
+                )
+                verify_out = _ram_shell_command(serial_port, log, verify_cmd, timeout=600)
+                remote_hashes = re.findall(rb"(?i)\b[0-9a-f]{64}\b", verify_out)
+                if not remote_hashes or remote_hashes[-1].decode("ascii").lower() != local_sha.lower():
+                    print(tr("[WARN] SHA256 блока на ПК не совпал с повторным чтением NAND", "[WARN] PC chunk SHA256 did not match the second NAND read"))
+                    continue
+                partial.replace(target)
+                sidecar.write_text(local_sha + "\n", encoding="ascii")
+                print(tr(f"[OK] block {index + 1:02d}: {local_sha}", f"[OK] chunk {index + 1:02d}: {local_sha}"))
+                break
+            else:
+                raise Error(f"не удалось надёжно снять NAND block chunk {index + 1}")
+        chunks.append(target)
+        start_block += count_blocks
+        index += 1
+    return chunks
+
+
+def bootrom_backup_wizard() -> None:
+    verify_kit()
+    print(tr("\n=== Read-only backup через BootROM/UART ===", "\n=== Read-only backup through BootROM/UART ==="))
+    print(tr(
+        "Режим не выполняет erase/write/saveenv. Reset используется только для входа в BootROM; preloader, U-Boot и минимальная recovery shell работают из RAM.",
+        "This mode never runs erase/write/saveenv. Reset is used only to enter BootROM; preloader, U-Boot, and the minimal recovery shell run from RAM.",
+    ))
+    transition_lan_policy_notice()
+    print(tr("1 — Nokia XG-040G-MD / AN7581", "1 — Nokia XG-040G-MD / AN7581"))
+    print(tr("2 — Nokia XG-040G-MF / AN7583", "2 — Nokia XG-040G-MF / AN7583"))
+    model_choice = input(tr("Модель [1/2]: ", "Model [1/2]: ")).strip()
+    if model_choice == "1": family = "md"
+    elif model_choice == "2": family = "mf"
+    else: raise Error(tr("неверная модель", "invalid model selection"))
+    profile = recovery_profile_for_family(family)
+    recovery_dependency_preflight(require_ssh=False)
+    ports = list_serial_ports()
+    if ports:
+        print(tr("Обнаруженные UART-порты:", "Detected UART ports:"))
+        for index, item in enumerate(ports, 1): print(f"  {index}. {item}")
+    entered = input(tr("UART-порт или номер в списке: ", "UART port or list number: ")).strip()
+    if entered.isdigit() and ports and 1 <= int(entered) <= len(ports): uart_port = ports[int(entered) - 1]
+    else: uart_port = entered.upper() if os.name == "nt" else entered
+    if not uart_port: raise Error(tr("UART-порт не указан", "UART port was not specified"))
+    probe_serial_port(uart_port)
+    local_ip = input(tr("Статический IP компьютера [192.168.1.254]: ", "Static PC IP [192.168.1.254]: ")).strip() or "192.168.1.254"
+    router_ip = input(tr("Временный IP recovery [192.168.1.1]: ", "Temporary recovery IP [192.168.1.1]: ")).strip() or "192.168.1.1"
+    port_text = input(tr(f"UDP-порт TFTP backup [{BOOTROM_BACKUP_TFTP_PORT}]: ", f"Backup TFTP UDP port [{BOOTROM_BACKUP_TFTP_PORT}]: ")).strip()
+    port = int(port_text) if port_text else BOOTROM_BACKUP_TFTP_PORT
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    default_dest = WORK / "backups" / f"nokia-{family}-bootrom-backup-{stamp}"
+    raw_dest = input(tr(f"Каталог backup [{default_dest}]: ", f"Backup directory [{default_dest}]: ")).strip().strip('"')
+    destination = Path(raw_dest).expanduser() if raw_dest else default_dest
+    destination.mkdir(parents=True, exist_ok=True)
+    log_path = destination / "uart-bootrom-backup.log"
+    serial_port = RecoverySerial(uart_port)
+    try:
+        with log_path.open("ab", buffering=0) as log:
+            print(tr(
+                "UART открыт. Зажмите Reset и включите Nokia — вывод UART показывается сразу; Press x / C будет пойман автоматически, Enter не нужен.",
+                "UART is open. Hold Reset and power on Nokia — UART output is shown live; Press x / C is detected automatically, no Enter is required.",
+            ))
+            wait_bootrom_xmodem(serial_port, log, "preloader", discard_stale=False)
+            xmodem_send(serial_port, Path(profile["preloader"]), f"OpenWrt {profile['soc']} preloader (RAM)", log)
+            wait_bootrom_xmodem(serial_port, log, "BL31 + U-Boot FIP")
+            xmodem_send(serial_port, Path(profile["fip"]), f"RC18 RECOVERY_SAFE {profile['soc']} BL31 + U-Boot FIP (RAM)", log)
+            if wait_uboot_prompt(serial_port, log) != "prompt":
+                raise Error("для read-only backup требуется захваченное приглашение RAM U-Boot")
+            prove_recovery_safe_uboot(serial_port, log)
+            listing = uboot_command(serial_port, log, "mtd list", timeout=60).lower()
+            required = (b"block size: 0x20000 bytes", b'0x000000000000-0x000000020000 : "bl2"', b'0x000000020000-0x000010000000 : "ubi"')
+            if not all(x in listing for x in required):
+                raise Error("RAM U-Boot не подтвердил NAND 256 MiB / erase 0x20000 / bl2+ubi; backup запрещён")
+            _boot_backup_recovery_fit(serial_port, log, local_ip, router_ip, profile)
+            probe = _probe_backup_recovery(serial_port, log, router_ip, local_ip, family, port)
+            chunks = _capture_bootrom_chunks(serial_port, log, router_ip, local_ip, destination, port)
+            metadata = _synthesize_bootrom_backup(destination, family, chunks, probe)
+            print(tr(
+                f"[OK] BootROM backup готов: {destination}\nSHA256 all_flash: {metadata['all_flash_sha256']}",
+                f"[OK] BootROM backup completed: {destination}\nall_flash SHA256: {metadata['all_flash_sha256']}",
+            ))
+            print(tr("NAND не изменялась ни на одном этапе backup.", "NAND was not modified at any point during backup."))
+    finally:
+        serial_port.close()
+
 def stock_recovery_wizard() -> None:
     verify_kit()
     print(tr("\n=== Восстановление кирпича через BootROM C и XMODEM ===", "\n=== Brick recovery through BootROM C and XMODEM ==="))
     print(tr("Нужен USB-UART 3.3 V: подключайте только GND, TX и RX. VCC к Nokia не подключайте.", "A 3.3 V USB-UART adapter is required: connect only GND, TX, and RX. Do not connect VCC to Nokia."))
-    print(tr("Ethernet должен соединять компьютер с Nokia; компьютеру задайте 192.168.1.254/24.", "Connect the PC to Nokia over Ethernet and assign 192.168.1.254/24 to the PC."))
+    transition_lan_policy_notice()
+    print(tr("[RECOVERY SAFE] RC18 загружает RAM U-Boot с bootdelay=-1. До SAFE marker + nonce запрещены любые NAND write/erase/saveenv.", "[RECOVERY SAFE] RC18 loads a RAM U-Boot with bootdelay=-1. All NAND write/erase/saveenv operations are blocked until SAFE marker + nonce proof."))
+    print(tr("Ethernet должен соединять компьютер с Nokia через LAN2/LAN3/LAN4; компьютеру задайте 192.168.1.254/24.", "Connect the PC to Nokia through LAN2/LAN3/LAN4 and assign 192.168.1.254/24 to the PC."))
     print(tr("Preloader и U-Boot временно загружаются в оперативную память; штатная прошивка восстанавливается непосредственно из U-Boot.", "The preloader and U-Boot are loaded temporarily into memory; stock firmware is restored directly from U-Boot."))
     if os.name == "nt":
         print(tr("В Windows COM обслуживается встроенным Win32-кодом; pyserial и pip не нужны.", "On Windows the COM port uses the built-in Win32 backend; pyserial and pip are not required."))
@@ -5757,71 +8537,111 @@ def stock_recovery_wizard() -> None:
             f"[INFO] {names} изменились между отдельным дампом и mtd16; restore использует канонический mtd16.",
             f"[INFO] {names} changed between the individual dump and mtd16; restore uses the canonical mtd16 image.",
         ))
-    print(tr(f"[OK] Исходный stock backup проверен. Рабочие файлы: {payload_dir}", f"[OK] Original stock backup verified. Working files: {payload_dir}"))
+    family = str(manifest.get("source_validation", {}).get("device_family", "unknown"))
+    recovery_profile = recovery_profile_for_family(family)
+    print(tr(
+        f"[OK] Backup распознан как {recovery_profile['model']} / {recovery_profile['soc']}. Рабочие файлы: {payload_dir}",
+        f"[OK] Backup identified as {recovery_profile['model']} / {recovery_profile['soc']}. Working files: {payload_dir}",
+    ))
     log_path = payload_dir / "uart-recovery.log"
     serial_port = RecoverySerial(uart_port)
     try:
         with log_path.open("ab", buffering=0) as log:
-            print(tr("\nЕсли UART уже показывает Press x или повторяющиеся C, питание не отключайте.", "\nIf UART already shows Press x or repeated C characters, do not remove power."))
-            print(tr("Закройте PuTTY, Tera Term и другие программы, чтобы освободить COM-порт.", "Close PuTTY, Tera Term, and other programs to release the COM port."))
-            print(tr("Только при отсутствии приглашения BootROM: выключите Nokia, удерживайте Reset, включите питание и дождитесь Press x.", "Only if the BootROM prompt is absent: power Nokia off, hold Reset, power it on, and wait for Press x."))
-            input(tr("Нажмите Enter, когда COM-порт свободен и BootROM готов: ", "Press Enter when the COM port is free and BootROM is ready: "))
-            wait_bootrom_xmodem(serial_port, log, "preloader")
-            xmodem_send(serial_port, RECOVERY_PRELOADER, "OpenWrt preloader (RAM)", log)
+            print(tr("\n[READY] COM-порт открыт; мониторинг BootROM начинается сразу, Enter не нужен.", "\n[READY] COM port is open; BootROM monitoring starts immediately, no Enter is required."))
+            print(tr("Закройте PuTTY, Tera Term и другие программы, если они ещё держат COM-порт.", "Close PuTTY, Tera Term, and other programs if they still hold the COM port."))
+            print(tr("[READY] Если Nokia выключена: удерживайте Reset, включите питание и держите Reset до Press x / C.", "[READY] If Nokia is powered off: hold Reset, power it on, and keep Reset held until Press x / C."))
+            print(tr("Если UART уже показывает Press x или повторяющиеся C, питание не отключайте — приглашение будет поймано автоматически.", "If UART already shows Press x or repeated C characters, do not remove power — the prompt will be captured automatically."))
+            wait_bootrom_xmodem(serial_port, log, "preloader", discard_stale=False)
+            xmodem_send(serial_port, Path(recovery_profile["preloader"]), f"OpenWrt {recovery_profile['soc']} preloader (RAM)", log)
             wait_bootrom_xmodem(serial_port, log, "BL31 + U-Boot FIP")
-            xmodem_send(serial_port, RECOVERY_FIP, "OpenWrt BL31 + U-Boot FIP (RAM)", log)
+            xmodem_send(serial_port, Path(recovery_profile["fip"]), f"RC18 RECOVERY_SAFE {recovery_profile['soc']} BL31 + U-Boot FIP (RAM)", log)
             uboot_state = wait_uboot_prompt(serial_port, log)
             if uboot_state == "prompt":
+                prove_recovery_safe_uboot(serial_port, log)
                 try:
-                    perform_stock_restore_in_uboot(serial_port, log, local_ip, router_ip, payload_dir, manifest)
+                    reboot_confirmed = perform_stock_restore_in_uboot(serial_port, log, local_ip, router_ip, payload_dir, manifest)
                 except PermissionError as exc:
                     raise Error(tr("нет прав на UDP/69; в Linux запустите через sudo", "permission denied for UDP/69; on Linux run with sudo")) from exc
             else:
+                if not bool(recovery_profile.get("allow_linux_fallback")):
+                    raise Error(tr(
+                        "RC18 запрещает Linux fallback для BootROM recovery: RECOVERY_SAFE RAM U-Boot prompt не захвачен. "
+                        "NAND не изменялась; повторите XMODEM recovery и дождитесь U-Boot>, AN7583> или =>.",
+                        "RC18 disables Linux fallback for BootROM recovery: the RECOVERY_SAFE RAM U-Boot prompt was not captured. "
+                        "NAND was not modified; retry XMODEM recovery and wait for U-Boot>, AN7583> or =>.",
+                    ))
                 print(tr("Обычная OpenWrt успела загрузиться. Жду устойчивый SSH и продолжаю через recovery-систему без нового XMODEM.", "Installed OpenWrt started before U-Boot was captured. Waiting for stable SSH and continuing through the recovery system without another XMODEM session."))
                 if wait_for_stable_openwrt(router_ip, 480, expected_mode="production") != "production":
                     raise Error(tr("обычная OpenWrt не появилась по SSH после пропущенного U-Boot", "installed OpenWrt did not become available over SSH after U-Boot was missed"))
                 boot_recovery_from_production_openwrt(router_ip, local_ip, router_ip, ask_before_reboot=False)
                 perform_stock_restore_over_ssh(router_ip, local_ip, 1069, backup_dir, payload_dir, manifest)
+                reboot_confirmed = True  # SSH restore owns its own recovery reboot path.
             print(tr(
-                "[OK] Запись IBU и BL2 подтверждена readback SHA256. Проверяю загрузку stock отдельно от результата записи.",
-                "[OK] IBU and BL2 writes were confirmed by readback SHA256. Checking stock boot separately from the write result.",
+                "[OK] Запись IBU и BL2 подтверждена readback CRC32 при SHA256-закреплённых исходниках. Результат записи и результат загрузки считаются разными проверками.",
+                "[OK] IBU and BL2 writes were confirmed by readback CRC32 against SHA256-pinned source files. Write success and boot success are treated as separate checks.",
             ))
+            if not reboot_confirmed:
+                print(tr(
+                    "[ACTION] NAND уже полностью восстановлена и проверена. Автоматический reboot НЕ подтверждён. Безопасно один раз выключить питание Nokia на 5 секунд и включить снова; мониторинг продолжится автоматически, Enter не нужен.",
+                    "[ACTION] NAND is fully restored and verified. Automatic reboot was NOT confirmed. It is now safe to power-cycle Nokia once for 5 seconds; monitoring continues automatically and Enter is not required.",
+                ))
+
             deadline = time.time() + 180
             bootrom_window_seen = False
-            stock_reachable = False
+            reboot_seen = bool(reboot_confirmed)
+            stock_verified = False
             last_probe = 0.0
+            last_web_error = "not probed"
+            uart_tail = bytearray()
             while time.time() < deadline:
                 data = serial_port.read(4096, 0.5)
                 if data:
                     _uart_log_write(log, data)
-                    low = data.lower()
+                    uart_tail.extend(data)
+                    if len(uart_tail) > 65536:
+                        del uart_tail[:-32768]
+                    raw_tail = bytes(uart_tail)
+                    low = raw_tail.lower()
+                    if _uboot_reboot_evidence(raw_tail) and not reboot_seen:
+                        reboot_seen = True
+                        print(tr(
+                            "[OK] UART подтвердил новую загрузку после ручного/автоматического reboot.",
+                            "[OK] UART confirmed a fresh boot after the manual/automatic reboot.",
+                        ))
                     if b"press x" in low and not bootrom_window_seen:
                         bootrom_window_seen = True
                         print(tr(
-                            "[UART] Штатное окно Press x после reset обнаружено; это не ошибка. x не отправляется.",
-                            "[UART] The normal Press x window after reset was detected; this is not an error. x will not be sent.",
+                            "[UART] Штатное окно Press x после reboot обнаружено; x не отправляется.",
+                            "[UART] The normal Press x window after reboot was detected; x will not be sent.",
                         ))
                 now = time.time()
-                if now - last_probe >= 2.0:
+                if now - last_probe >= 5.0:
                     last_probe = now
-                    for port in (80, 443):
-                        try:
-                            with socket.create_connection((router_ip, port), timeout=0.5):
-                                stock_reachable = True
-                                break
-                        except OSError:
-                            pass
-                    if stock_reachable:
+                    stock_verified, last_web_error = _probe_stock_web_fingerprint(router_ip)
+                    if stock_verified:
                         break
-            if stock_reachable:
+            if stock_verified:
                 print(tr(
-                    f"[OK] Штатный Web-интерфейс доступен на {router_ip}; восстановление и загрузка stock успешны.",
-                    f"[OK] The stock Web interface is reachable at {router_ip}; restore and stock boot succeeded.",
+                    f"[OK] На {router_ip} подтверждена именно Nokia stock Web login page; восстановление и загрузка stock успешны.",
+                    f"[OK] The actual Nokia stock Web login page was verified at {router_ip}; restore and stock boot succeeded.",
                 ))
             else:
                 print(tr(
-                    "[WARN] Запись NAND успешно проверена, но stock Web-интерфейс не подтверждён за 180 секунд. Это POST_REBOOT_UNKNOWN, а не ошибка восстановления.",
-                    "[WARN] NAND writing was verified, but the stock Web interface was not confirmed within 180 seconds. This is POST_REBOOT_UNKNOWN, not a restore failure.",
+                    "[WARN] NAND restore PASS, но загрузка stock НЕ подтверждена. Скрипт больше не считает открытый TCP/80 или TCP/443 доказательством stock Web.",
+                    "[WARN] NAND restore PASS, but stock boot was NOT confirmed. An open TCP/80 or TCP/443 is no longer accepted as proof of the stock Web UI.",
+                ))
+                if not reboot_seen:
+                    print(tr(
+                        "[ACTION] UART так и не показал новый boot. Если питание ещё не передёргивали после сообщения ACTION выше, сделайте один power-cycle сейчас; запись NAND уже завершена и readback проверен.",
+                        "[ACTION] UART still did not show a fresh boot. If you have not power-cycled since the ACTION message above, do one power-cycle now; NAND writing is complete and readback-verified.",
+                    ))
+                print(tr(
+                    f"[DIAG] Последняя проверка stock Web fingerprint: {last_web_error}",
+                    f"[DIAG] Last stock Web fingerprint probe: {last_web_error}",
+                ))
+                print(tr(
+                    "[STATE] POST_RESTORE_BOOT_UNKNOWN — это не ошибка записи NAND и не SUCCESS загрузки stock.",
+                    "[STATE] POST_RESTORE_BOOT_UNKNOWN — this is neither a NAND-write failure nor a stock-boot SUCCESS.",
                 ))
             print(tr(f"\nПроцедура завершена. UART-лог: {log_path}", f"\nProcedure completed. UART log: {log_path}"))
     finally:
@@ -5878,6 +8698,9 @@ class StockAccess:
     ftp_enabled: bool = False
     model_verified: bool = False
     model_verification_source: str = ""
+    family: str = "unknown"
+    model_name: str = ""
+    chipset: str = ""
     model_gate_policy: str = "strict"
     model_gate_accepted: bool = False
     force_tftp: bool = False
@@ -6026,30 +8849,50 @@ def require_supported_model_over_telnet(access: StockAccess, telnet: Telnet) -> 
         ))
 
 
+def _startup_web_auth_for(host: str) -> tuple[str, str] | None:
+    if not _STARTUP_DEVICE_PROFILE.get("verified"):
+        return None
+    if str(_STARTUP_WEB_AUTH.get("host") or "") != host:
+        return None
+    user = str(_STARTUP_WEB_AUTH.get("user") or "")
+    password = str(_STARTUP_WEB_AUTH.get("password") or "")
+    if not user:
+        return None
+    return user, password
+
+
 def _automatic_stock_web_access(
     host: str,
     module,
     *,
     offer_interactive_plain_retry: bool = True,
 ) -> StockAccess:
-    web_user = input(tr("Пользователь штатного веб-интерфейса [CMCCAdmin]: ",
-                        "Stock web-interface user [CMCCAdmin]: ")).strip() or "CMCCAdmin"
+    cached_auth = _startup_web_auth_for(host)
     env_password = os.environ.pop("NOKIA_WEB_PASSWORD", None)
-    if env_password is not None:
-        web_password = env_password
+    if cached_auth is not None and env_password is None:
+        web_user, web_password = cached_auth
+        print(tr(
+            "[OK] Использую Web-реквизиты из успешного автоопределения; повторный ввод не требуется.",
+            "[OK] Reusing Web credentials from successful startup auto-detection; no second prompt is required.",
+        ))
     else:
-        default_web_password = str(getattr(module, "DEFAULT_WEB_PASSWORD", "") or "")
-        if default_web_password:
-            entered = _RAW_GETPASS(tr(
-                "Пароль штатного веб-интерфейса [стандартный — Enter]: ",
-                "Stock web-interface password [standard — Enter]: ",
-            ))
-            web_password = entered or default_web_password
+        web_user = input(tr("Пользователь штатного веб-интерфейса [CMCCAdmin]: ",
+                            "Stock web-interface user [CMCCAdmin]: ")).strip() or "CMCCAdmin"
+        if env_password is not None:
+            web_password = env_password
         else:
-            web_password = _RAW_GETPASS(tr(
-                "Пароль штатного веб-интерфейса: ",
-                "Stock web-interface password: ",
-            ))
+            default_web_password = str(getattr(module, "DEFAULT_WEB_PASSWORD", "") or "")
+            if default_web_password:
+                entered = _RAW_GETPASS(tr(
+                    "Пароль штатного веб-интерфейса [стандартный — Enter]: ",
+                    "Stock web-interface password [standard — Enter]: ",
+                ))
+                web_password = entered or default_web_password
+            else:
+                web_password = _RAW_GETPASS(tr(
+                    "Пароль штатного веб-интерфейса: ",
+                    "Stock web-interface password: ",
+                ))
     _register_log_secret(web_password)
     allow_plain = os.environ.get("NOKIA_ALLOW_PLAIN_WEB_LOGIN", "").strip().lower() in ("1", "yes", "true")
     client = module.StockWeb(host)
@@ -6182,7 +9025,8 @@ def ask_credentials(
     offer_interactive_plain_retry: bool = False,
     require_model_gate: bool = False,
 ) -> StockAccess:
-    host = input(tr("IP Nokia [192.168.1.1]: ", "Nokia IP [192.168.1.1]: ")).strip() or "192.168.1.1"
+    startup_host = str(_STARTUP_DEVICE_PROFILE.get("host") or "192.168.1.1")
+    host = input(tr(f"IP Nokia [{startup_host}]: ", f"Nokia IP [{startup_host}]: ")).strip() or startup_host
     # The configured Telnet port is available only after a successful web login.
     # Port 23 is therefore a deliberate low-cost heuristic for choosing the
     # default without consuming one of the stock firmware's limited web sessions.
@@ -6205,13 +9049,11 @@ def ask_credentials(
         "3 — Использовать уже включённый Telnet",
         "3 — Use Telnet that is already enabled",
     ))
-    if require_model_gate:
-        print(tr(
-            "4 — Установить свой образ OpenWrt (экспертный режим)",
-            "4 — Install a custom OpenWrt image (expert mode)",
-        ))
-    allowed = ("1", "2", "3", "4") if require_model_gate else ("1", "2", "3")
-    choices_text = "1/2/3/4" if require_model_gate else "1/2/3"
+    # Sysupgrade selection is intentionally handled once, in _choose_install_mode().
+    # Connection setup must not duplicate image-selection semantics or silently
+    # turn a custom image into a model-gate bypass.
+    allowed = ("1", "2", "3")
+    choices_text = "1/2/3"
     prompt = tr(f"Выберите {choices_text} [{default}]: ", f"Select {choices_text} [{default}]: ")
     while True:
         choice = input(prompt).strip() or default
@@ -6303,29 +9145,7 @@ def ask_credentials(
         if require_model_gate:
             access.model_gate_policy = "best-effort"
         return access
-    if choice == "4":
-        print(tr(
-            "[ОПАСНО] Мастер не будет проверять модель роутера. На другой модели прошивка может вывести устройство из строя.",
-            "[DANGER] The wizard will not check the router model. Flashing a different model may make the device unusable.",
-        ))
-        print(tr(
-            "[INFO] Модель не проверяется. После загрузки transition вы выберете sysupgrade на диске; до его проверки NAND не форматируется.",
-            "[INFO] The model is not checked. After transition boots, you will select a sysupgrade file; NAND is not formatted before it is validated.",
-        ))
-        confirm = input(tr(
-            "Продолжить? [y/N]: ",
-            "Continue? [y/N]: ",
-        )).strip().lower()
-        if confirm not in ("y", "yes", "д", "да"):
-            raise Error(tr(
-                "установка без проверки модели отменена",
-                "installation without a model check was cancelled",
-            ))
-        access = _manual_stock_access(host, default_telnet_user, default_su_user)
-        access.model_gate_policy = "bypass"
-        access.force_tftp = True
-        access.custom_sysupgrade = True
-        return access
+
 
 
 def print_usb_requirements() -> None:
@@ -6418,11 +9238,11 @@ def choose_transport(
         print(tr("\nТранспорт установочного пакета:", "\nInstallation-package transport:"))
     else:
         print(tr("\nТранспорт backup и установочного пакета:", "\nBackup and installation-package transport:"))
-    print(tr("1 — USB через Samba/смонтированную папку, флешку вынимать не нужно", "1 — USB through Samba/a mounted directory; do not remove the drive"))
-    print(tr("2 — USB через FTP stock Nokia", "2 — USB through stock Nokia FTP"))
-    print(tr("3 — прямой TFTP между Nokia и ПК, USB не требуется", "3 — direct TFTP between Nokia and the PC; no USB required"))
-    choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
-    if choice == "1":
+    print(tr("1 — прямой TFTP между Nokia и ПК, USB не требуется (рекомендуется)", "1 — direct TFTP between Nokia and the PC; no USB required (recommended)"))
+    print(tr("2 — USB-накопитель подключён к Nokia: Samba/сетевая папка (флешку не вынимать)", "2 — USB drive connected to the Nokia: Samba/network share (do not remove the drive)"))
+    print(tr("3 — USB-накопитель подключён к Nokia: FTP штатной прошивки", "3 — USB drive connected to the Nokia: stock-firmware FTP"))
+    choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip() or "1"
+    if choice == "2":
         print_usb_requirements()
         if access is not None and access.web_setup is not None:
             try:
@@ -6504,7 +9324,7 @@ def choose_transport(
             "share_password": share_password,
             "remote_mount": remote,
         }
-    if choice == "2":
+    if choice == "3":
         print_usb_requirements()
         user = access.ftp_user if access is not None else ""
         password = access.ftp_password if access is not None else ""
@@ -6549,7 +9369,7 @@ def choose_transport(
             "USB path inside Nokia [auto-detect: /mnt/USB_disc1]: ",
         )).strip() or None
         return "ftp", {"ftp_user": user, "ftp_password": password, "ftp_port": ftp_port, "remote_mount": remote}
-    if choice == "3":
+    if choice == "1":
         local_ip = input(tr("IP этого ПК для Nokia [auto]: ", "This PC IP for Nokia [auto]: ")).strip() or None
         port_text = input(tr("UDP-порт TFTP [1069]: ", "TFTP UDP port [1069]: ")).strip()
         port = int(port_text) if port_text else 1069
@@ -6557,274 +9377,1408 @@ def choose_transport(
     raise Error("неверный выбор транспорта")
 
 
-def full_wizard() -> None:
-    stage_header("0", "Проверка комплекта и параметры", "Kit verification and parameters")
-    verify_kit()
-    access = ask_credentials(require_model_gate=True)
-    try:
-        transport, transport_args = choose_transport(
-            access.host, access=access, force_tftp=access.force_tftp
-        )
-    finally:
-        access.close_web()
-    host = access.host
-    if access.custom_sysupgrade:
-        print(tr(
-            "[PATH] Экспертная установка: stock → полный backup → ручной transition → выбор и проверка sysupgrade на ПК → OpenWrt",
-            "[PATH] Expert installation: stock → complete backup → manual transition → select and validate sysupgrade on the PC → OpenWrt",
+def _active_install_profile() -> InstallProfile:
+    prof = _STARTUP_DEVICE_PROFILE
+    family = str(prof.get("family") or "") if prof.get("verified") else ""
+    if family in INSTALL_PROFILES:
+        return INSTALL_PROFILES[family]
+    # Historical fallback remains MD-only because MF destructive write requires
+    # a VERIFIED stock-Web fingerprint.
+    return MD_INSTALL_PROFILE
+
+
+def _choose_install_mode(profile: InstallProfile) -> bool | None:
+    print(tr(
+        f"\n=== Установка OpenWrt UBI — {profile.model} ===",
+        f"\n=== OpenWrt UBI installation — {profile.model} ===",
+    ))
+    print(tr("1 — автоматически (встроенный sysupgrade)", "1 — automatic (bundled sysupgrade)"))
+    print(tr("2 — выбрать свой sysupgrade", "2 — select a custom sysupgrade"))
+    print(tr("3 — назад", "3 — back"))
+    mode = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
+    if mode == "3":
+        return None
+    if mode not in ("1", "2"):
+        raise Error(tr("неверный выбор", "invalid selection"))
+    return mode == "2"
+
+
+def _install_access(profile: InstallProfile) -> StockAccess:
+    # MF permanent write is never authorized from a manual model choice.
+    if profile.family == "mf":
+        access, meta = _stock_audit_web_access()
+        if str(meta.get("family") or "") != "mf":
+            access.close_web(announce=False)
+            raise Error(tr("live Web fingerprint не подтвердил MF", "live Web fingerprint did not confirm MF"))
+        return access
+    return ask_credentials(require_model_gate=True)
+
+
+def _install_live_gate(profile: InstallProfile, access: StockAccess, telnet: Telnet) -> tuple[str, str]:
+    if profile.family == "md":
+        require_supported_model_over_telnet(access, telnet)
+    _proc, family, variant = _stock_live_geometry_preflight(telnet, profile.family, require_ro=(profile.family == "mf"))
+    if family != profile.family:
+        raise Error(tr(
+            f"live stock family mismatch: ожидалось {profile.family.upper()}, получено {family.upper()}",
+            f"live stock family mismatch: expected {profile.family.upper()}, got {family.upper()}",
         ))
-    else:
-        print_full_install_route(transport)
-    stage_header("1", "Полный stock backup", "Complete stock backup")
+    if profile.allowed_stock_variant and variant != profile.allowed_stock_variant:
+        raise Error(tr(
+            f"permanent write для {profile.model} разрешён только для {profile.allowed_stock_variant}; обнаружено {variant}",
+            f"permanent write for {profile.model} is enabled only for {profile.allowed_stock_variant}; detected {variant}",
+        ))
+    return family, variant
+
+
+def _install_transport(profile: InstallProfile, access: StockAccess, install_only: bool = False) -> tuple[str, dict]:
+    if profile.force_tftp:
+        print(tr(
+            "[INFO] Для этого профиля backup/установочный пакет передаются напрямую по TFTP.",
+            "[INFO] This profile transfers the backup/installation package directly over TFTP.",
+        ))
+        local_ip = input(tr("IP этого ПК для Nokia [auto]: ", "This PC IP for Nokia [auto]: ")).strip() or None
+        port_text = input(tr("UDP-порт TFTP [1069]: ", "TFTP UDP port [1069]: ")).strip()
+        port = int(port_text) if port_text else 1069
+        return "tftp", {"local_ip": local_ip, "tftp_port": port, "block_size": 4096}
+    return choose_transport(
+        access.host,
+        install_only=install_only,
+        access=access,
+        force_tftp=access.force_tftp,
+    )
+
+
+def _capture_install_backup(
+    profile: InstallProfile, access: StockAccess, transport: str, transport_args: dict,
+) -> tuple[Path, Telnet | None]:
+    host = access.host
     telnet: Telnet | None = None
-    backup_dir: Path
+    gate_telnet = login_root_family(access, profile.family)
     try:
-        # Apply the selected strict, best-effort, or explicit expert-bypass model policy.
-        gate_telnet = login_root_md(access)
-        try:
-            require_supported_model_over_telnet(access, gate_telnet)
-        finally:
-            gate_telnet.close()
+        _install_live_gate(profile, access, gate_telnet)
+    finally:
+        gate_telnet.close()
 
-        if transport == "tftp":
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            backup_dir = WORK / "backups" / f"nokia-xg040gmd-backup-{stamp}"
-            backup_tftp(
-                access, host, backup_dir, transport_args.get("local_ip"),
-                transport_args.get("tftp_port", 1069), transport_args.get("block_size", 4096)
+    if transport == "tftp":
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup_dir = WORK / "backups" / f"nokia-xg040g{profile.family}-backup-{stamp}"
+        backup_tftp(
+            access, host, backup_dir, transport_args.get("local_ip"),
+            transport_args.get("tftp_port", 1069), transport_args.get("block_size", 4096),
+            expected_family=profile.family,
+        )
+        telnet = login_root_family(access, profile.family)
+        _install_live_gate(profile, access, telnet)
+        _validate_install_backup(profile, backup_dir)
+        return backup_dir, telnet
+
+    # Non-TFTP installation transport is retained for MD. MF profile forces TFTP
+    # because its permanent gate requires the PC-side BACKUP_HW_VALIDATED marker.
+    telnet = login_root_family(access, profile.family)
+    _install_live_gate(profile, access, telnet)
+    if transport == "share":
+        usb_root, _ = _share_usb_and_install_paths(
+            transport_args["share_path"],
+            transport_args.get("share_user", ""),
+            transport_args.get("share_password", ""),
+        )
+        remote_mount = resolve_router_usb_mount(
+            telnet, transport_args.get("remote_mount"), transport_args.get("share_path")
+        )
+        transport_args["remote_mount"] = remote_mount
+    else:
+        usb_root = None
+        remote_mount = resolve_router_usb_mount(telnet, transport_args.get("remote_mount"))
+        transport_args["remote_mount"] = remote_mount
+    verify_router_usb_storage(telnet, remote_mount)
+    cleanup_incomplete_router_backups(telnet, remote_mount)
+    remote_backup = backup_to_usb(telnet, remote_mount, family=profile.family)
+    folder_name = PurePosixPath(remote_backup).name
+    backup_dir = WORK / "backups" / folder_name
+    if transport == "share":
+        source = usb_root / folder_name
+        if not source.is_dir():
+            raise Error(f"backup не виден через share: {source}")
+        copy_tree_verified(source, backup_dir, tr("Samba: backup с Nokia на ПК", "Samba: backup from Nokia to PC"))
+    else:
+        with ftp_connect(host, transport_args["ftp_user"], transport_args["ftp_password"], transport_args.get("ftp_port", 21)) as ftp:
+            ftp_source = ftp_resolve_router_dir(ftp, remote_backup)
+            total_bytes, total_files, sizes_complete = ftp_tree_stats(ftp, ftp_source)
+            progress = TransferProgress(
+                tr("FTP: backup с Nokia на ПК", "FTP: backup from Nokia to PC"),
+                total_bytes if sizes_complete else 0, total_files,
             )
-            # The TFTP backup reuses one session until an actual transfer failure.
-            telnet = login_root_md(access)
-        else:
-            telnet = login_root_md(access)
-            if transport == "share":
-                usb_root, _ = _share_usb_and_install_paths(
-                    transport_args["share_path"],
-                    transport_args.get("share_user", ""),
-                    transport_args.get("share_password", ""),
-                )
-                remote_mount = resolve_router_usb_mount(
-                    telnet, transport_args.get("remote_mount"), transport_args.get("share_path")
-                )
-                transport_args["remote_mount"] = remote_mount
-            else:
-                usb_root = None
-                remote_mount = resolve_router_usb_mount(telnet, transport_args.get("remote_mount"))
-                transport_args["remote_mount"] = remote_mount
-            verify_router_usb_storage(telnet, remote_mount)
-            cleanup_incomplete_router_backups(telnet, remote_mount)
-            remote_backup = backup_to_usb(telnet, remote_mount)
-            folder_name = PurePosixPath(remote_backup).name
-            backup_dir = WORK / "backups" / folder_name
-            if transport == "share":
-                source = usb_root / folder_name
-                if not source.is_dir():
-                    raise Error(f"backup не виден через share: {source}")
-                copy_tree_verified(source, backup_dir, tr("Samba: backup с Nokia на ПК", "Samba: backup from Nokia to PC"))
-            else:
-                with ftp_connect(host, transport_args["ftp_user"], transport_args["ftp_password"], transport_args.get("ftp_port", 21)) as ftp:
-                    ftp_source = ftp_resolve_router_dir(ftp, remote_backup)
-                    print(tr(
-                        f"[TRANSFER] FTP backup скачивается из {ftp_source} (на Nokia: {remote_backup})",
-                        f"[TRANSFER] Downloading the FTP backup from {ftp_source} (on Nokia: {remote_backup})",
-                    ))
-                    total_bytes, total_files, sizes_complete = ftp_tree_stats(ftp, ftp_source)
-                    if not sizes_complete:
-                        _write_session_only("[TECH] FTP SIZE unavailable for at least one backup file; byte percentage disabled.")
-                    progress = TransferProgress(
-                        tr("FTP: backup с Nokia на ПК", "FTP: backup from Nokia to PC"),
-                        total_bytes if sizes_complete else 0,
-                        total_files,
-                    )
-                    ftp_walk_download(ftp, ftp_source, backup_dir, progress)
-                    progress.finish()
-            verify_backup(backup_dir)
+            ftp_walk_download(ftp, ftp_source, backup_dir, progress)
+            progress.finish()
+    _validate_install_backup(profile, backup_dir)
+    return backup_dir, telnet
 
-        print(f"\n[OK] Полный backup сохранён на ПК: {backup_dir}")
-        stage_header("2", "Персонализация установочного пакета", "Device-specific package generation")
-        install_dir, info = personalize(backup_dir, manual_transition=access.custom_sysupgrade)
-        print(f"[OK] Персональный пакет создан: {install_dir}")
-        stage_header("3", "Передача пакета на Nokia", "Deploy package to Nokia")
+
+def install_openwrt_wizard(profile: InstallProfile, from_existing_backup: bool = False) -> None:
+    """Shared MD/MF orchestration. Board differences live in InstallProfile/gates only."""
+    verify_kit()
+    manual = _choose_install_mode(profile)
+    if manual is None:
+        return
+    if profile.family == "mf":
+        print(tr(
+            "[DANGER] Будет изменена разметка NAND и установлен OpenWrt UBI. Откат: UART + полный stock backup.",
+            "[DANGER] NAND layout will be changed and OpenWrt UBI installed. Rollback: UART + full stock backup.",
+        ))
+    transition_lan_policy_notice()
+
+    access = _install_access(profile)
+    access.custom_sysupgrade = manual
+    host = access.host
+    telnet: Telnet | None = None
+    info: dict | None = None
+    transport_args: dict = {}
+    stage1_handoff = "not-started"
+    try:
+        if from_existing_backup:
+            default = ""
+            if profile.family == "mf":
+                latest = _latest_mf_hw_backup()
+                default = str(latest) if latest else ""
+            prompt = tr(
+                f"Путь к полному stock backup{f' [{default}]' if default else ''}: ",
+                f"Path to the complete stock backup{f' [{default}]' if default else ''}: ",
+            )
+            entered = input(prompt).strip().strip('"')
+            backup_dir = Path(entered or default).expanduser() if (entered or default) else Path()
+            if not backup_dir.is_dir():
+                raise Error(tr("каталог backup не найден", "backup directory not found"))
+            print(tr("[WAIT] Проверяю выбранный stock backup до подготовки установочного пакета...", "[WAIT] Validating the selected stock backup before preparing the installation package..."))
+            backup_validation = _validate_install_backup(profile, backup_dir)
+            _print_install_backup_validation(profile, backup_dir, backup_validation)
+            transport, transport_args = _install_transport(profile, access, install_only=True)
+            telnet = login_root_family(access, profile.family)
+            _install_live_gate(profile, access, telnet)
+        else:
+            transport, transport_args = _install_transport(profile, access, install_only=False)
+            backup_dir, telnet = _capture_install_backup(profile, access, transport, transport_args)
+            print(tr(
+                f"[OK] Полный backup сохранён на ПК: {backup_dir}",
+                f"[OK] Complete backup saved on the PC: {backup_dir}",
+            ))
+            backup_validation = _validate_install_backup(profile, backup_dir)
+            _print_install_backup_validation(profile, backup_dir, backup_validation)
+
+        install_dir, info = personalize_transition(profile, backup_dir, manual_transition=manual)
+        print(tr(
+            f"[OK] Персональный пакет создан: {install_dir}",
+            f"[OK] Device-specific package created: {install_dir}",
+        ))
         assert telnet is not None
         remote_dir = deploy_install(telnet, host, install_dir, transport, **transport_args)
         device_state = WORK / info["device_id"] / "state.json"
-        save_state(device_state, {"phase": "deployed", "router": host, "remote_dir": remote_dir, "backup_dir": str(backup_dir)})
-        stage_header("4", "Проверка перед записью", "Pre-write checks")
-        run_stage1(telnet, remote_dir, nand_unknown=False, manual_transition=access.custom_sysupgrade)
-        save_state(device_state, {"phase": "stage1_started", "session_log": str(SESSION_LOG_PATH or "")})
+        save_state(device_state, {
+            "phase": "deployed", "family": profile.family, "router": host,
+            "remote_dir": remote_dir, "backup_dir": str(backup_dir),
+            "manual_transition": manual,
+        })
+        stage1_handoff = run_stage1(
+            telnet, remote_dir, nand_unknown=False,
+            manual_transition=manual, profile=profile, access=access,
+        )
+        save_state(device_state, {
+            "phase": "stage1_handoff_unknown" if stage1_handoff == "handoff-unknown" else "stage1_started",
+            "stage1_handoff": stage1_handoff,
+            "session_log": str(SESSION_LOG_PATH or ""),
+        })
     finally:
         if telnet is not None:
             telnet.close()
-    if access.custom_sysupgrade:
+        access.close_web(announce=False)
+
+    if manual:
         final_result = run_custom_stage2(
-            host, transport_args.get("local_ip"), transport_args.get("tftp_port", 1069), transport_args.get("block_size", 4096)
+            host, transport_args.get("local_ip"), transport_args.get("tftp_port", 1069),
+            transport_args.get("block_size", 4096), expected_board=profile.expected_board,
         )
     else:
-        final_result = run_stage2(host)
-    stage_header("9" if access.custom_sysupgrade else "7", "Итог установки", "Installation result")
+        final_result = run_stage2(
+            host, expected_board=profile.expected_board,
+            initial_handoff_unknown=(stage1_handoff == "handoff-unknown"),
+        )
+    stage_header("9" if manual else "7", "Итог установки", "Installation result")
     print(tr(f"[OK] Финальный статус: {final_result}", f"[OK] Final status: {final_result}"))
-    save_state(WORK / info["device_id"] / "state.json", {"phase": "complete" if final_result != "post-install-unverified" else "post-install-unverified", "final_result": final_result, "session_log": str(SESSION_LOG_PATH or "")})
+    assert info is not None
+    save_state(WORK / info["device_id"] / "state.json", {
+        "phase": "complete" if final_result != "post-install-unverified" else "post-install-unverified",
+        "final_result": final_result, "session_log": str(SESSION_LOG_PATH or ""),
+    })
+
+
+def full_wizard() -> None:
+    return install_openwrt_wizard(_active_install_profile(), from_existing_backup=False)
+
 
 def install_from_existing_backup_wizard() -> None:
-    stage_header("0", "Проверка комплекта", "Kit verification")
-    verify_kit()
-    print(tr(
-        "\n=== Установка OpenWrt из уже снятого полного backup, без повторного backup и без UART ===",
-        "\n=== Install OpenWrt from an existing complete backup, without another backup or UART ===",
-    ))
-    backup_dir = Path(input(tr(
-        "Путь к каталогу полного stock backup mtd0..mtd16: ",
-        "Path to the complete stock backup directory containing mtd0..mtd16: ",
-    )).strip().strip('"')).expanduser()
-    access = ask_credentials(require_model_gate=True)
-    stage_header("1", "Проверка готового backup", "Existing backup verification")
-    print(tr("Проверяю backup и создаю новый персональный пакет...", "Verifying the backup and creating a new device-specific package..."))
-    install_dir, info = personalize(backup_dir, manual_transition=access.custom_sysupgrade)
-    print(tr(f"[OK] Персональный пакет создан: {install_dir}", f"[OK] Device-specific package created: {install_dir}"))
-    try:
-        transport, transport_args = choose_transport(
-            access.host, install_only=True, access=access, force_tftp=access.force_tftp
-        )
-    finally:
-        access.close_web()
-    host = access.host
-    stage_header("2", "Подключение и передача пакета", "Connection and package deployment")
-    telnet = login_root_md(access)
-    try:
-        require_supported_model_over_telnet(access, telnet)
-        remote_dir = deploy_install(telnet, host, install_dir, transport, **transport_args)
-        device_state = WORK / info["device_id"] / "state.json"
-        save_state(device_state, {
-            "phase": "deployed_from_existing_backup",
-            "router": host,
-            "remote_dir": remote_dir,
-            "backup_dir": str(backup_dir),
+    return install_openwrt_wizard(_active_install_profile(), from_existing_backup=True)
+
+def _console_only(text: str = "") -> None:
+    """Write sensitive operator output to the physical console, never session logs."""
+    stream = sys.stdout
+    console = getattr(stream, "console", stream)
+    console.write(text + ("" if text.endswith("\n") else "\n"))
+    console.flush()
+
+
+def _show_secret(label: str, value: object | None) -> None:
+    text = "" if value is None else str(value)
+    _register_log_secret(text)
+    _console_only(f"  {label}: {text if text else '<empty>'}")
+    _write_session_only(f"[CREDENTIALS] {label}: [SECRET OMITTED FROM LOG]")
+
+
+def _parse_passwd_group_inventory(text: str) -> list[dict[str, object]]:
+    pm = re.search(r"__MEDVE_PASSWD_BEGIN__\s*(.*?)\s*__MEDVE_PASSWD_END__", text, re.S)
+    gm = re.search(r"__MEDVE_GROUP_BEGIN__\s*(.*?)\s*__MEDVE_GROUP_END__", text, re.S)
+    if not pm:
+        raise Error(tr("не удалось прочитать /etc/passwd", "failed to read /etc/passwd"))
+    groups_by_gid: dict[int, str] = {}
+    secondary: dict[str, list[str]] = {}
+    if gm:
+        for line in gm.group(1).replace("\r", "").splitlines():
+            parts = line.strip().split(":")
+            if len(parts) < 4 or not parts[2].isdigit():
+                continue
+            gname, gid, members = parts[0], int(parts[2]), parts[3]
+            groups_by_gid[gid] = gname
+            for member in filter(None, (x.strip() for x in members.split(","))):
+                secondary.setdefault(member, []).append(gname)
+    result: list[dict[str, object]] = []
+    for line in pm.group(1).replace("\r", "").splitlines():
+        parts = line.strip().split(":")
+        if len(parts) < 7 or not parts[2].isdigit() or not parts[3].isdigit():
+            continue
+        name, uid, gid = parts[0], int(parts[2]), int(parts[3])
+        home, shell = parts[5], parts[6]
+        interactive = not bool(re.search(r"(?:nologin|false)$", shell))
+        if uid == 0:
+            privilege = "ROOT / UID 0"
+        elif not interactive:
+            privilege = "SERVICE / no-login"
+        elif uid < 1000:
+            privilege = "SYSTEM"
+        else:
+            privilege = "USER"
+        groups = []
+        if gid in groups_by_gid:
+            groups.append(groups_by_gid[gid])
+        groups.extend(x for x in secondary.get(name, []) if x not in groups)
+        result.append({
+            "name": name, "uid": uid, "gid": gid, "privilege": privilege,
+            "groups": ",".join(groups) or "-", "home": home or "-", "shell": shell or "-",
         })
-        stage_header("3", "Проверка перед записью", "Pre-write checks")
-        run_stage1(telnet, remote_dir, nand_unknown=False, manual_transition=access.custom_sysupgrade)
-        save_state(device_state, {"phase": "stage1_started", "session_log": str(SESSION_LOG_PATH or "")})
+    return result
+
+
+def _read_device_user_inventory(host: str, port: int, user: str, password: str) -> list[dict[str, object]]:
+    telnet = _telnet_open_logged_in(host, port, user, password, 3)
+    try:
+        cmd = (
+            "printf '__MEDVE_PASSWD_BEGIN__\\n'; cat /etc/passwd 2>/dev/null; "
+            "printf '__MEDVE_PASSWD_END__\\n__MEDVE_GROUP_BEGIN__\\n'; "
+            "cat /etc/group 2>/dev/null; printf '__MEDVE_GROUP_END__\\n'"
+        )
+        rc, out = telnet.command_clean(cmd, timeout=30)
+        if rc:
+            raise Error(tr("чтение пользователей через Telnet завершилось ошибкой", "reading users over Telnet failed"))
+        return _parse_passwd_group_inventory(out)
     finally:
         telnet.close()
-    if access.custom_sysupgrade:
-        final_result = run_custom_stage2(
-            host, transport_args.get("local_ip"), transport_args.get("tftp_port", 1069), transport_args.get("block_size", 4096)
-        )
+
+
+def _verify_device_uid0_secrets(access: StockAccess, inventory: list[dict[str, object]]) -> list[tuple[str, str, str]]:
+    roots = [str(x["name"]) for x in inventory if int(x["uid"]) == 0]
+    ordered = _ordered_uid0_candidates(roots, ("useradmin_ftp", "user_ftp", "osgi_admin", "samba_anony", "telecomadmin", "root"))
+    labeled: list[tuple[str, str]] = []
+    for label, secret in (("Telnet", access.password), ("FTP", access.ftp_password), ("empty", "")):
+        if secret is None:
+            continue
+        secret = str(secret)
+        if all(secret != existing for _label, existing in labeled):
+            labeled.append((label, secret))
+    matches: list[tuple[str, str, str]] = []
+    for account in ordered[:12]:
+        for source, secret in labeled:
+            telnet = None
+            try:
+                telnet = _telnet_open_logged_in(access.host, access.telnet_port, access.user, access.password, 1)
+                if _telnet_probe_uid(telnet) == 0:
+                    matches.append((access.user, "direct Telnet", access.password))
+                    return matches
+                _telnet_su_root(telnet, account, secret, attempts=1)
+                if _telnet_probe_uid(telnet) == 0:
+                    matches.append((account, source, secret))
+                    break
+            except Exception as exc:
+                _write_session_only(f"[CREDENTIALS] su probe account={account} source={source} result={exc.__class__.__name__}")
+            finally:
+                if telnet is not None:
+                    telnet.close()
+    return matches
+
+
+def _credentials_telnet_fallback(host: str) -> None:
+    """Optional read-only /etc/passwd inventory when stock Web is unavailable."""
+    port_text = input(tr("Telnet port [23]: ", "Telnet port [23]: ")).strip()
+    try:
+        port = int(port_text) if port_text else 23
+    except ValueError:
+        print(tr("[INFO] Некорректный Telnet port; fallback пропущен.", "[INFO] Invalid Telnet port; fallback skipped."))
+        return
+    if not _tcp_open(host, port, timeout=1.5):
+        print(tr(f"[INFO] Telnet {port} закрыт; /etc/passwd без Web-доступа прочитать нельзя.", f"[INFO] Telnet {port} is closed; /etc/passwd cannot be read without Web access."))
+        return
+    answer = input(tr("Telnet открыт. Выполнить read-only аудит с вручную введёнными credentials? [y/N]: ", "Telnet is open. Run a read-only audit with manually entered credentials? [y/N]: ")).strip().lower()
+    if answer not in ("y", "yes", "д", "да"):
+        return
+    user = input(tr("Telnet user [useradmin]: ", "Telnet user [useradmin]: ")).strip() or "useradmin"
+    password = ask_label_password(tr("Telnet password: ", "Telnet password: "))
+    _register_log_secret(password)
+    try:
+        inventory = _read_device_user_inventory(host, port, user, password)
+    except Exception as exc:
+        print(tr(f"[WARNING] Telnet inventory не выполнен: {exc}", f"[WARNING] Telnet inventory failed: {exc}"))
+        return
+    print(tr("\nВсе локальные пользователи из /etc/passwd (Telnet fallback):", "\nAll local users from /etc/passwd (Telnet fallback):"))
+    print("  USER                     UID   GID   PRIVILEGE              GROUPS                  HOME                 SHELL")
+    for row in inventory:
+        print(f"  {str(row['name'])[:24]:24} {int(row['uid']):5} {int(row['gid']):5} {str(row['privilege'])[:22]:22} {str(row['groups'])[:23]:23} {str(row['home'])[:20]:20} {row['shell']}")
+    roots = [str(x['name']) for x in inventory if int(x['uid']) == 0]
+    print(tr(f"\nUID 0 accounts: {', '.join(roots) if roots else 'нет'}", f"\nUID-0 accounts: {', '.join(roots) if roots else 'none'}"))
+
+
+def _load_stock_audit_parser():
+    spec = importlib.util.spec_from_file_location("medveflasher_stock_audit_parse", STOCK_AUDIT_PARSER)
+    if spec is None or spec.loader is None:
+        raise Error(tr("не удалось загрузить parser stock audit", "failed to load the stock-audit parser"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _stock_audit_web_access() -> tuple[StockAccess, dict[str, object]]:
+    """Read device-specific access data without changing device configuration."""
+    module = _load_stock_web_module()
+    default_user = str(getattr(module, "DEFAULT_WEB_USER", "CMCCAdmin") or "CMCCAdmin")
+    default_password = str(getattr(module, "DEFAULT_WEB_PASSWORD", "") or "")
+    startup_host = str(_STARTUP_DEVICE_PROFILE.get("host") or "192.168.1.1")
+    host = input(tr(f"IP Nokia [{startup_host}]: ", f"Nokia IP [{startup_host}]: ")).strip() or startup_host
+    cached_auth = _startup_web_auth_for(host)
+    if cached_auth is not None:
+        web_user, web_password = cached_auth
+        entered = None
+        print(tr("[OK] Использую Web-реквизиты из стартового автоопределения.", "[OK] Reusing Web credentials from startup auto-detection."))
     else:
-        final_result = run_stage2(host)
-    stage_header("9" if access.custom_sysupgrade else "7", "Итог установки", "Installation result")
-    print(tr(f"[OK] Финальный статус: {final_result}", f"[OK] Final status: {final_result}"))
-    save_state(WORK / info["device_id"] / "state.json", {"phase": "complete" if final_result != "post-install-unverified" else "post-install-unverified", "final_result": final_result, "session_log": str(SESSION_LOG_PATH or "")})
+        web_user = input(tr(f"Web user [{default_user}]: ", f"Web user [{default_user}]: ")).strip() or default_user
+        entered = _RAW_GETPASS(tr("Web password [hardcoded default - Enter]: ", "Web password [hardcoded default - Enter]: "))
+        web_password = entered or default_password
+    if not web_password:
+        raise Error(tr("Web password не указан", "Web password was not provided"))
+    _register_log_secret(web_password)
+    client = module.StockWeb(host)
+    try:
+        mode = client.login(web_user, web_password, allow_plain=True)
+        setup = module.StockSetup(client)
+        info = setup.read_device_info()
+        creds = setup.read_credentials()
+        for key in ("telnet_password", "ftp_password"):
+            _register_log_secret(creds.get(key))
+        model_text = str(info.get("model") or "")
+        chipset = str(info.get("chipset") or "")
+        low = (model_text + " " + chipset).lower()
+        if "040g-mf" in low or "7583" in low:
+            family = "mf"
+            model_label = "MF"
+        elif "040g-md" in low or "7581" in low:
+            family = "md"
+            model_label = "MD"
+        else:
+            family = "unknown"
+            model_label = "UNKNOWN"
+        access = StockAccess(
+            host=host,
+            user=str(creds.get("telnet_user") or ""),
+            password=str(creds.get("telnet_password") or ""),
+            telnet_port=int(creds.get("telnet_port") or 23),
+            ftp_user=str(creds.get("ftp_user") or ""),
+            ftp_password=str(creds.get("ftp_password") or ""),
+            ftp_port=int(creds.get("ftp_port") or 21),
+            ftp_enabled=bool(creds.get("ftp_enabled")),
+            model_verified=family in ("md", "mf"),
+            model_verification_source="stock-audit-web",
+            family=family,
+            model_name=model_text,
+            chipset=chipset,
+        )
+        # The audit is deliberately non-configuring: do not enable Telnet here.
+        if not _tcp_open(host, access.telnet_port, timeout=2.0):
+            raise Error(tr(
+                f"Telnet {access.telnet_port} закрыт. Stock Audit ничего не включает автоматически; откройте Telnet штатным способом и повторите.",
+                f"Telnet {access.telnet_port} is closed. Stock Audit does not enable services automatically; enable Telnet through the stock UI and retry.",
+            ))
+        meta: dict[str, object] = {
+            "family": family,
+            "model_label": model_label,
+            "model": model_text,
+            "chipset": chipset,
+            "web_mode": mode,
+            "web_creds": "verified",
+        }
+        return access, meta
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+        web_password = None
+        entered = None
+
+
+def _audit_run(telnet: Telnet, report: list[str], command: str, timeout: int = 30) -> tuple[int, str]:
+    report.append(f"$ {command}")
+    try:
+        rc, out = telnet.command_clean(command, timeout=timeout)
+    except Exception as exc:
+        report.append(f"AUDIT_COMMAND_ERROR type={exc.__class__.__name__} detail={str(exc).replace(chr(10), ' ')[:500]}")
+        report.append("--- rc=255 ---")
+        return 255, ""
+    clean = out.replace("\x00", "").strip()
+    if clean:
+        report.extend(clean.splitlines())
+    report.append(f"--- rc={rc} ---")
+    return rc, clean
+
+
+def _audit_section(report: list[str], name: str) -> None:
+    report.append("")
+    report.append(f"==={name}===")
+
+
+def _collect_stock_audit(telnet: Telnet, access: StockAccess, meta: dict[str, object]) -> str:
+    """Collect a reproducible stock snapshot after PC-side UID-0 proof."""
+    report: list[str] = ["===MF-STOCK-AUDIT===", "audit_version=3", f"generated_epoch={int(time.time())}"]
+    uid = _telnet_probe_uid(telnet)
+    root_rc = 0 if uid == 0 else 1
+    _audit_section(report, "CAPABILITY-EVIDENCE")
+    report.extend([
+        "web_creds=verified",
+        "transport=telnet",
+        "telnet=verified",
+        f"root_uid={uid if uid is not None else 'UNKNOWN'}",
+        f"root_probe_rc={root_rc}",
+        f"root_via={access.su_user if access.su_user != 'auto' else ('direct-telnet' if uid == 0 else 'unknown')}",
+        f"web_model={meta.get('model') or 'unknown'}",
+        f"web_chipset={meta.get('chipset') or 'unknown'}",
+    ])
+    _audit_section(report, "ROOT-STATUS")
+    report.append(f"AUDIT_ROOT_UID={uid if uid is not None else 'UNKNOWN'}")
+    report.append(f"AUDIT_ROOT_RC={root_rc}")
+    _audit_run(telnet, report, "id")
+    _audit_run(telnet, report, "whoami")
+
+    _audit_section(report, "IDENTITY")
+    for cmd in (
+        "uname -a",
+        "cat /proc/version",
+        "cat /proc/cpuinfo",
+        "cat /proc/device-tree/model 2>/dev/null; echo",
+        "cat /tmp/sysinfo/model 2>/dev/null",
+        "cat /tmp/sysinfo/board_name 2>/dev/null",
+        "cat /etc/board.json 2>/dev/null",
+        "for f in /etc/version /etc/openwrt_release /etc/os-release /etc/*version* /usr/etc/version; do [ -f \"$f\" ] && { echo \"# $f\"; cat \"$f\"; }; done",
+        "cat /proc/device-tree/serial-number 2>/dev/null; echo",
+        "cat /sys/class/net/eth0/address 2>/dev/null",
+    ):
+        _audit_run(telnet, report, cmd, 30)
+
+    _audit_section(report, "USERS")
+    _audit_run(telnet, report, "cat /etc/passwd", 20)
+    _audit_run(telnet, report, "cat /etc/group", 20)
+
+    _audit_section(report, "SU-IMPLEMENTATION")
+    for cmd in (
+        "command -v su || which su",
+        "readlink -f \"$(command -v su 2>/dev/null)\" 2>/dev/null",
+        "ls -l \"$(command -v su 2>/dev/null)\" 2>/dev/null",
+        "stat \"$(command -v su 2>/dev/null)\" 2>/dev/null",
+        "busybox --list 2>/dev/null | grep '^su$'",
+        "su --help </dev/null 2>&1 | head -8",
+    ):
+        _audit_run(telnet, report, cmd, 20)
+
+    _audit_section(report, "MTD")
+    _audit_run(telnet, report, "cat /proc/mtd", 20)
+    _audit_run(telnet, report, "ls -l /dev/mtd* 2>/dev/null", 20)
+    _audit_run(telnet, report,
+        "for d in /sys/class/mtd/mtd*; do [ -d \"$d\" ] || continue; dev=$(basename \"$d\"); n=$(cat \"$d/name\" 2>/dev/null); s=$(cat \"$d/size\" 2>/dev/null); e=$(cat \"$d/erasesize\" 2>/dev/null); echo \"SYSFS_MTD dev=$dev name=$n size=$s erasesize=$e\"; done",
+        45)
+
+    _audit_section(report, "NAND-UBI")
+    for cmd, timeout in (
+        ("cat /proc/cmdline 2>/dev/null", 20),
+        ("dmesg 2>/dev/null | head -400", 40),
+        ("dmesg 2>/dev/null | grep -Ei 'nand|spi-nand|mtd|ubi|bmt|bad *block' | head -240", 30),
+        (r"find /sys \( -iname '*nand*' -o -iname '*spi*nand*' -o -iname '*ubi*' \) 2>/dev/null | head -160", 45),
+        ("for f in /sys/class/ubi/ubi*/mtd_num /sys/class/ubi/ubi*/total_eraseblocks /sys/class/ubi/ubi*/eraseblock_size /sys/class/ubi/ubi*/avail_eraseblocks; do [ -r \"$f\" ] && echo \"SYSFS_UBI path=$f value=$(cat \"$f\" 2>/dev/null)\"; done", 30),
+        ("ubinfo -a 2>/dev/null", 40),
+        ("cat /proc/mounts", 20),
+        ("df -h 2>/dev/null", 20),
+    ):
+        _audit_run(telnet, report, cmd, timeout)
+
+    _audit_section(report, "READ-PRIMITIVES")
+    _audit_run(telnet, report,
+        "for x in cat dd gzip tftp sha256sum mtd ubinfo strings od; do if command -v \"$x\" >/dev/null 2>&1; then echo \"AUDIT_TOOL name=$x present=1 path=$(command -v \"$x\")\"; else echo \"AUDIT_TOOL name=$x present=0\"; fi; done",
+        30)
+    _audit_run(telnet, report, "tftp --help 2>&1 | head -20", 20)
+
+    _audit_section(report, "STOCK-UPGRADE-MECHANISM")
+    find_expr = "find /etc /usr /bin /sbin -type f \\( -iname '*upgrade*' -o -iname '*update*' -o -iname '*flash*' -o -iname '*ubi*' \\) 2>/dev/null | head -250"
+    _audit_run(telnet, report, find_expr + " | while IFS= read -r f; do echo \"AUDIT_FILE path=$f\"; done", 90)
+    # Result lines are machine-marked. The parser ignores the echoed scanner
+    # expression and accepts only output lines starting with AUDIT_HIT.
+    scan = (
+        find_expr + " | while IFS= read -r f; do "
+        "grep -nEi 'mtd +write|nand +write|ubiupdatevol|ubiformat|ubimkvol|ubirmvol|flashcp|sysupgrade|mtd_write' \"$f\" 2>/dev/null | head -40 | "
+        "while IFS= read -r hit; do echo \"AUDIT_HIT path=$f hit=$hit\"; done; done"
+    )
+    _audit_run(telnet, report, scan, 180)
+    details = (
+        find_expr + " | while IFS= read -r f; do "
+        "sz=$(wc -c < \"$f\" 2>/dev/null | tr -d ' '); sha=$(sha256sum \"$f\" 2>/dev/null | awk '{print $1}'); "
+        "link=$(readlink -f \"$f\" 2>/dev/null); echo \"AUDIT_META path=$f size=${sz:-unknown} sha256=${sha:-unknown} real=${link:-$f}\"; "
+        "head -c 4 \"$f\" 2>/dev/null | od -An -tx1 2>/dev/null | grep -q '7f 45 4c 46' && { "
+        "echo \"AUDIT_BINARY path=$f\"; strings \"$f\" 2>/dev/null | grep -Ei 'nand|mtd|ubi|ioctl|flash|kernel|rootfs|slave|active|boot' | head -80 | while IFS= read -r z; do echo \"AUDIT_STRING path=$f text=$z\"; done; "
+        "} || { head -120 \"$f\" 2>/dev/null | while IFS= read -r z; do echo \"AUDIT_TEXT path=$f text=$z\"; done; }; done"
+    )
+    _audit_run(telnet, report, details, 240)
+    _audit_section(report, "END")
+    report.append("===MF-STOCK-AUDIT-END===")
+    return "\n".join(report) + "\n"
+
+
+def stock_audit_wizard() -> None:
+    verify_kit()
+    print(tr("\n=== Полный stock audit MD/MF (без записи flash/NAND) ===", "\n=== Full MD/MF stock audit (no flash/NAND writes) ==="))
+    print(tr(
+        "Web используется только для чтения device-specific credentials. Telnet должен быть уже открыт. su выполняется интерактивно на стороне ПК и принимается только после id -u = 0.",
+        "Web is used only to read device-specific credentials. Telnet must already be open. su is driven interactively by the PC and accepted only after id -u = 0.",
+    ))
+    access, meta = _stock_audit_web_access()
+    if str(meta.get("family")) not in ("md", "mf"):
+        raise Error(tr("Web не подтвердил XG-040G-MD/MF; audit остановлен.", "Web did not confirm XG-040G-MD/MF; audit stopped."))
+    model_label = str(meta.get("model_label") or "UNKNOWN")
+    telnet = login_root_profile_dynamic(
+        access,
+        model=model_label,
+        sessions=3,
+        connect_attempts=3,
+        preferred_accounts=("useradmin_ftp", "user_ftp", "osgi_admin", "samba_anony", "telecomadmin", "root"),
+    )
+    try:
+        if _telnet_probe_uid(telnet) != 0:
+            raise Error(tr("UID 0 не подтверждён; audit не запускается.", "UID 0 was not confirmed; audit will not run."))
+        text = _collect_stock_audit(telnet, access, meta)
+    finally:
+        telnet.close()
+        access.close_web(announce=False)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    family = str(meta.get("family") or "unknown")
+    out_dir = WORK / "audits"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / f"nokia-{family}-stock-audit-{stamp}.log"
+    log_path.write_text(text, encoding="utf-8")
+    parser = _load_stock_audit_parser()
+    profile = parser.build_profile(text)
+    rendered = parser.render(profile)
+    profile_path = out_dir / f"nokia-{family}-stock-profile-{stamp}.txt"
+    profile_path.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
+    print(tr(f"[OK] Audit log: {log_path}", f"[OK] Audit log: {log_path}"))
+    print(tr(f"[OK] Derived profile: {profile_path}", f"[OK] Derived profile: {profile_path}"))
+    print(tr(
+        "[POLICY] rc15: normal MF-A backup HW-confirmed; permanent all-in-UBI install доступен как EXPERIMENTAL только после BACKUP_HW_VALIDATED + live MF-A gates + явного подтверждения.",
+        "[POLICY] rc15: normal MF-A backup is HW-confirmed; permanent all-in-UBI install is EXPERIMENTAL and requires BACKUP_HW_VALIDATED + live MF-A gates + explicit confirmation.",
+    ))
+
+
+def parse_stock_audit_wizard() -> None:
+    verify_kit()
+    path = Path(input(tr("Путь к stock-audit .log: ", "Path to stock-audit .log: ")).strip().strip('"')).expanduser()
+    if not path.is_file():
+        raise Error(tr(f"audit log не найден: {path}", f"audit log not found: {path}"))
+    parser = _load_stock_audit_parser()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    print(parser.render(parser.build_profile(text)))
+
+
+def credentials_menu() -> str:
+    while True:
+        print(tr("\n=== Credentials / диагностика stock ===", "\n=== Credentials / stock diagnostics ==="))
+        print(tr("1 — показать credentials, всех пользователей и привилегии", "1 — show credentials, all users, and privileges"))
+        print(tr("2 — полный stock audit MD/MF (Web → Telnet → доказанный UID 0 → MTD/UBI/upgrade inventory)", "2 — full MD/MF stock audit (Web -> Telnet -> proven UID 0 -> MTD/UBI/upgrade inventory)"))
+        print(tr("3 — разобрать сохранённый stock-audit log", "3 — parse a saved stock-audit log"))
+        print(tr("4 — назад", "4 — back"))
+        choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
+        action = None
+        label_ru = label_en = ""
+        if choice == "1":
+            action = credentials_wizard
+            label_ru, label_en = "Credentials / пользователи: завершено", "Credentials / users: complete"
+        elif choice == "2":
+            action = stock_audit_wizard
+            label_ru, label_en = "Stock audit: завершён", "Stock audit: complete"
+        elif choice == "3":
+            action = parse_stock_audit_wizard
+            label_ru, label_en = "Разбор stock-audit log: завершён", "Stock-audit log parsing: complete"
+        elif choice == "4":
+            return "main"
+        else:
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            continue
+        nav, _ok = _run_interactive_action(
+            action, label_ru=label_ru, label_en=label_en,
+            section_ru="Credentials / диагностика stock", section_en="Credentials / stock diagnostics",
+        )
+        if nav == "section":
+            continue
+        return nav
+
+
+def credentials_wizard() -> None:
+    """Show known defaults plus device-derived credentials and local users.
+
+    Secrets intentionally bypass _ConsoleTee and therefore never land in
+    LATEST.log/session logs.  Device interrogation is GET/read-only except when
+    the operator explicitly permits enabling Telnet to enumerate /etc/passwd.
+    """
+    verify_kit()
+    module = _load_stock_web_module()
+    default_user = str(getattr(module, "DEFAULT_WEB_USER", "CMCCAdmin") or "CMCCAdmin")
+    default_password = str(getattr(module, "DEFAULT_WEB_PASSWORD", "") or "")
+    print()
+    print(tr("=== Credentials / пользователи / привилегии ===", "=== Credentials / users / privileges ==="))
+    print(tr("Секреты показываются только в консоли и намеренно НЕ записываются в LATEST.log/session log.", "Secrets are shown only on the console and are intentionally NOT written to LATEST.log/session logs."))
+    print(tr("\nHardcoded/default, входящие в текущий kit:", "\nHardcoded/default values shipped by the current kit:"))
+    print(f"  Web user: {default_user}")
+    if default_password:
+        _show_secret("Web password", default_password)
+    print(tr("  UART/console: отдельный пароль telecomadmin для XG-040G-MD/MF в kit не зашит; существование такого пользователя проверяется ниже по /etc/passwd.", "  UART/console: no separate telecomadmin password for XG-040G-MD/MF is hardcoded in the kit; the account is checked below from /etc/passwd."))
+
+    host = input(tr("IP Nokia [192.168.1.1]: ", "Nokia IP [192.168.1.1]: ")).strip() or "192.168.1.1"
+    web_user = input(tr(f"Web user [{default_user}]: ", f"Web user [{default_user}]: ")).strip() or default_user
+    entered = _RAW_GETPASS(tr("Web password [hardcoded default — Enter]: ", "Web password [hardcoded default — Enter]: "))
+    web_password = entered or default_password
+    if not web_password:
+        raise Error(tr("Web password не указан", "Web password was not provided"))
+    _register_log_secret(web_password)
+    client = module.StockWeb(host)
+    try:
+        print(tr("[WAIT] Проверяю stock Web UI; transient disconnects автоматически повторяются...", "[WAIT] Probing the stock Web UI; transient disconnects are retried automatically..."))
+        mode = client.login(web_user, web_password, allow_plain=True)
+        setup = module.StockSetup(client)
+        info = setup.read_device_info()
+        creds = setup.read_credentials()
+        for key in ("telnet_password", "ftp_password"):
+            _register_log_secret(creds.get(key))
+        print(tr(
+            f"[OK] Устройство: {info.get('model') or 'unknown'}" + (f" / {info.get('chipset')}" if info.get('chipset') else ""),
+            f"[OK] Device: {info.get('model') or 'unknown'}" + (f" / {info.get('chipset')}" if info.get('chipset') else ""),
+        ))
+        if mode == "plain":
+            print(tr("[WARN] Web UI потребовала/приняла plain HTTP login.", "[WARN] The Web UI required/accepted plain HTTP login."))
+        _console_only(tr("\nСчитано с конкретного устройства:", "\nRead from this specific device:"))
+        _console_only(f"  Telnet user: {creds['telnet_user']}  port {creds['telnet_port']}  enabled={creds['telnet_enabled']}")
+        _show_secret("Telnet password", creds["telnet_password"])
+        _console_only(f"  FTP user: {creds['ftp_user'] or '<empty>'}  port {creds['ftp_port']}  enabled={creds['ftp_enabled']}")
+        _show_secret("FTP password", creds["ftp_password"])
+        try:
+            _cfg, samba_accounts, _csrf = setup.samba_state()
+        except Exception as exc:
+            samba_accounts = {}
+            print(tr(f"[WARN] Samba accounts не прочитаны: {exc}", f"[WARN] Samba accounts could not be read: {exc}"))
+        if samba_accounts:
+            _console_only(tr("\nSamba accounts из Web UI:", "\nSamba accounts from Web UI:"))
+            items = samba_accounts.values() if isinstance(samba_accounts, dict) else []
+            for index, row in enumerate(items, 1):
+                if not isinstance(row, dict):
+                    continue
+                visible=[]
+                for key, value in row.items():
+                    if re.search(r"pass|pwd|secret", str(key), re.I):
+                        _show_secret(f"Samba[{index}] {key}", value)
+                    else:
+                        visible.append(f"{key}={value}")
+                if visible:
+                    _console_only(f"  Samba[{index}] " + ", ".join(visible))
+
+        telnet_port = int(creds["telnet_port"])
+        port_open_now = _tcp_open(host, telnet_port, timeout=1.5)
+        if not port_open_now:
+            print(tr(
+                f"\n[INFO] Telnet {telnet_port} закрыт. Для полного списка /etc/passwd и привилегий его нужно включить через stock Web UI.",
+                f"\n[INFO] Telnet {telnet_port} is closed. It must be enabled through the stock Web UI to enumerate /etc/passwd and privileges.",
+            ))
+            answer = input(tr("Включить Telnet и продолжить аудит? [y/N]: ", "Enable Telnet and continue the audit? [y/N]: ")).strip().lower()
+            if answer in ("y", "yes", "д", "да"):
+                print(tr("[WRITE] Включаю только Telnet через штатный Web UI; NAND не изменяется.", "[WRITE] Enabling Telnet only through the stock Web UI; NAND is not modified."))
+                setup.enable_telnet(port=telnet_port)
+                port_open_now = _tcp_open(host, telnet_port, timeout=2.0)
+        if not port_open_now:
+            print(tr("[INFO] Полный OS user inventory пропущен: Telnet закрыт.", "[INFO] Full OS user inventory skipped: Telnet is closed."))
+            return
+
+        access = StockAccess(
+            host=host, user=str(creds["telnet_user"]), password=str(creds["telnet_password"]),
+            telnet_port=telnet_port, ftp_user=str(creds.get("ftp_user") or ""),
+            ftp_password=str(creds.get("ftp_password") or ""), ftp_port=int(creds.get("ftp_port") or 21),
+            ftp_enabled=bool(creds.get("ftp_enabled")), model_verified=True,
+            model_verification_source="credentials-audit-web",
+        )
+        inventory = _read_device_user_inventory(host, telnet_port, access.user, access.password)
+        print(tr("\nВсе локальные пользователи из /etc/passwd:", "\nAll local users from /etc/passwd:"))
+        print("  USER                     UID   GID   PRIVILEGE              GROUPS                  HOME                 SHELL")
+        for row in inventory:
+            print(f"  {str(row['name'])[:24]:24} {int(row['uid']):5} {int(row['gid']):5} {str(row['privilege'])[:22]:22} {str(row['groups'])[:23]:23} {str(row['home'])[:20]:20} {row['shell']}")
+        roots = [str(x['name']) for x in inventory if int(x['uid']) == 0]
+        print(tr(f"\nUID 0 accounts: {', '.join(roots) if roots else 'нет'}", f"\nUID-0 accounts: {', '.join(roots) if roots else 'none'}"))
+        if any(str(x['name']).lower() == 'telecomadmin' for x in inventory):
+            print(tr("[FOUND] telecomadmin реально присутствует на этом устройстве.", "[FOUND] telecomadmin is actually present on this device."))
+        else:
+            print(tr("[INFO] telecomadmin в /etc/passwd этого устройства не найден.", "[INFO] telecomadmin was not found in this device's /etc/passwd."))
+
+        matches = _verify_device_uid0_secrets(access, inventory)
+        if matches:
+            _console_only(tr("\nПроверенные UID-0 credentials (только device-provided пароли, без перебора словаря):", "\nVerified UID-0 credentials (device-provided passwords only; no dictionary guessing):"))
+            for account, source, secret in matches:
+                _console_only(f"  {account}  <= password source: {source}")
+                _show_secret(f"{account} password", secret)
+        else:
+            print(tr("[INFO] Ни один UID-0 su credential из Telnet/FTP паролей устройства не подтверждён.", "[INFO] No UID-0 su credential matched the device's Telnet/FTP passwords."))
+    except (module.LoginError, module.SetupError, module.UnsupportedFirmware, OSError) as exc:
+        detail = _web_failure_detail(exc)
+        print(tr(
+            f"[WARNING] Stock Web UI сейчас недоступен или закрыл соединение: {detail}",
+            f"[WARNING] The stock Web UI is unavailable or closed the connection: {detail}",
+        ))
+        _write_session_only(f"[CREDENTIALS] web audit unavailable: {exc.__class__.__name__}: {detail}")
+        print(tr(
+            "[INFO] Hardcoded/default credentials выше уже показаны. Device-specific Telnet/FTP/Samba secrets через Web не считаны; master не завершается аварийно.",
+            "[INFO] Hardcoded/default credentials were already shown above. Device-specific Telnet/FTP/Samba secrets were not read from Web; the master will not abort.",
+        ))
+        _credentials_telnet_fallback(host)
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+        web_password = None
+        entered = None
 
 
 def backup_only_wizard() -> None:
     verify_kit()
-    access = ask_credentials()
-    access.close_web()
+    print(tr(
+        "=== Stock backup MD/MF через работающую прошивку ===",
+        "=== MD/MF stock backup through running firmware ===",
+    ))
+    print(tr(
+        "Модель определяется заново через stock Web и подтверждается реальной MTD-разметкой. Ручной выбор при старте программы не является разрешением на backup.",
+        "The model is re-detected through the stock Web UI and confirmed by the live MTD map. A manual startup selection is not authorization for backup.",
+    ))
+    access, meta = _stock_audit_web_access()
+    family = str(meta.get("family") or "unknown")
+    if family not in ("md", "mf"):
+        raise Error(tr("Web не подтвердил MD/MF; backup заблокирован", "Web did not confirm MD/MF; backup is blocked"))
     host = access.host
-    print(tr("1 — полный backup на USB-флешку в порту Nokia", "1 — complete backup to a USB drive in the Nokia USB port"))
-    print(tr("2 — полный backup напрямую на ПК через TFTP, без флешки", "2 — complete backup directly to the PC over TFTP, no USB drive"))
-    choice = input(tr("Выберите 1/2: ", "Select 1/2: ")).strip()
-    if choice == "1":
+    model_name = str(meta.get("model") or ("XG-040G-MF" if family == "mf" else "XG-040G-MD"))
+    print(tr(f"[OK] Backup target: {model_name} / {str(meta.get('chipset') or '?')}", f"[OK] Backup target: {model_name} / {str(meta.get('chipset') or '?')}"))
+    print(tr("1 — полный backup напрямую на ПК через TFTP (рекомендуется)", "1 — complete backup directly to the PC over TFTP (recommended)"))
+    print(tr("2 — полный backup на USB-флешку в порту Nokia", "2 — complete backup to a USB drive in the Nokia USB port"))
+    choice = input(tr("Выберите 1/2 [1]: ", "Select 1/2 [1]: ")).strip() or "1"
+    if choice == "2":
         print_usb_requirements()
-        telnet = login_root_md(access)
+        telnet = login_root_family(access, family)
         try:
+            if family == "mf":
+                # New MF backend: require the same strict live geometry proof as TFTP.
+                # Keep the established MD USB backup behavior unchanged.
+                _stock_live_geometry_preflight(telnet, family)
             mount = input(tr("Путь USB внутри Nokia [автоопределение: /mnt/USB_disc1]: ", "USB path inside Nokia [auto-detect: /mnt/USB_disc1]: ")).strip() or None
             mount = resolve_router_usb_mount(telnet, mount)
             verify_router_usb_storage(telnet, mount)
             cleanup_incomplete_router_backups(telnet, mount)
-            result = backup_to_usb(telnet, mount)
+            result = backup_to_usb(telnet, mount, family=family)
             print(tr(f"[OK] Backup готов на USB-флешке: {result}", f"[OK] Backup completed on the USB drive: {result}"))
-            print(tr("Скопируйте весь каталог backup на компьютер до любых операций с NAND.", "Copy the entire backup directory to the PC before any NAND operation."))
+            print(tr("Скопируйте весь каталог на ПК и запустите verify-stock-restore перед любой записью NAND.", "Copy the whole directory to the PC and run verify-stock-restore before any NAND write."))
         finally:
             telnet.close()
-    elif choice == "2":
+    elif choice == "1":
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        destination = WORK / "backups" / f"nokia-xg040gmd-backup-{stamp}"
-        local_ip = input("IP этого ПК для Nokia [auto]: ").strip() or None
-        port_text = input("UDP-порт TFTP [1069]: ").strip()
+        destination = WORK / "backups" / f"nokia-xg040g{family}-backup-{stamp}"
+        local_ip = input(tr("IP этого ПК для Nokia [auto]: ", "This PC IP for Nokia [auto]: ")).strip() or None
+        port_text = input(tr("UDP-порт TFTP [1069]: ", "TFTP UDP port [1069]: ")).strip()
         port = int(port_text) if port_text else 1069
-        backup_tftp(access, host, destination, local_ip, port, 4096)
-        print(f"Backup готов на ПК: {destination}")
+        result = backup_tftp(access, host, destination, local_ip, port, 4096, expected_family=family)
+        print(tr(f"[OK] Backup готов и аппаратно провалидирован на ПК: {result}", f"[OK] Backup completed and hardware-validated on the PC: {result}"))
+        if family == "mf":
+            print(tr("[OK] MF normal stock backup HW gate пройден для этой копии: root + MTD/sysfs + TFTP + transport-stream SHA256 + restore-validator.", "[OK] The MF normal stock-backup HW gate passed for this copy: root + MTD/sysfs + TFTP + transport-stream SHA256 + restore validator."))
     else:
-        raise Error("неверный выбор")
+        raise Error(tr("неверный выбор", "invalid selection"))
+
 
 def personalize_wizard() -> None:
     verify_kit()
-    path = Path(input("Путь к каталогу полного backup: ").strip().strip('"')).expanduser()
-    output, info = personalize(path)
-    print(f"Готово: {output}")
-    for warning in info["backup"]["warnings"]:
+    profile = _active_install_profile()
+    manual = _choose_install_mode(profile)
+    if manual is None:
+        return
+    path = Path(input(tr("Путь к каталогу полного backup: ", "Path to the complete backup directory: ")).strip().strip('"')).expanduser()
+    output, info = personalize_transition(profile, path, manual_transition=manual)
+    print(tr(f"[OK] Персональный пакет создан: {output}", f"[OK] Device-specific package created: {output}"))
+    for warning in info["backup"].get("warnings", []):
         print("WARNING:", warning)
 
-
 def resume_stage2_wizard() -> None:
+    print(tr(
+        "=== Продолжение установки после transition OpenWrt ===\nЭтап 2 означает: transition уже загружен в RAM; мастер проверяет его состояние, затем форматирует целевой NAND в UBI, передаёт и записывает постоянный sysupgrade OpenWrt и контролирует первый запуск.",
+        "=== Continue installation after transition OpenWrt ===\nStage 2 means: transition is already running in RAM; the wizard checks its state, then formats the target NAND as UBI, transfers and flashes the persistent OpenWrt sysupgrade, and monitors first boot.",
+    ))
     host = input("IP transition OpenWrt [192.168.1.1]: ").strip() or "192.168.1.1"
     manual = False
     manual_state = ""
+    expected_board = "nokia,xg-040g-md-ubi"
+    board_name = ""
     if _tcp_open(host, 22):
         manual, manual_state, board_name, probe_error = _manual_transition_probe(host, timeout=8)
+        if board_name == "nokia,xg-040g-mf-ubi":
+            expected_board = board_name
         if probe_error:
             _write_session_only(f"[MANUAL-SSH] resume probe failed: {probe_error}")
             raise Error(tr(
                 f"SSH 22 открыт, но режим transition определить не удалось: {probe_error[-500:]}",
                 f"SSH 22 is open, but the transition mode could not be identified: {probe_error[-500:]}",
             ))
-        elif manual and board_name and board_name != "nokia,xg-040g-md-ubi":
+        elif manual and board_name not in ("nokia,xg-040g-md-ubi", "nokia,xg-040g-mf-ubi"):
             _write_session_only(f"[MANUAL-SSH] resume marker accepted; board_name={board_name!r}")
     if manual:
         print(tr(f"[OK] Обнаружен ручной transition; состояние: {manual_state or 'unknown'}.", f"[OK] Manual transition detected; state: {manual_state or 'unknown'}."))
         if manual_state in ("STARTING", "CHECKING", "FORMATTING_AND_FLASHING", "WAITING_FOR_SYSTEM", "FAILED"):
-            result = run_stage2(host, manual_mode=True)
+            result = run_stage2(host, manual_mode=True, expected_board=expected_board)
         else:
             local_ip = input(tr("IP этого ПК для Nokia [auto]: ", "This PC IP for Nokia [auto]: ")).strip() or None
             port_text = input(tr("UDP-порт TFTP [1069]: ", "TFTP UDP port [1069]: ")).strip()
-            result = run_custom_stage2(host, local_ip, int(port_text) if port_text else 1069, 4096)
+            result = run_custom_stage2(host, local_ip, int(port_text) if port_text else 1069, 4096, expected_board=expected_board)
     else:
-        result = run_stage2(host)
+        # Automatic transition board is learned once SSH comes up in run_stage2;
+        # when startup was a VERIFIED MF, monitor the MF production identity.
+        prof = _STARTUP_DEVICE_PROFILE
+        if prof.get("verified") and prof.get("family") == "mf":
+            expected_board = "nokia,xg-040g-mf-ubi"
+        result = run_stage2(host, expected_board=expected_board)
     stage_header("9" if manual else "7", "Итог ожидания", "Monitoring result")
     print(tr(f"[OK] Финальный статус: {result}", f"[OK] Final status: {result}"))
 
 
-def wizard() -> None:
-    print(f"Nokia Router MedveFlasher — {APP_VERSION}")
-    print(tr(
-        "1 — установить OpenWrt (со снятием backup)",
-        "1 — install OpenWrt (with a backup first)",
+
+def _latest_mf_hw_backup() -> Path | None:
+    root = WORK / "backups"
+    if not root.is_dir():
+        return None
+    candidates: list[Path] = []
+    for path in root.iterdir():
+        marker = path / "BACKUP_HW_VALIDATED"
+        if not path.is_dir() or not marker.is_file():
+            continue
+        evidence = marker.read_text(encoding="utf-8", errors="replace").lower()
+        if "family=mf" in evidence and "variant=mf-a" in evidence:
+            candidates.append(path)
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _wait_mf_ram_openwrt(host: str, timeout: int = 360) -> str:
+    print(tr("[WAIT] Ожидаю reboot в MF initramfs/RAM OpenWrt; UBI/sysupgrade не запускаются...", "[WAIT] Waiting for reboot into the MF initramfs/RAM OpenWrt; no UBI/sysupgrade operation is started..."))
+    deadline = time.time() + timeout
+    seen_down = False
+    last_status = 0.0
+    while time.time() < deadline:
+        port80 = _tcp_open(host, 80, timeout=1.0)
+        port443 = _tcp_open(host, 443, timeout=1.0)
+        port22 = _tcp_open(host, 22, timeout=1.0)
+        if not (port80 or port443 or port22):
+            seen_down = True
+        if seen_down and ((_probe_luci(host, 80) if port80 else False) or (_probe_luci(host, 443) if port443 else False)):
+            return "luci"
+        if seen_down and port22:
+            try:
+                rc, out = ssh_run(host, "cat /tmp/sysinfo/board_name 2>/dev/null; uname -a", timeout=25, quiet=True, batch_mode=True, minimal_auth=True)
+                low = out.lower()
+                if rc == 0 and ("xg-040g-mf" in low or "an7583" in low):
+                    return "ssh"
+            except Exception:
+                pass
+        now = time.time()
+        if now - last_status >= 15:
+            print(tr(f"[WAIT] RAM OpenWrt: tcp22={int(port22)} http={int(port80)} https={int(port443)}; прошло {int(timeout-(deadline-now))}s...", f"[WAIT] RAM OpenWrt: tcp22={int(port22)} http={int(port80)} https={int(port443)}; elapsed {int(timeout-(deadline-now))}s..."))
+            last_status = now
+        time.sleep(3)
+    raise Error(tr(
+        "MF initramfs не удалось однозначно подтвердить по сети. NAND/UBI stage 2 НЕ запускался. Сохраните UART-лог перед дальнейшими действиями.",
+        "The MF initramfs could not be proven unambiguously over the network. NAND/UBI stage 2 was NOT started. Save the UART log before taking further action.",
     ))
-    print(tr("2 — снять backup", "2 — create a backup"))
-    print(tr("3 — подготовить пакет из своего backup", "3 — prepare a package from your backup"))
-    print(tr("4 — продолжить со 2 этапа", "4 — resume from stage 2"))
-    print(tr("5 — откатить на сток (без UART)", "5 — restore stock (no UART)"))
-    print(tr("6 — восстановить кирпич (нужен UART)", "6 — recover a brick (UART required)"))
-    print(tr("7 — установить OpenWrt из готового backup", "7 — install OpenWrt from an existing backup"))
-    print(tr("8 — выход", "8 — exit"))
+
+
+def _firmware_capability_rows(family: str, variant: str, live_root: bool, geometry_ok: bool, backup_io_ok: bool = True) -> list[tuple[str, str]]:
+    """Intersect release-level hardware evidence with current read-only live gates.
+
+    This function never authorizes a destructive operation by itself. Existing
+    install/restore functions keep their own model, backup, geometry and explicit
+    confirmation gates. The report is an operator-visible explanation of why a
+    path is enabled, partial, experimental, or blocked in this release.
+    """
+    family = (family or "unknown").lower()
+    variant = variant or "UNKNOWN"
+    live = live_root and geometry_ok
+    backup_live = live and backup_io_ok
+    rows: list[tuple[str, str]] = [
+        ("CAP_STOCK_ROOT", "YES - live UID 0" if live_root else "BLOCKED - live UID 0 not proven"),
+        ("CAP_MTD_GEOMETRY", f"YES - {variant}; /proc == sysfs" if geometry_ok else "BLOCKED - geometry not proven"),
+    ]
+    if family == "md":
+        rows.extend([
+            ("CAP_FULL_BACKUP", "YES - established MD backend" if backup_live else "BLOCKED - live root/geometry/transport gate"),
+            ("CAP_MF_TRANSITION_BOOT", "N/A - MD uses the established MD transition path"),
+            ("CAP_RAM_OPENWRT", "YES - HW CONFIRMED transition path"),
+            ("CAP_UBI_FORMAT", "YES - HW CONFIRMED in MD stage 2"),
+            ("CAP_UBI_VOLUME_WRITE", "YES - HW CONFIRMED in MD stage 2"),
+            ("CAP_BOOTLOADER_REPLACE", "EXPERIMENTAL - tcboot research only; not enabled"),
+            ("CAP_PERMANENT_INSTALL", "YES - HW CONFIRMED MD path"),
+            ("CAP_UART_RECOVERY", "RC18 RECOVERY_SAFE - exact FIP HW regression pending"),
+        ])
+    elif family == "mf":
+        if backup_live and variant == "MF-A":
+            backup = "YES - HW CONFIRMED MF-A normal TFTP backup"
+        elif backup_live and variant in {"MF-A-MIRROR", "MF-B", "MF-B-MIRROR"}:
+            backup = "READY - live gates PASS; this variant still needs end-to-end HW capture"
+        else:
+            backup = "BLOCKED - live root/geometry/read-only transport gate"
+        rows.extend([
+            ("CAP_FULL_BACKUP", backup),
+            ("CAP_MF_TRANSITION_BOOT", "ENABLED - rc15 shared MD/MF installer (MF-A permanent path)" if variant == "MF-A" and backup_live else "BLOCKED - requires live MF-A + HW-validated backup"),
+            ("CAP_RAM_OPENWRT", "ENABLED - MF-A transition initramfs included; first permanent run is experimental" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
+            ("CAP_UBI_FORMAT", "ENABLED - EXPERIMENTAL MF-A; explicit CONFIRM FORMAT AND FLASH required" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
+            ("CAP_UBI_VOLUME_WRITE", "ENABLED - EXPERIMENTAL MF-A; bosa/ri/FIP/fit with readback" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
+            ("CAP_BOOTLOADER_REPLACE", "ENABLED - EXPERIMENTAL MF-A; OpenWrt BL2 written last after UBI readbacks" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
+            ("CAP_PERMANENT_INSTALL", "ENABLED - EXPERIMENTAL MF-A; UART stock restore is HW-confirmed fallback" if variant == "MF-A" and backup_live else "BLOCKED - live MF-A + backup gate"),
+            ("CAP_UART_RECOVERY", "RC18 RECOVERY_SAFE - base path HW confirmed; exact safe FIP pending"),
+        ])
+    else:
+        rows.extend([
+            ("CAP_FULL_BACKUP", "BLOCKED - family unknown"),
+            ("CAP_MF_TRANSITION_BOOT", "BLOCKED - family unknown"),
+            ("CAP_RAM_OPENWRT", "BLOCKED - family unknown"),
+            ("CAP_UBI_FORMAT", "BLOCKED - family unknown"),
+            ("CAP_UBI_VOLUME_WRITE", "BLOCKED - family unknown"),
+            ("CAP_BOOTLOADER_REPLACE", "BLOCKED - family unknown"),
+            ("CAP_PERMANENT_INSTALL", "BLOCKED - family unknown"),
+            ("CAP_UART_RECOVERY", "AVAILABLE ONLY AFTER SoC-specific recovery gate"),
+        ])
+    return rows
+
+
+def _print_firmware_capability_report(model: str, chipset: str, family: str, variant: str, rows: list[tuple[str, str]]) -> None:
+    print(tr("\n=== Прошивочные capabilities (read-only report) ===", "\n=== Firmware capabilities (read-only report) ==="))
+    print(f"Device                 {model or '?'}" + (f" / {chipset}" if chipset else ""))
+    print(f"Family / variant       {family.upper() if family in ('md','mf') else '?'} / {variant}")
+    print("")
+    for key, value in rows:
+        print(f"  {key:<26} {value}")
+    print("")
+    if family == "mf":
+        print(tr(
+            "[POLICY] Отчёт сам по себе не авторизует запись. В rc15 shared MD/MF installer (MF-A permanent path) доступен только после live root/geometry + BACKUP_HW_VALIDATED + явного подтверждения.",
+            "[POLICY] This report alone does not authorize writes. In rc15, the shared MD/MF installer (MF-A permanent path) is reachable only after live root/geometry + BACKUP_HW_VALIDATED + explicit confirmation.",
+        ))
+    elif family == "md":
+        print(tr(
+            "[POLICY] MD install остаётся на прежнем hardware-confirmed bootcmd+transition path; capability report его не переписывает.",
+            "[POLICY] MD installation remains on the existing hardware-confirmed bootcmd+transition path; this capability report does not refactor it.",
+        ))
+
+
+def firmware_capabilities_wizard() -> None:
+    """Prove current stock access/geometry and render release flashing gates.
+
+    Web is read-only here, Telnet must already be enabled, and no discovered
+    upgrade utility is executed. No flash/NAND/UBI write command is sent.
+    """
+    verify_kit()
+    print(tr(
+        "\n=== Проверка прошивочных capabilities MD/MF (без записи flash/NAND) ===",
+        "\n=== MD/MF firmware capability probe (no flash/NAND writes) ===",
+    ))
+    access, meta = _stock_audit_web_access()
+    family = str(meta.get("family") or "unknown")
+    if family not in ("md", "mf"):
+        access.close_web(announce=False)
+        raise Error(tr("Web не подтвердил MD/MF", "Web did not confirm MD/MF"))
+    telnet: Telnet | None = None
+    try:
+        telnet = login_root_profile_dynamic(
+            access,
+            model=str(meta.get("model_label") or family.upper()),
+            sessions=3,
+            connect_attempts=3,
+            preferred_accounts=("useradmin_ftp", "user_ftp", "osgi_admin", "samba_anony", "telecomadmin", "root"),
+        )
+        uid = _telnet_probe_uid(telnet)
+        root_ok = uid == 0
+        if not root_ok:
+            raise Error(tr("CAP_STOCK_ROOT: UID 0 не доказан", "CAP_STOCK_ROOT: UID 0 was not proven"))
+        _proc, detected_family, variant = _stock_live_geometry_preflight(telnet, family, require_ro=False)
+        geometry_ok = detected_family == family
+        backup_io_ok = True
+        if detected_family == "mf":
+            rc, io_text = telnet.command(
+                'ok=1; n=0; while [ $n -le 16 ]; do [ -r /dev/mtd${n}ro ] || ok=0; n=$((n+1)); done; '
+                'for x in gzip tftp sha256sum tee; do command -v "$x" >/dev/null 2>&1 || ok=0; done; echo CAP_BACKUP_IO_OK=$ok',
+                timeout=30, echo=False,
+            )
+            backup_io_ok = rc == 0 and "CAP_BACKUP_IO_OK=1" in io_text
+        rows = [
+            ("CAP_WEB_CREDS", "YES - live Web login"),
+            ("CAP_TELNET", "YES - live Telnet"),
+        ] + _firmware_capability_rows(detected_family, variant, root_ok, geometry_ok, backup_io_ok)
+        _print_firmware_capability_report(
+            str(meta.get("model") or access.model_name or ""),
+            str(meta.get("chipset") or access.chipset or ""),
+            detected_family,
+            variant,
+            rows,
+        )
+    finally:
+        if telnet is not None:
+            telnet.close()
+        access.close_web(announce=False)
+
+
+def _selftest_mf_transition_release() -> None:
+    """Static regression for the shared profile-driven MD/MF installer."""
+    verify_kit()
+    md_auto = transition_release_metadata(MD_INSTALL_PROFILE, MD_INSTALL_PROFILE.auto_bundle)
+    md_manual = transition_release_metadata(MD_INSTALL_PROFILE, MD_INSTALL_PROFILE.manual_bundle)
+    mf_auto = transition_release_metadata(MF_INSTALL_PROFILE, MF_INSTALL_PROFILE.auto_bundle)
+    mf_manual = transition_release_metadata(MF_INSTALL_PROFILE, MF_INSTALL_PROFILE.manual_bundle)
+    assert md_auto["production_size"] > 0 and md_manual["production_size"] == 0
+    assert mf_auto["production_sha"] == MF_UBI_SYSUPGRADE_SHA and mf_auto["production_size"] == MF_UBI_SYSUPGRADE_SIZE
+    assert mf_manual["production_size"] == 0 and mf_manual["bundle_size"] == 0x800000
+    text = LAUNCHER_TEMPLATE.read_text(encoding="utf-8")
+    assert "PROFILE_FAMILY=" in text and "PROFILE_LABEL=" in text
+    assert "MF-A-MIRROR" in text and "MF-B" in text
+    assert "003af6da:01cc0000:00480000:02400000" in text
+    assert '"$STAGE_RAM/busybox" sh "$STAGE_RAM/flash.sh"' in text
+    assert "RAM BusyBox applet missing: ash" not in text
+    assert "rbb awk" not in text
+    assert "for applet in dd reboot sha256sum sleep sync tr wc; do" in text
+    assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-preloader.bin").exists()
+    assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-bl31-uboot.fip").exists()
+    assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-squashfs-sysupgrade.itb").exists()
+    assert not (MF_RECOVERY_DIR / "nokia-xg040gmf-medveflasher-auto-initramfs.itb").exists()
+    assert not (MF_RECOVERY_DIR / "nokia-xg040gmf-medveflasher-manual-initramfs.itb").exists()
+    print("shared MD/MF transition installer selftest: PASS")
+
+def _selftest_firmware_capabilities() -> None:
+    md = dict(_firmware_capability_rows("md", "MD-A", True, True))
+    mf_a = dict(_firmware_capability_rows("mf", "MF-A", True, True))
+    mf_b = dict(_firmware_capability_rows("mf", "MF-B", True, True))
+    mf_blocked = dict(_firmware_capability_rows("mf", "MF-A", False, True))
+    mf_no_io = dict(_firmware_capability_rows("mf", "MF-A", True, True, False))
+    assert md["CAP_PERMANENT_INSTALL"].startswith("YES")
+    assert md["CAP_UBI_FORMAT"].startswith("YES")
+    assert mf_a["CAP_FULL_BACKUP"].startswith("YES")
+    assert mf_a["CAP_MF_TRANSITION_BOOT"].startswith("ENABLED")
+    assert mf_a["CAP_PERMANENT_INSTALL"].startswith("ENABLED")
+    assert mf_b["CAP_FULL_BACKUP"].startswith("READY")
+    assert mf_blocked["CAP_FULL_BACKUP"].startswith("BLOCKED")
+    assert mf_no_io["CAP_FULL_BACKUP"].startswith("BLOCKED")
+    print("firmware-capabilities selftest: PASS")
+
+def firmware_menu() -> str:
     while True:
-        choice = input(tr("Выберите 1/2/3/4/5/6/7/8: ", "Select 1/2/3/4/5/6/7/8: ")).strip()
-        if choice == "1":
-            full_wizard(); return
-        if choice == "2":
-            backup_only_wizard(); return
-        if choice == "3":
-            personalize_wizard(); return
-        if choice == "4":
-            resume_stage2_wizard(); return
-        if choice == "5":
-            stock_restore_running_wizard(); return
+        startup_family = str(_STARTUP_DEVICE_PROFILE.get("family") or "")
+        profile = INSTALL_PROFILES.get(startup_family)
+        profile_label = profile.model if profile is not None else tr("профиль не выбран (MD/MF)", "no profile selected (MD/MF)")
+        print(tr(
+            f"\n=== Прошивка / восстановление — {profile_label} ===",
+            f"\n=== Flashing / recovery — {profile_label} ===",
+        ))
+        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+            print(tr(
+                "[SAFETY-LATCH] Есть незавершённый/неподтверждённый NAND write. Пункты 1/2/3 блокируются до успешного полного BootROM/UART recovery.",
+                "[SAFETY-LATCH] A NAND write is incomplete/unproven. Options 1/2/3 are blocked until a successful full BootROM/UART recovery.",
+            ))
+        print(tr("1 — установить OpenWrt UBI (с обязательным backup)", "1 — install OpenWrt UBI (mandatory backup)"))
+        print(tr("2 — установить OpenWrt UBI из готового stock backup", "2 — install OpenWrt UBI from an existing stock backup"))
+        print(tr("3 — восстановить stock без UART", "3 — restore stock without UART"))
+        print(tr("4 — восстановить через BootROM/UART", "4 — recover through BootROM/UART"))
+        print(tr("5 — проверить capabilities", "5 — probe capabilities"))
+        print(tr("6 — назад", "6 — back"))
+        choice = input(tr("Выберите 1/2/3/4/5/6: ", "Select 1/2/3/4/5/6: ")).strip()
+        if choice in {"1", "2", "3"} and _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+            print(tr(
+                "[BLOCKED] Этот write-path заблокирован SAFETY-LATCH. Используйте 4 для полного RECOVERY_SAFE BootROM/UART restore либо read-only диагностику.",
+                "[BLOCKED] This write path is blocked by SAFETY-LATCH. Use option 4 for a full RECOVERY_SAFE BootROM/UART restore or use read-only diagnostics.",
+            ))
+            continue
+        if choice in {"1", "2"} and profile is None:
+            print(tr(
+                "[BLOCKED] Для установки сначала выберите/определите профиль MD или MF. UART recovery можно запускать без профиля: семейство определяется по stock backup.",
+                "[BLOCKED] Select/detect an MD or MF profile before installation. UART recovery may run without a profile: the family is determined from the stock backup.",
+            ))
+            continue
         if choice == "6":
-            stock_recovery_wizard(); return
-        if choice == "7":
-            install_from_existing_backup_wizard(); return
-        if choice == "8":
+            return "main"
+        if choice == "1":
+            action = lambda: install_openwrt_wizard(profile, from_existing_backup=False)
+            label_ru, label_en = "Установка OpenWrt UBI: завершена", "OpenWrt UBI installation: complete"
+        elif choice == "2":
+            action = lambda: install_openwrt_wizard(profile, from_existing_backup=True)
+            label_ru, label_en = "Установка OpenWrt UBI из готового backup: завершена", "OpenWrt UBI installation from existing backup: complete"
+        elif choice == "3":
+            action = stock_restore_running_wizard
+            label_ru, label_en = "Восстановление stock без UART: завершено", "Stock restore without UART: complete"
+        elif choice == "4":
+            action = stock_recovery_wizard
+            label_ru, label_en = "BootROM/UART recovery: завершён", "BootROM/UART recovery: complete"
+        elif choice == "5":
+            action = firmware_capabilities_wizard
+            label_ru, label_en = "Проверка capabilities: завершена", "Capability probe: complete"
+        else:
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            continue
+        nav, ok = _run_interactive_action(
+            action, label_ru=label_ru, label_en=label_en,
+            section_ru="Прошивка / восстановление", section_en="Flashing / recovery",
+        )
+        if choice == "4" and ok:
+            _clear_interactive_destructive_latch()
+        if nav == "section":
+            continue
+        return nav
+
+
+def backup_menu() -> str:
+    while True:
+        print(tr("\n=== Backup / резервные копии ===", "\n=== Backup ==="))
+        print(tr("1 — снять stock backup через работающую прошивку/Telnet (MD/MF)", "1 — create a stock backup through running firmware/Telnet (MD/MF)"))
+        print(tr("2 — снять read-only backup через BootROM/UART + RAM recovery (MD/MF)", "2 — create a read-only backup through BootROM/UART + RAM recovery (MD/MF)"))
+        print(tr("3 — назад", "3 — back"))
+        choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
+        if choice == "3":
+            return "main"
+        if choice == "1":
+            action = backup_only_wizard
+            label_ru, label_en = "Stock backup через работающую прошивку: завершён", "Stock backup through running firmware: complete"
+        elif choice == "2":
+            action = bootrom_backup_wizard
+            label_ru, label_en = "Read-only BootROM/UART backup: завершён", "Read-only BootROM/UART backup: complete"
+        else:
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            continue
+        nav, _ok = _run_interactive_action(
+            action, label_ru=label_ru, label_en=label_en,
+            section_ru="Backup / резервные копии", section_en="Backup",
+        )
+        if nav == "section":
+            continue
+        return nav
+
+
+def service_menu() -> str:
+    while True:
+        print(tr("\n=== Подготовка / продолжение установки ===", "\n=== Preparation / installation continuation ==="))
+        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+            print(tr(
+                "[SAFETY-LATCH] Продолжение destructive stage (пункт 2) заблокировано до успешного полного BootROM/UART recovery.",
+                "[SAFETY-LATCH] Destructive-stage continuation (option 2) is blocked until a successful full BootROM/UART recovery.",
+            ))
+        print(tr("1 — подготовить персональный установочный пакет из полного stock backup", "1 — prepare a device-specific installation package from a full stock backup"))
+        print(tr("2 — продолжить после transition OpenWrt: этап 2 = UBI format + запись sysupgrade + контроль первого запуска", "2 — continue after transition OpenWrt: stage 2 = UBI format + sysupgrade flash + first-boot monitoring"))
+        print(tr("3 — назад", "3 — back"))
+        choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
+        if choice == "3":
+            return "main"
+        if choice == "1":
+            action = personalize_wizard
+            label_ru, label_en = "Подготовка персонального пакета: завершена", "Device-specific package preparation: complete"
+        elif choice == "2":
+            if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+                print(tr(
+                    "[BLOCKED] SAFETY-LATCH запрещает продолжение destructive stage в текущем процессе.",
+                    "[BLOCKED] SAFETY-LATCH forbids destructive-stage continuation in the current process.",
+                ))
+                continue
+            action = resume_stage2_wizard
+            label_ru, label_en = "Продолжение Stage 2: завершено", "Stage 2 continuation: complete"
+        else:
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            continue
+        nav, _ok = _run_interactive_action(
+            action, label_ru=label_ru, label_en=label_en,
+            section_ru="Подготовка / продолжение установки", section_en="Preparation / installation continuation",
+        )
+        if nav == "section":
+            continue
+        return nav
+
+
+def _family_from_model_chipset(model: str, chipset: str) -> str:
+    low = f"{model} {chipset}".lower()
+    if "040g-mf" in low or "7583" in low:
+        return "mf"
+    if "040g-md" in low or "7581" in low:
+        return "md"
+    return "unknown"
+
+
+def _startup_entry_mode() -> str:
+    while True:
+        print(tr("\nРежим запуска:", "\nStartup mode:"))
+        print(tr("1 — обычный запуск / автоопределение stock", "1 — normal startup / stock auto-detection"))
+        print(tr("2 — кирпич / BootROM-UART recovery без сетевого автоопределения", "2 — bricked device / BootROM-UART recovery without network auto-detection"))
+        print(tr("3 — выход", "3 — exit"))
+        choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip() or "1"
+        if choice == "1":
+            return "normal"
+        if choice == "2":
+            return "brick"
+        if choice == "3":
+            return "exit"
+        print(tr("Неверный выбор. Скрипт остаётся запущенным; выберите режим снова.", "Invalid selection. The script remains running; select a startup mode again."))
+
+
+def _startup_device_autodetect() -> dict[str, object]:
+    """Best-effort read-only Web fingerprint after language selection.
+
+    A manual fallback only selects the UI profile. No destructive or backup gate
+    trusts that selection; live Web/MTD checks are repeated inside operations.
+    """
+    global _STARTUP_DEVICE_PROFILE, _STARTUP_WEB_AUTH
+    module = _load_stock_web_module()
+    default_user = str(getattr(module, "DEFAULT_WEB_USER", "CMCCAdmin") or "CMCCAdmin")
+    default_password = str(getattr(module, "DEFAULT_WEB_PASSWORD", "") or "")
+    host = input(tr("IP Nokia для автоопределения [192.168.1.1]: ", "Nokia IP for auto-detection [192.168.1.1]: ")).strip() or "192.168.1.1"
+    while True:
+        client = None
+        try:
+            print(tr("[WAIT] Автоопределение XG-040G-MD/MF через stock Web...", "[WAIT] Auto-detecting XG-040G-MD/MF through the stock Web UI..."))
+            web_user = input(tr(f"Web user [{default_user}]: ", f"Web user [{default_user}]: ")).strip() or default_user
+            entered = _RAW_GETPASS(tr("Web password [standard - Enter]: ", "Web password [standard - Enter]: "))
+            web_password = entered or default_password
+            _register_log_secret(web_password)
+            client = module.StockWeb(host)
+            client.login(web_user, web_password, allow_plain=True)
+            info = module.StockSetup(client).read_device_info()
+            model = str(info.get("model") or "")
+            chipset = str(info.get("chipset") or "")
+            family = _family_from_model_chipset(model, chipset)
+            if family not in ("md", "mf"):
+                raise Error(tr(f"неизвестная модель: {model or '?'} / {chipset or '?'}", f"unknown model: {model or '?'} / {chipset or '?'}"))
+            _STARTUP_DEVICE_PROFILE = {
+                "family": family, "model": model, "chipset": chipset, "host": host,
+                "verified": True, "source": "stock-web",
+            }
+            _STARTUP_WEB_AUTH = {"host": host, "user": web_user, "password": web_password}
+            print(tr(f"[OK] Устройство: {model} / {chipset}; профиль {family.upper()}.", f"[OK] Device: {model} / {chipset}; profile {family.upper()}."))
+            print(tr("[OK] Web-реквизиты сохранены только в памяти этого запуска и будут переиспользованы без повторного ввода.", "[OK] Web credentials are retained only in this process memory and will be reused without a second prompt."))
+            return _STARTUP_DEVICE_PROFILE
+        except Exception as exc:
+            print(tr(f"[WARNING] Автоопределение не выполнено: {exc}", f"[WARNING] Auto-detection failed: {exc}"))
+        finally:
+            if client is not None:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+            try:
+                web_password = None
+                entered = None
+            except Exception:
+                pass
+        print(tr("Ручной fallback (не является доказательством модели):", "Manual fallback (not proof of the model):"))
+        print("1 — Nokia XG-040G-MD")
+        print("2 — Nokia XG-040G-MF")
+        print(tr("3 — повторить автоопределение", "3 — retry auto-detection"))
+        print(tr("4 — продолжить без выбранного профиля (например UART recovery)", "4 — continue without a selected profile (for example UART recovery)"))
+        choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
+        if choice == "3":
+            continue
+        if choice in ("1", "2"):
+            family = "md" if choice == "1" else "mf"
+            model = "XG-040G-MD" if family == "md" else "XG-040G-MF"
+            _STARTUP_DEVICE_PROFILE = {"family": family, "model": model, "chipset": "", "host": host, "verified": False, "source": "manual-unverified"}
+            print(tr(f"[INFO] Выбран профиль {family.upper()} [UNVERIFIED]. Перед backup/write модель будет проверена заново.", f"[INFO] Selected profile {family.upper()} [UNVERIFIED]. The model will be re-verified before backup/write."))
+            return _STARTUP_DEVICE_PROFILE
+        if choice == "4":
+            _STARTUP_DEVICE_PROFILE = {"family": "unknown", "model": "", "chipset": "", "host": host, "verified": False, "source": "none"}
+            return _STARTUP_DEVICE_PROFILE
+        print(tr("Неверный выбор.", "Invalid selection."))
+
+
+def wizard() -> None:
+    while True:
+        print(tr("\n=== Главное меню ===", "\n=== Main menu ==="))
+        prof = _STARTUP_DEVICE_PROFILE
+        if prof.get("family") in ("md", "mf"):
+            state = "VERIFIED" if prof.get("verified") else "UNVERIFIED"
+            print(tr(
+                f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
+                f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
+            ))
+        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+            print(tr(
+                "[SAFETY-LATCH] Неизвестное состояние предыдущего NAND write: destructive пункты ограничены, но скрипт и диагностика остаются доступны.",
+                "[SAFETY-LATCH] A previous NAND write has unknown state: destructive options are restricted, but the script and diagnostics remain available.",
+            ))
+        print(tr("1 — прошивка / установка / восстановление", "1 — flashing / installation / recovery"))
+        print(tr("2 — backup / резервные копии", "2 — backup"))
+        print(tr("3 — credentials / пользователи / stock audit", "3 — credentials / users / stock audit"))
+        print(tr("4 — подготовка / продолжение установки", "4 — preparation / continue installation"))
+        print(tr("5 — выход", "5 — exit"))
+        choice = input(tr("Выберите 1/2/3/4/5: ", "Select 1/2/3/4/5: ")).strip()
+        if choice == "1":
+            nav = firmware_menu()
+        elif choice == "2":
+            nav = backup_menu()
+        elif choice == "3":
+            nav = credentials_menu()
+        elif choice == "4":
+            nav = service_menu()
+        elif choice == "5":
             return
-        print(tr("Неверный выбор. Введите число от 1 до 8.", "Invalid selection. Enter a number from 1 to 8."))
+        else:
+            print(tr("Неверный выбор. Скрипт остаётся в главном меню.", "Invalid selection. The script remains in the main menu."))
+            continue
+        if nav == "exit":
+            return
+        # "main" returns here; section navigation is consumed inside submenus.
+        continue
 
 
 def main(argv: list[str] | None = None) -> int:
     already_logging = SESSION_LOG_PATH is not None
     start_session_logging()
-    if not already_logging:
-        print(f"[LOG] work/logs/LATEST.log — build {BUILD_TAG}", flush=True)
     ensure_language()
+    if not already_logging:
+        print_app_banner()
+        print(f"[LOG] work/logs/LATEST.log — build {BUILD_TAG}", flush=True)
     parser = argparse.ArgumentParser(description=tr("Nokia Router MedveFlasher: установка OpenWrt без UART и восстановление стока", "Nokia Router MedveFlasher: no-UART OpenWrt installation and stock recovery"))
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("wizard")
@@ -6837,12 +10791,47 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("prepare-stock-restore")
     p.add_argument("path", type=Path)
     sub.add_parser("stock-recovery")
+    sub.add_parser("bootrom-backup")
+    sub.add_parser("verify-mf-recovery")
     sub.add_parser("stock-restore-running")
     sub.add_parser("stock-restore")
+    sub.add_parser("stock-audit")
+    sub.add_parser("firmware-capabilities")
+    sub.add_parser("selftest-capabilities")
+    sub.add_parser("selftest-mf-transition")
+    p = sub.add_parser("parse-stock-audit")
+    p.add_argument("path", type=Path)
+    sub.add_parser("selftest-safety")
     args = parser.parse_args(argv)
     try:
         if args.command in (None, "wizard"):
-            wizard()
+            while True:
+                startup_mode = _startup_entry_mode()
+                if startup_mode == "exit":
+                    break
+                if startup_mode == "brick":
+                    _STARTUP_DEVICE_PROFILE.clear()
+                    _STARTUP_DEVICE_PROFILE.update({
+                        "family": "unknown", "model": "", "chipset": "", "host": "192.168.1.1",
+                        "verified": False, "source": "brick-startup",
+                    })
+                    nav, ok = _run_interactive_action(
+                        stock_recovery_wizard,
+                        label_ru="BootROM/UART recovery: завершён",
+                        label_en="BootROM/UART recovery: complete",
+                        section_ru="выбор режима запуска",
+                        section_en="startup mode selection",
+                    )
+                    if ok:
+                        _clear_interactive_destructive_latch()
+                    if nav == "section":
+                        continue
+                    if nav == "main":
+                        wizard()
+                    break
+                _startup_device_autodetect()
+                wizard()
+                break
         elif args.command == "verify-backup":
             print(json.dumps(verify_backup(args.path), ensure_ascii=False, indent=2))
         elif args.command == "personalize":
@@ -6856,10 +10845,35 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(manifest, ensure_ascii=False, indent=2))
         elif args.command == "stock-recovery":
             stock_recovery_wizard()
+        elif args.command == "bootrom-backup":
+            bootrom_backup_wizard()
+        elif args.command == "verify-mf-recovery":
+            profile = recovery_profile_for_family("mf")
+            print(json.dumps({k: str(v) if isinstance(v, Path) else v for k, v in profile.items()}, ensure_ascii=False, indent=2))
         elif args.command == "stock-restore-running":
             stock_restore_running_wizard()
         elif args.command == "stock-restore":
             stock_restore_selector_wizard()
+        elif args.command == "stock-audit":
+            stock_audit_wizard()
+        elif args.command == "firmware-capabilities":
+            firmware_capabilities_wizard()
+        elif args.command == "selftest-capabilities":
+            _selftest_firmware_capabilities()
+        elif args.command == "selftest-mf-transition":
+            _selftest_mf_transition_release()
+        elif args.command == "parse-stock-audit":
+            parser_module = _load_stock_audit_parser()
+            text = args.path.read_text(encoding="utf-8", errors="replace")
+            print(parser_module.render(parser_module.build_profile(text)))
+        elif args.command == "selftest-safety":
+            _bootrom_backup_safety_selftest()
+            _restore_transport_safety_selftest()
+            _uboot_badblock_restore_safety_selftest()
+            _rc23_timestamp_backup_identity_selftest()
+            _rc24_interactive_navigation_selftest()
+            _stage1_handoff_safety_selftest()
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)
@@ -6870,6 +10884,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"[LOG] Session log saved: {SESSION_LOG_PATH}")
     print(f"[LOG] Latest log: {LATEST_LOG_PATH}")
+    _STARTUP_WEB_AUTH.clear()
     return rc
 
 

@@ -1,0 +1,29 @@
+{
+  "backend": {
+    "ubootenv": {
+      "offset": 655339,
+      "replacement": "RCSAFE00"
+    },
+    "ubootenv2": {
+      "offset": 655273,
+      "replacement": "RCSAFE002"
+    }
+  },
+  "bl31_compressed_sha256": "6d97815b5cdf905eff874062f9364ebe41a2a11f4b25944a82aea4fcbdd71e35",
+  "bl31_raw_sha256": "03eafa05b767cc0ebaf46a0371829c68deb48d919e9f9bcee208f569fe8d1a19",
+  "bootdelay_safe_count": 1,
+  "dangerous_bootcmd_count": 0,
+  "dangerous_ubi_format_count": 0,
+  "env_slot_size": 114,
+  "env_start": 673954,
+  "marker_count": 1,
+  "output_sha256": "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2",
+  "output_size": 339010,
+  "safe_bl33_compressed_sha256": "3bb4cf1aa950dd212e1b5781abf55c239ff61326d5ca0c19e9f2c010285f5bb1",
+  "safe_bl33_lzma_eopm": false,
+  "safe_bl33_lzma_known_size": true,
+  "safe_bl33_raw_sha256": "df9924e4aca4b80df547c8d5a74bef97ae2d38dc9bd0e8810961531eea78d283",
+  "source_bl33_raw_sha256": "8e8b2c4031ee1006939a57693e6b82138c65028adf48e7ed04272eada12a8365",
+  "source_sha256": "b2f5f93f52afbaf539fe362267b13a91fb0a3a22c4ea770f2fc984dece176c12",
+  "source_size": 339224
+}

@@ -1,0 +1,6 @@
+RC17fix4 MANUAL INITRAMFS PREFLIGHT
+
+MD: sbin/ip=True bin/netstat=True bin/cat=True usr/sbin/uhttpd=True etc/init.d/uhttpd=True; manual-ready bytes=4038 sha256=401456387724498f80643bbd565306310527d053c91cb1811482c89fcea6b7b3
+MF: sbin/ip=True bin/netstat=True bin/cat=True usr/sbin/uhttpd=True etc/init.d/uhttpd=True; manual-ready bytes=4038 sha256=8fc0513fc669ef245fdf8571896a9a8c09a0f7ea7c5d072d060e17f1804a3a5d
+
+READY does not use netstat or /proc/net/route. SSH LISTEN is parsed from /proc/net/tcp{,6}; exact 192.168.1.1/24 is parsed from /proc/net/fib_trie, with exact `ip -4 addr` output as fallback. uhttpd is present in both manual initramfs images, so /www/medveflasher-manual.status can provide optional content-based pre-SSH diagnostics. SSH content identity remains mandatory before custom image transfer.

@@ -1,0 +1,10 @@
+RC19 TRANSIENT CLIENT QA
+nokia-tftp 2b6bbc51975e22f420565c42363821eb362936136b03f70a2a0cedee99c1641a
+nokia-scp  232a4ba7f8ae62922815bb12503fd7d09c3b4f40929d130475e467f0a597ac89
+PASS MD auto: fit=7673752 file=21626880 desc='ARM64 OpenWrt MedveFlasher MD auto transition rc19'
+PASS MD manual: fit=7673848 file=8388608 desc='ARM64 OpenWrt MedveFlasher MD manual transition rc19'
+PASS MF auto: fit=7702044 file=17694720 desc='ARM64 OpenWrt MedveFlasher MF auto transition rc19'
+PASS MF manual: fit=7702276 file=8388608 desc='ARM64 OpenWrt MedveFlasher MF manual transition rc19'
+PASS MD stock recovery: fit=11285480 file=11285480 desc='ARM64 OpenWrt Linux-6.18.41'
+PASS MF stock recovery: fit=7479380 file=7479380 desc='ARM64 OpenWrt Linux-6.18.41'
+6/6 PASS

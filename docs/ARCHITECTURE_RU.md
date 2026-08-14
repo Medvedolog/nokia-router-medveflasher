@@ -28,12 +28,6 @@ PC-side monitor не выводит `[7/8]`/`[8/8]` по одному факту
 
 Startup Web credentials после успешного auto-detect хранятся только в RAM Python-процесса, не сериализуются в `work/` и проходят через существующий log-redaction. Rich 15.0.0 vendored в `data/vendor/rich` только для startup banner.
 
-
-- Любая операторская пауза перед финальным подтверждением может пережить stock Telnet timeout. Поэтому после подтверждения выполняется повторный nonce/root/preflight gate.
-- `--flash` dispatch одноразовый. После попытки dispatch любой disconnect/WinError/timeout = `STAGE1_HANDOFF_UNKNOWN`; destructive retry запрещён.
-- TFTP — первый рекомендуемый transport во всех operator menus.
-- Sysupgrade mode выбирается отдельно и один раз; access menu содержит только automatic setup / manual Telnet / already-enabled Telnet.
-
 ## 1.0.0-rc19 — контракт restore transport
 
 RC19 разделяет **ошибку транспорта до записи** и **неизвестное состояние NAND после старта записи**. До команды `mtd write` мастер может перейти `nokia-tftp -> TCP/nc -> SCP`. После выдачи `mtd write` любой SSH/TCP disconnect переводит операцию в `WRITE_STATE_UNKNOWN`; повторная запись другим транспортом запрещена до отдельной read-only идентификации.
@@ -44,50 +38,29 @@ RC19 разделяет **ошибку транспорта до записи** 
 
 ## 1.0.0-rc18 — RECOVERY_SAFE RAM U-Boot / prompt capability gate
 
-- Коррекция упаковки RC18: SAFE BL33 теперь кодируется в канонической Airoha LZMA-Alone форме **known size + no EOPM** через `LZMA1EXT`. Первый архив RC18 fail-closed останавливался до COM/XMODEM на строгой Windows liblzma с `Corrupt input data`; NAND при этом не затрагивалась. Runtime больше не декодирует BL33 на ПК, а проверяет exact FIP и compressed BL31/BL33 SHA256.
-- Исправлен критичный BootROM recovery дефект: обычный AN7581 RAM U-Boot имел `bootdelay=0` и мог выполнить first-boot `ubi_format -> mtd erase ubi` до доказанного интерактивного prompt. U-Boot banner больше не считается контролем над загрузчиком.
-- RC18 поставляет recovery-only SAFE derivatives FIP для AN7581 и AN7583. BL31 сохраняется byte-for-byte; BL33 получает `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18`, а persistent UBI environment names нейтрализуются, чтобы NAND `ubootenv/ubootenv2` не мог снова включить autoboot.
-- `master.py` после устойчивого prompt требует exact SAFE marker, `bootdelay=-1`, inert bootcmd и свежий nonce. До прохождения gate NAND write/erase/saveenv capability отсутствует; разрешается только UART/XMODEM и затем read-only geometry.
-- Ctrl-C после banner остаётся только вторичной страховкой: отправляется paced-серией до prompt, а не один раз. Основной safety boundary находится внутри recovery BL33.
-- Linux fallback после пропущенного U-Boot prompt для BootROM recovery отключён fail-closed для обоих семейств.
-- Full stock restore сохраняет прежний инвариант: body/IBU erase+write+readback сначала, exact stock BL2 — LAST. В выводе U-Boot диапазон `mtd erase ubi` является partition-relative; физический BL2 находится вне этого erase.
-- LAN1/2.5G по-прежнему запрещён для всех переходных/recovery процессов; использовать LAN2/LAN3/LAN4.
-- Точные RC18 SAFE FIP bytes требуют первого hardware regression до статуса HW CONFIRMED.
+Banner U-Boot не считается доказательством контроля: обычный AN7581 RAM U-Boot имеет `bootdelay=0` и может выполнить first-boot `ubi_format -> mtd erase ubi` до доказанного интерактивного prompt. RC18 поставляет recovery-only SAFE derivatives FIP для AN7581/AN7583: BL31 сохраняется byte-for-byte, а BL33 получает `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18` и нейтрализованные persistent UBI environment names, чтобы NAND `ubootenv/ubootenv2` не мог снова включить autoboot. После устойчивого prompt `master.py` требует exact SAFE marker, `bootdelay=-1`, inert bootcmd и свежий nonce, прежде чем появится NAND write/erase/saveenv capability; Ctrl-C после banner остаётся только вторичной страховкой, отправляемой paced-серией, а не один раз. Linux fallback после пропущенного prompt отключён fail-closed для обоих семейств, LAN1/2.5G по-прежнему запрещён для всех transition/recovery процессов, а full stock restore сохраняет прежний инвариант body/IBU erase+write+readback сначала, BL2 — LAST.
+
+SAFE BL33 кодируется через `LZMA_FILTER_LZMA1EXT` (known size, no EOPM) в той же форме, что исходные Airoha payloads: первый опубликованный архив RC18 fail-closed останавливался до COM/XMODEM на строгой Windows liblzma с `Corrupt input data`, NAND при этом не затрагивалась. Runtime preflight больше не декодирует BL33 на ПК, а проверяет exact whole-FIP и compressed BL31/BL33 SHA256.
 
 ## 1.0.0-rc17fix5 — запрет LAN1/2.5G для transition/recovery
 
 > **Сетевой safety policy:** LAN1 / 2.5G считается нестабильным и **не должен использоваться ни в одном переходном или аварийном процессе**. Для stock→transition, manual/auto transition, live progress, RAM stock-recovery, TFTP/SCP/SSH и restore подключайте ПК только к **LAN2, LAN3 или LAN4**. Даже если на LAN1 появляется link, это не считается поддерживаемым transport path.
 
-- Build-time patcher `data/recovery/transition-network-source/patch_transition_network.py` применяет правило одновременно к MD и MF auto/manual transition и stock-recovery FIT. Production sysupgrade он намеренно не трогает.
-- В initramfs `/etc/board.d/02_network` для Nokia остаются только `lan2 lan3 lan4`; literal `lan1` отсутствует в exact fixed-slot script bytes.
-- В transition/recovery DT единственный `2500base-x` MAC переведён в `status = "disabled"`; `openwrt,netdev-name` и NVMEM binding для него удалены. Primary/internal Ethernet и switch остаются активными и используют raw `ri-stock` MAC NVMEM.
-- Production OpenWrt payloads MD Dark и MF Uname byte-for-byte не менялись; запрет относится только к transition/recovery control-plane.
-- Evidence: `docs/RC17FIX5_DTB_EVIDENCE.md` и `docs/RC17FIX5_NETWORK_POLICY_EVIDENCE.md`.
+Build-time patcher `data/recovery/transition-network-source/patch_transition_network.py` применяет правило одновременно к MD и MF auto/manual transition и stock-recovery FIT (production sysupgrade он намеренно не трогает): initramfs `/etc/board.d/02_network` для Nokia содержит только `lan2 lan3 lan4` в виде точного fixed-size ASCII-скрипта (MD 767 байт / SHA256 `10244ac2…`, MF 591 байт / SHA256 `af0757d1…`) без literal `lan1`. В transition/recovery DT единственный `2500base-x` MAC переведён в `status = "disabled"`, его `openwrt,netdev-name` и NVMEM binding удалены; primary/internal Ethernet и switch остаются активными на raw `ri-stock` MAC NVMEM. Production OpenWrt payloads MD Dark и MF Uname byte-for-byte не менялись — запрет относится только к transition/recovery control-plane. Release QA статически подтверждает это для всех шести затронутых образов (MD/MF auto/manual transition, MD/MF stock recovery): отсутствие OpenWrt `lan1` name/NVMEM binding, наличие LAN2/LAN3/LAN4, а для stock recovery — ещё и writable recovery BL2 без pre-restore `linux,ubi` auto-attach.
 
 ## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
 
-- Исправлен release-blocker MF stock-recovery: recovery FIT больше не несёт production DT. `all_flash` остаётся read-only, `bl2` writable только в RAM recovery, `mtd2=ibu`, а `linux,ubi` auto-attach до stock restore отсутствует.
-- MD и MF stock-recovery теперь используют одинаковую fail-closed pre-restore NVMEM схему: read-only raw `ri-stock` `0x05200000/0x00040000`, `macaddr@3e` (`mac-base`, 6 байт), и Ethernet MAC ссылается именно на этот raw RI provider. Зависимость recovery Ethernet от будущего UBI volume `ri` устранена.
-- `docs/dtb-evidence/` содержит byte-exact DTB для MD/MF recovery/transition/production. QA теперь отдельно доказывает recovery != production, writable recovery BL2, `ibu` без `linux,ubi`, raw-RI MAC binding и наличие Ethernet/switch и активных DSA-портов LAN2/LAN3/LAN4 для обоих семейств.
-- Manual READY больше не использует приблизительный `/proc/net/route` fallback. Точный адрес берётся из `/proc/net/fib_trie`, затем из exact `ip -4 addr` как fallback.
-- В обоих manual initramfs подтверждены `uhttpd` и его init script. PC-master теперь может читать `/www/medveflasher-manual.status` как content-based pre-SSH диагностику; READY и передача custom sysupgrade всё равно требуют SSH content identity.
+MF stock-recovery использует собственный DT вместо production: `all_flash` остаётся read-only, `bl2` writable только в RAM recovery, `mtd2=ibu`, а `linux,ubi` auto-attach до stock restore отсутствует. MD и MF stock-recovery используют одинаковую fail-closed pre-restore NVMEM схему — read-only raw `ri-stock` `0x05200000/0x00040000`, `macaddr@3e` (`mac-base`, 6 байт) — с Ethernet MAC, привязанным именно к этому raw RI provider, а не к будущему UBI volume `ri`. Release QA сравнивает byte-exact DTB между MD/MF recovery/transition/production, доказывая recovery != production, writable recovery BL2, `ibu` без `linux,ubi`, raw-RI MAC NVMEM и активные Ethernet/switch DSA-порты LAN2/LAN3/LAN4 для обоих семейств.
+
+Manual READY больше не использует приблизительный `/proc/net/route` fallback: точный адрес берётся из `/proc/net/fib_trie`, затем `ip -4 addr` как fallback. Оба manual initramfs содержат `uhttpd` и его init script, поэтому PC-master может читать `/www/medveflasher-manual.status` как content-based pre-SSH диагностику; READY и передача custom sysupgrade всё равно требуют SSH content identity.
 
 ## 1.0.0-rc17fix3 — persistent manual READY / reviewable DT evidence
 
-- Manual transition больше не замораживает `NETWORK_NOT_READY` через 60 секунд. Family/LAN/SSH readiness monitor запускается в фоне и продолжает проверку до READY; PC-side 600 s retry теперь наблюдает состояние, которое действительно может измениться.
-- READY gate больше не зависит от `netstat`: SSH LISTEN читается из `/proc/net/tcp{,6}`, LAN 192.168.1.1 — из `/proc/net/fib_trie` / `/proc/net/route`; `ip` используется только как fallback. Preflight обоих manual initramfs подтверждает наличие `sbin/ip`, `bin/netstat`, `bin/cat`.
-- `/tmp/NOKIA_MANUAL_STATE` и `/www/medveflasher-manual.status` теперь содержат ASCII key/value диагностику: `STATE`, `REASON`, board, br-lan/IP/SSH flags и `DEFERRED`.
-- Auto transition по-прежнему выполняет destructive stage автономно, но Ethernet нужен для PC-side live progress/control-plane. MF/MD transition DT сохраняют raw `ri-stock` pre-format NVMEM policy.
-- `fullflash` rc=0 без reboot больше не помечается как FAILED: состояние становится verification-pending и требует production verification.
-- В `docs/dtb-evidence/` включены byte-exact DTB, извлечённые из MD/MF auto/manual transition, stock-recovery и production sysupgrade; REVIEW_ONLY теперь позволяет независимо проверить NVMEM/MTD/network topology без runtime ITB.
+Manual transition больше не замораживает `NETWORK_NOT_READY` через 60 секунд: family/LAN/SSH readiness monitor работает в фоне до READY, поэтому PC-side 600 s retry наблюдает состояние, которое действительно может измениться. READY gate больше не зависит от `netstat` — SSH LISTEN читается из `/proc/net/tcp{,6}`, LAN 192.168.1.1 из `/proc/net/fib_trie`/`/proc/net/route`, `ip` только как fallback — а оба manual initramfs preflight-подтверждают наличие `sbin/ip`, `bin/netstat`, `bin/cat`. `/tmp/NOKIA_MANUAL_STATE` и `/www/medveflasher-manual.status` содержат ASCII key/value диагностику (`STATE`, `REASON`, board, br-lan/IP/SSH flags, `DEFERRED`). Auto transition по-прежнему выполняет destructive stage автономно — Ethernet нужен только для PC-side live progress/control-plane — а MF/MD transition DT сохраняют raw `ri-stock` pre-format NVMEM policy. `fullflash` с `rc=0` без reboot больше не помечается как FAILED: состояние становится verification-pending и ждёт production verification.
 
 ## 1.0.0-rc17fix2 — transition network / Dark MD audit
 
-- Исправлена первопричина отсутствия Ethernet в MF transition до форматирования: MAC NVMEM теперь берётся из read-only raw stock RI `0x05200000+0x3e`, а не из будущего UBI volume `ri`. Это относится и к auto, и к manual transition.
-- Auto-mode действительно требует Ethernet не для destructive installer, а для PC-side live progress/control-plane. RC17fix2 восстанавливает этот канал; сама запись остаётся автономной.
-- MF target `mtd2` сохраняет label `ubi` для совместимости с HW-confirmed installer, но `linux,ubi` auto-attach до форматирования отключён.
-- Проверены все MD ITB. Production sysupgrade и stock-recovery уже были Dark 6.18.41; auto/manual transition ошибочно оставались на 6.18.39 r35573. В RC17fix2 оба transition rebased на выбранный Dark 6.18.41 / r0-486b4a4 с минимизированным initramfs и прежними fail-closed installer gates.
-- Manual readiness теперь family-specific: MD требует `nokia,xg-040g-md-ubi`, MF — `nokia,xg-040g-mf-ubi`; hardcode MD в MF устранён.
+MAC NVMEM для MF transition Ethernet берётся из read-only raw stock RI `0x05200000+0x3e`, а не из будущего UBI volume `ri`, — это относится и к auto, и к manual transition. Ethernet в auto-mode нужен для PC-side live progress/control-plane, а не для самого destructive installer, который остаётся автономным. MF target `mtd2` сохраняет label `ubi` для совместимости с HW-confirmed installer, при этом `linux,ubi` auto-attach до форматирования отключён. Все MD ITB были проверены: production sysupgrade и stock-recovery уже были Dark 6.18.41, а auto/manual transition были rebased с устаревшего 6.18.39 r35573 на тот же Dark 6.18.41 / r0-486b4a4 с минимизированным initramfs и прежними fail-closed installer gates. Manual readiness теперь family-specific — MF-путь больше не содержит MD board-name hardcode.
 
 # Архитектура Nokia Router MedveFlasher
 

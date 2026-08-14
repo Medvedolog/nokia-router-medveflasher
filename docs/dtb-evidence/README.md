@@ -1,1 +1,0 @@
-See `../RC17FIX5_DTB_EVIDENCE.md`. Each `.dtb` is the exact extracted `fdt-1` payload; each `.fdt.txt` is a deterministic complete property dump. Transition/recovery DTs intentionally disable the 2.5G MAC and expose LAN2/LAN3/LAN4 only.

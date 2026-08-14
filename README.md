@@ -2,52 +2,123 @@
 
 # 🐻 Nokia Router MedveFlasher
 
-**Current repository release / Текущий релиз:** `1.0.0-rc24`
+**OpenWrt на Nokia XG-040G-MD / MF — без паяльника, без разборки корпуса и без UART**
 
-**Full-cycle OpenWrt support: Nokia XG-040G-MD / AN7581 + Nokia XG-040G-MF / AN7583**
+`1.0.0-rc24` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
 
 </div>
 
-> [!IMPORTANT]
-> **Nokia XG-040G-MF is now a first-class full-cycle target, not an experimental side path.** RC24 supports MF through the same primary stock → device-bound backup → root/preflight → transition → all-in-UBI migration → production OpenWrt verification cycle as MD. The MF installation cycle is hardware-confirmed through `[1/8]..[8/8]`, production SSH identity and LuCI HTTP-content verification.
->
-> **MF теперь полноценная целевая модель полного цикла.** RC24 поддерживает Nokia XG-040G-MF от stock-определения и полного backup до transition, all-in-UBI migration и проверенной загрузки production OpenWrt с SSH + LuCI.
+---
+
+## Что это такое
+
+Оператор выдал вам роутер, на котором стоит его прошивка, его пароли и его представление о том, что вам нужно. MedveFlasher меняет это на OpenWrt с LuCI — и делает это через один Python-скрипт, которому не нужен ни pip, ни паяльник, ни UART-переходник.
+
+UART нужен ровно в одном сценарии: когда роутер уже кирпич. Для обычной установки — только Ethernet-кабель и полтора часа терпения.
+
+**Три шага, если совсем коротко:**
+
+1. **Backup.** Мастер снимает stock restore span (`mtd16`, `0x0EBA0000`) и проверяет каждый байт. Без успешного backup дальше он просто не пойдёт — это не уговаривается.
+2. **Transition.** В NAND пишется временный OpenWrt, в загрузчике правится **одна** переменная.
+3. **Install.** Временный OpenWrt форматирует NAND под UBI и разворачивает постоянную систему сам.
+
+---
+
+## Поддерживаемое железо
+
+| Модель | SoC | Установка OpenWrt | Аварийное восстановление |
+|---|---|---|---|
+| Nokia XG-040G-MD | Airoha AN7581 | ✅ полный цикл, HW-подтверждён | RECOVERY_SAFE BootROM/UART |
+| Nokia XG-040G-MF | Airoha AN7583 | ✅ полный цикл, HW-подтверждён | RECOVERY_SAFE BootROM/UART |
+
+MF больше не «экспериментальная боковая ветка»: с RC24 он идёт через тот же путь `stock → backup → preflight → transition → all-in-UBI → production`, что и MD, и подтверждён на живом железе от `[1/8]` до `[8/8]` плюс проверка production SSH и HTTP-контента LuCI.
+
+---
+
+## Три фокуса, на которых всё держится
+
+### 🎩 Фокус первый: не трогаем загрузчик, трогаем его планы
+
+Обычная установка OpenWrt на это железо требует UART-доступа к U-Boot. Мы обходимся без него нагло: `env_patcher.py` достаёт из вашего же backup штатный U-Boot environment, **сохраняет каждый байт и каждую переменную**, кроме одной, и меняет `bootcmd` на:
+
+```text
+flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000
+```
+
+Дальше пересчитывается CRC32 (иначе U-Boot справедливо обидится) — и всё. Загрузчик остался тот же самый, просто теперь у него другие планы на утро. Пока NAND не отформатирован, устройство грузится штатно.
+
+### 📦 Фокус второй: образ, который несёт систему в себе
+
+`transition-bundle.bin` — это не просто initramfs. Внутрь FIT-образа **вшит полный production sysupgrade**. Смысл прозаичен: когда временная система поднялась в RAM, ей уже ничего не нужно от сети. Ни репозиториев, ни «а скачайте вот это». Всё приехало вместе с ней.
+
+Для тех, кто хочет свой образ, есть `transition-manual-bundle.bin` — то же самое, но без вшитого sysupgrade и без автоматического этапа 2. Ваш `.itb` проверяется по FIT magic, размеру, SHA256, `nokia-ubi-installer check` и `sysupgrade -T` — и только потом второе подтверждение запускает форматирование.
+
+### 🪂 Фокус третий: воркер, переживающий стирание собственного rootfs
+
+Проблема этапа 2 занятная: форматирование NAND стирает раздел, из которого работает сам установщик. Решение — критичная часть копируется в tmpfs и запускается оттуда, продолжая работать, когда исходной файловой системы уже физически нет. Мастер ловит её по маркеру `__NOKIA_RAM_WORKER_STARTED__`.
+
+**И главное: BL2 пишется ПОСЛЕДНИМ.** Всегда. До этого момента старый загрузчик цел, а значит операцию можно повторить. Это не стилистическое предпочтение, а инвариант всех разрушительных путей.
+
+---
+
+## Ноль зависимостей — и это не поза
+
+Весь ПК-мастер работает на стандартной библиотеке Python 3. Ни `requests`, ни `pyserial`, ни `cryptography`, ни браузера. Причина не в аскетизме: целевой пользователь не разработчик, а каждая внешняя библиотека — это ещё одна команда, которую можно набрать не так, и необходимость интернета ровно в тот момент, когда компьютер уже воткнут кабелем в роутер.
+
+Поэтому написано своё там, где обычно берут пакет:
+
+- **AES-128-CBC + RSA-1024** для входа в веб-морду — чистый Python, сверено с векторами FIPS-197 и NIST SP 800-38A;
+- **Win32-бэкенд COM-порта** через `ctypes` и `kernel32` — вместо `pyserial`, с корректными `COMMTIMEOUTS` для XMODEM;
+- **TFTP-сервер и клиент, XMODEM, разбор FIT/DTB** — тоже свои.
+
+Отдельная деталь для ценителей: пароль при вводе **видно на экране**, и это осознанное решение. Неопытный пользователь, у которого при наборе «ничего не происходит», решает что программа зависла. Скрытый ввод включается через `NOKIA_HIDE_PASSWORDS=1`.
+
+---
+
+## Правила, которые лучше не нарушать
 
 > [!CAUTION]
-> NAND flashing is destructive. Keep a validated, device-bound stock backup and stable power. BL2 remains LAST in destructive migration/recovery paths. A timeout or port state alone never authorizes a retry or power-cycle.
+> Прошивка NAND — разрушительная операция. Проверенный backup **именно этого** роутера и стабильное питание обязательны.
 
-## Supported hardware / Поддерживаемые модели
+- **`mtd16` — это не вся физическая NAND.** Это stock restore span `0x0EBA0000`; физический SPI-NAND — `0x10000000`. Разница в 20.375 MiB существует, и называть одно другим не надо.
+- **LAN1 / 2.5G запрещён** для всех transition/recovery операций. Появившийся на нём link не делает его поддерживаемым транспортом. Только LAN2, LAN3, LAN4.
+- **Таймаут не является разрешением.** Ни на retry, ни на power-cycle. Открытый TCP-порт — тоже не доказательство состояния, а только телеметрия.
+- **`WRITE_STATE_UNKNOWN` защёлкивает SAFETY-LATCH.** После потери связи в момент записи NAND обычная установка и restore блокируются до успешного полного UART-recovery. Меню при этом остаётся открытым — но только для read-only диагностики.
+- **Backup от чужого роутера — не backup.** Он принесёт чужие MAC, серийники, RI/BOSA и environment.
+- Разрушительный цикл разрешают ровно две точные фразы: `CONFIRM FORMAT AND FLASH` для установки и `RESTORE STOCK BACKUP` для отката.
 
-| Model | SoC | Primary OpenWrt install cycle | Recovery note |
-|---|---|---|---|
-| Nokia XG-040G-MD | Airoha AN7581 | **Supported / HW evidence** | RECOVERY_SAFE BootROM/UART path |
-| Nokia XG-040G-MF | Airoha AN7583 | **Supported / full-cycle HW confirmed** | RECOVERY_SAFE BootROM/UART path; RC22 special bad-block stock restore remains separately non-final |
+---
 
-## Documentation
+## Документация
 
-- [README — Русский](docs/README_RU.md)
-- [README — English](docs/README_EN.md)
-- [CHANGELOG — Русский](docs/CHANGELOG_RU.md)
-- [CHANGELOG — English](docs/CHANGELOG.md)
-- [ARCHITECTURE — Русский](docs/ARCHITECTURE_RU.md)
-- [ARCHITECTURE — English](docs/ARCHITECTURE_EN.md)
-- [Image status — Русский](docs/IMAGE_STATUS_RU.md)
-- [Image status — English](docs/IMAGE_STATUS_EN.md)
-- [OpenWrt TODO — Русский](docs/OPENWRT_TODO_RU.md)
-- [OpenWrt TODO — English](docs/OPENWRT_TODO_EN.md)
+| | 🇷🇺 Русский | 🇬🇧 English |
+|---|---|---|
+| **Инструкция** — установка от и до | [README_RU](docs/README_RU.md) | [README_EN](docs/README_EN.md) |
+| **Архитектура** — как это устроено внутри | [ARCHITECTURE_RU](docs/ARCHITECTURE_RU.md) | [ARCHITECTURE_EN](docs/ARCHITECTURE_EN.md) |
+| **История изменений** | [CHANGELOG_RU](docs/CHANGELOG_RU.md) | [CHANGELOG](docs/CHANGELOG.md) |
+| **Статус образов** — что подтверждено железом | [IMAGE_STATUS_RU](docs/IMAGE_STATUS_RU.md) | [IMAGE_STATUS_EN](docs/IMAGE_STATUS_EN.md) |
 
-## Current safety/status notes
+Машиночитаемая матрица возможностей релиза: [`data/FIRMWARE_CAPABILITIES.json`](data/FIRMWARE_CAPABILITIES.json).
 
-- MD and MF-A permanent all-in-UBI install paths have hardware evidence; MF stock→OpenWrt full install is confirmed through production SSH + LuCI. Exact byte/status scope is tracked in `data/FIRMWARE_CAPABILITIES.json` and `docs/IMAGE_STATUS_*`.
-- RC18 `RECOVERY_SAFE` RAM U-Boot remains the mandatory BootROM/UART safety boundary: stable prompt + exact marker + nonce before NAND capability.
-- RC22 bad-block UART restore is **not** classified as a complete HW PASS. Real MF hardware completed write/readback and booted the stock main image/kernel, but `data` UBIFS recovery failed and stock entered watchdog reboot before a later successful OpenWrt install.
-- Transition/recovery control-plane excludes LAN1/2.5G; use LAN2/LAN3/LAN4.
-- RC24 interactive menus stay open after ordinary success/recoverable errors; `WRITE_STATE_UNKNOWN` activates a process-local SAFETY-LATCH and never authorizes a destructive retry.
+---
 
-## Repository import through `_incoming`
+## Текущий статус RC24
 
-Use `.github/workflows/import_medveflasher_from_zip.yml`. It accepts either a full release ZIP or contiguous `.zip.part-NNN` files plus the required logical `.zip.sha256` sidecar. For GitHub web upload, the prepared import parts are kept **below 25 MB each**. The workflow verifies the reassembled outer archive, exact internal `data/SHA256SUMS` coverage, version/manifest/capability consistency and selftests before importing and committing.
+- **MD и MF-A permanent all-in-UBI install** — есть аппаратные подтверждения; MF полный цикл `stock → OpenWrt` подтверждён production SSH + LuCI.
+- **RC18 `RECOVERY_SAFE` RAM U-Boot** — обязательная граница безопасности BootROM/UART. Баннер U-Boot больше не считается контролем над загрузчиком: нужны устойчивый prompt, точный маркер, `bootdelay=-1` и свежий nonce, и только после этого появляется NAND capability.
+- **RC22 bad-block UART restore — ⚠️ НЕ полный HW PASS.** На живом MF запись и readback прошли, stock main image/kernel загрузился, но `data` UBIFS не восстановился (`ubifs_recover_master_node`) и устройство ушло в watchdog reboot. Честно фиксируем как partial failure, а не как победу.
+- **RC24 интерактивные меню** больше не захлопываются после успеха или обычной ошибки — предлагается вернуться в раздел, в главное меню или выйти.
+
+---
+
+## Импорт репозитория через `_incoming`
+
+Workflow `.github/workflows/import_medveflasher_from_zip.yml` принимает либо полный релизный ZIP, либо непрерывные `.zip.part-NNN` плюс обязательный `.zip.sha256`. Части нарезаны **меньше 25 МБ** — чтобы проходили через веб-загрузку GitHub.
+
+Перед импортом и коммитом workflow проверяет пересобранный архив, полное покрытие внутренним `data/SHA256SUMS`, согласованность version/manifest/capability и прогоняет selftests. Не потому что паранойя, а потому что цена ошибки — чужой кирпич.
+
+---
 
 ## Offline runtime
 
-Critical runtime/recovery payloads are shipped in the repository/release and SHA256-pinned. Normal install/recovery must not depend on mutable runtime firmware downloads.
+Все критичные runtime/recovery payload лежат в репозитории и закреплены по SHA256. Обычная установка и восстановление **не должны** зависеть от скачивания изменяемой прошивки во время работы — в момент, когда компьютер уже подключён к роутеру кабелем, интернет как зависимость становится смешным.

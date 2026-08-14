@@ -58,7 +58,7 @@
 - Initramfs `/etc/board.d/02_network` exposes only `lan2 lan3 lan4` for Nokia; the exact fixed-slot script bytes contain no literal `lan1`.
 - In transition/recovery DTs the single `2500base-x` MAC is `status = "disabled"`; its `openwrt,netdev-name` and NVMEM binding are removed. The primary/internal Ethernet path and switch remain active and use raw `ri-stock` MAC NVMEM.
 - MD Dark and MF Uname production OpenWrt payloads remain byte-for-byte unchanged; the exclusion is transition/recovery-only.
-- Evidence: `docs/RC17FIX5_DTB_EVIDENCE.md` and `docs/RC17FIX5_NETWORK_POLICY_EVIDENCE.md`.
+- Evidence: exact fixed-size `02_network` (MD 767 bytes, MF 591 bytes) and byte-exact DTBs are verified by release QA; see the rc17fix5 section in ARCHITECTURE for the summary.
 
 ## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
 

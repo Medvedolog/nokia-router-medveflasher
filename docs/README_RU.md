@@ -59,7 +59,7 @@ Bad block в BL2 или в raw-critical stock bootloader/kernel/rootfs/flags б�
 - В initramfs `/etc/board.d/02_network` для Nokia остаются только `lan2 lan3 lan4`; literal `lan1` отсутствует в exact fixed-slot script bytes.
 - В transition/recovery DT единственный `2500base-x` MAC переведён в `status = "disabled"`; `openwrt,netdev-name` и NVMEM binding для него удалены. Primary/internal Ethernet и switch остаются активными и используют raw `ri-stock` MAC NVMEM.
 - Production OpenWrt payloads MD Dark и MF Uname byte-for-byte не менялись; запрет относится только к transition/recovery control-plane.
-- Evidence: `docs/RC17FIX5_DTB_EVIDENCE.md` и `docs/RC17FIX5_NETWORK_POLICY_EVIDENCE.md`.
+- Evidence: exact fixed-size `02_network` (MD 767 байт, MF 591 байт) и byte-exact DTB проверяются release QA; сводка — в ARCHITECTURE, раздел rc17fix5.
 
 ## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
 
@@ -126,7 +126,7 @@ Bad block в BL2 или в raw-critical stock bootloader/kernel/rootfs/flags б�
 
 ---
 
-Техническое устройство проекта: [ARCHITECTURE_RU.md](ARCHITECTURE_RU.md). OpenWrt/железный roadmap: [OPENWRT_TODO_RU.md](OPENWRT_TODO_RU.md).
+Техническое устройство проекта: [ARCHITECTURE_RU.md](ARCHITECTURE_RU.md). Статус образов и аппаратных подтверждений: [IMAGE_STATUS_RU.md](IMAGE_STATUS_RU.md).
 
 ## Что это делает
 

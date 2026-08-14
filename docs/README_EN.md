@@ -1,123 +1,13 @@
-## 1.0.0-rc24 — return to menus without closing the script
-
-RC24 changes the interactive PC wizard: after a successful task or an ordinary recoverable error, `master.py` no longer terminates the process automatically. The operator can return to the current section, go to the main menu, or exit. Invalid menu selections are re-prompted in place and never close the script.
-
-Destructive-path safety is unchanged. `WRITE_STATE_UNKNOWN` sets a process-local `SAFETY-LATCH`: normal installation, no-UART restore, and destructive Stage 2 continuation are blocked until a successful full `RECOVERY_SAFE` BootROM/UART recovery. The menus remain available for read-only diagnostics/backup and UART recovery. `KeyboardInterrupt` is intentionally not swallowed by the interactive wrapper during possible NAND activity. Direct CLI subcommands keep their normal exit codes and are not converted into menu navigation. Firmware/transition/recovery payloads are unchanged from RC23.
-
-## 1.0.0-rc23 — timestamps and backup MAC binding
-
-RC23 adds an absolute local `[YYYY-MM-DD HH:MM:SS]` timestamp to operator-facing `master.py` lines and prompts so PC/UART events can be correlated unambiguously. Blank separator lines remain unprefixed; secrets are still excluded from session/LATEST logs.
-
-Live-stock backup over direct TFTP and USB now creates `DEVICE_MAC.txt`. The primary MAC is taken from `eth0` when available, otherwise from the first non-loopback interface; the file also records discovered interface MACs and local/UTC capture time. `DEVICE_MAC.txt` is covered by the SHA256 manifest. Legacy backups without this file remain compatible and are not blocked.
-
-The current MF hardware run confirmed the exact RC22 install path: transition `[1/8]..[8/8]`, UBI migration, and production `SSH + LuCI` verification PASS. This does not promote the RC22 UART bad-block restore to a full PASS: the restored stock booted the main image/kernel, but its `data` UBIFS reported recovery failure and entered a watchdog boot loop before a later boot.
-
-## 1.0.0-rc22 — UART stock restore with bad blocks
-
-RC22 fixes BootROM/UART restore on physical NAND containing bad eraseblocks. Before the destructive stage the wizard reads `mtd bad bl2` and `mtd bad ubi`. A known bad PEB inside the stock UBI-backed mutable physical region `0x052C0000..0x0EB60000` is skipped **physically**, without shifting adjacent bytes from canonical `mtd16`. Each 8-MiB source chunk is split into contiguous good spans and each span gets its own write/readback/CRC32 verification. The bad-block map is rebuilt after erase and must remain unchanged before BL2.
-
-A bad block in BL2 or in raw-critical stock bootloader/kernel/rootfs/flags blocks automatic restore fail-closed because the OpenWrt RAM U-Boot does not prove stock BMT mapping for those addresses. BL2 is still written only LAST after the complete body readback passes. Firmware payloads are unchanged from RC21.
-
-## 1.0.0-rc21 — Stage 6 telemetry / safe reboot / UX cleanup
-
-- After `[6/8]`, the wizard temporarily polls transition every **350 ms** so the short `[7/8]` and `[8/8]` window is normally visible before networking disappears. If those lines are still lost during handoff, strict production `board + canonical UBI + release` verification reconciles them as **POST-BOOT VERIFIED** rather than inventing them from a timeout.
-- If production sysupgrade does not reboot the router for more than 4 minutes, timeout alone **never authorizes** a power cycle. The wizard prints a conditional safe path: manual reboot is allowed only when the operator sees the exact UART line `sysupgrade successful`; without that marker, power must remain unchanged.
-- Network telemetry is shortened to `[NET] TCP ports: ...`; the awkward `(not state identity)` text is removed. Port state remains telemetry only and never identifies the phase.
-- TFTP remains **choice 1, the Enter default, and recommended** in every transport menu. USB routes now say explicitly that the drive is attached to the **Nokia**, while the PC reaches it over Samba or stock FTP.
-- Existing-backup installation now immediately reports validation results: `mtd0..mtd16 17/17`, family/variant, canonical `mtd16` span, and SHA256-manifest status.
-- Web credentials from successful startup auto-detection are retained only in current-process memory and reused for flashing; the same Web user/password is no longer requested twice.
-- Startup uses vendored **Rich 15.0.0** without pip: brown Unicode bear, cyan product name, and green version/build tag.
-- RC20 Stage 5 re-arm remains: after `CONFIRM FORMAT AND FLASH`, stock Telnet and the complete read-only preflight are checked again; a post-dispatch disconnect never triggers a destructive retry.
-- All transition/recovery/production firmware payloads are byte-identical to RC20.
-
-## 1.0.0-rc19 — restored TFTP client and fail-closed restore transport
-
-- Restored the pinned minimal AArch64 `/usr/bin/nokia-tftp` and `/usr/bin/nokia-scp` clients used by the pre-Dark recovery lineage. This is a **router-side TFTP GET client, not a tftpd server**: the PC-side wizard still provides the TFTP server.
-- Both clients are embedded in all six transient images: MD/MF auto transition, MD/MF manual transition, and MD/MF stock recovery. `/usr/bin/tftp -> nokia-tftp`, `/usr/bin/scp -> nokia-scp`.
-- Recovery/transition Dropbear runs with `-B` for the intentionally blank transient root account; the wizard first uses deterministic SSH none-auth without `known_hosts`, key, or agent enumeration.
-- Restore transport is now **nokia-tftp → TCP/nc → SCP**. Switching transport is allowed only before the `mtd write` command is issued. Any disconnect/error after NAND write starts becomes `WRITE_STATE_UNKNOWN`: automatic fallback is forbidden and only read-only device re-identification is attempted.
-- The invariant remains `IBU -> readback SHA256 -> BL2 LAST -> readback -> full all_flash SHA256`. The known upstream MD initramfs panic/reboot issue does not trigger a Dark-kernel rollback; production/sysupgrade 6.18.41 remains unchanged.
-- LAN1/2.5G remains forbidden for transition/recovery; use LAN2/LAN3/LAN4 only.
-
-## 1.0.0-rc18 — RECOVERY_SAFE RAM U-Boot / prompt capability gate
-
-- RC18 packaging correction: SAFE BL33 is now encoded in canonical Airoha LZMA-Alone form **known size + no EOPM** via `LZMA1EXT`. The first RC18 archive failed closed before COM/XMODEM under strict Windows liblzma with `Corrupt input data`; NAND was untouched. Runtime no longer decodes BL33 on the PC and instead pins exact FIP plus compressed BL31/BL33 SHA256.
-- Fixed a critical BootROM recovery defect: the ordinary AN7581 RAM U-Boot used `bootdelay=0` and could reach first-boot `ubi_format -> mtd erase ubi` before an interactive prompt was proven. A U-Boot banner is no longer considered control of the bootloader.
-- RC18 ships recovery-only SAFE FIP derivatives for AN7581 and AN7583. BL31 is preserved byte-for-byte; BL33 gets `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18`, and neutralized persistent UBI environment volume names so NAND `ubootenv/ubootenv2` cannot re-enable autoboot.
-- After a stable prompt, `master.py` requires the exact SAFE marker, `bootdelay=-1`, inert bootcmd, and a fresh nonce. No NAND write/erase/saveenv capability exists before this gate; only UART/XMODEM and then read-only geometry are allowed.
-- Ctrl-C after the banner remains only a secondary safety net: it is sent as a paced series until the prompt, not once. The primary safety boundary is inside the recovery BL33.
-- Linux fallback after a missed BootROM-recovery U-Boot prompt is disabled fail-closed for both families.
-- Full stock restore retains the existing invariant: body/IBU erase+write+readback first, exact stock BL2 LAST. U-Boot prints the `mtd erase ubi` range relative to the partition; physical BL2 is outside that erase.
-- LAN1/2.5G remains prohibited for every transition/recovery process; use LAN2/LAN3/LAN4.
-- Exact RC18 SAFE FIP bytes require the first hardware regression before promotion to HW CONFIRMED.
-
-## 1.0.0-rc17fix5 — LAN1/2.5G excluded from transition/recovery
-
-> **Network safety policy:** LAN1 / 2.5G is considered unstable and **must not be used for any transition or recovery process**. For stock→transition, manual/auto transition, live progress, RAM stock recovery, TFTP/SCP/SSH, and restore, connect the PC only to **LAN2, LAN3, or LAN4**. A link on LAN1 does not make it a supported transport path.
-
-- The build-time patcher `data/recovery/transition-network-source/patch_transition_network.py` enforces this for MD/MF auto/manual transition and stock-recovery FITs. Production sysupgrade images are intentionally out of scope.
-- Initramfs `/etc/board.d/02_network` exposes only `lan2 lan3 lan4` for Nokia; the exact fixed-slot script bytes contain no literal `lan1`.
-- In transition/recovery DTs the single `2500base-x` MAC is `status = "disabled"`; its `openwrt,netdev-name` and NVMEM binding are removed. The primary/internal Ethernet path and switch remain active and use raw `ri-stock` MAC NVMEM.
-- MD Dark and MF Uname production OpenWrt payloads remain byte-for-byte unchanged; the exclusion is transition/recovery-only.
-- Evidence: exact fixed-size `02_network` (MD 767 bytes, MF 591 bytes) and byte-exact DTBs are verified by release QA; see the rc17fix5 section in ARCHITECTURE for the summary.
-
-## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
-
-- Fixed the MF stock-recovery release blocker: the recovery FIT no longer carries the production DT. `all_flash` remains read-only, `bl2` is writable only in RAM recovery, `mtd2=ibu`, and there is no pre-restore `linux,ubi` auto-attach.
-- MD and MF stock-recovery now use the same fail-closed pre-restore NVMEM topology: read-only raw `ri-stock` at `0x05200000/0x00040000`, `macaddr@3e` (`mac-base`, 6 bytes), with Ethernet MAC consumers bound to that raw RI provider. Recovery Ethernet no longer depends on the future UBI `ri` volume.
-- `docs/dtb-evidence/` carries byte-exact DTBs for MD/MF recovery/transition/production. QA now proves for both families that recovery != production, recovery BL2 is writable, `ibu` has no `linux,ubi`, Ethernet uses raw-RI MAC NVMEM, and Ethernet/switch and active DSA LAN2/LAN3/LAN4 are present.
-- Manual READY no longer uses the approximate `/proc/net/route` fallback. The exact address is parsed from `/proc/net/fib_trie`, with exact `ip -4 addr` output as fallback.
-- Both manual initramfs images contain `uhttpd` and its init script. The PC master can now consume `/www/medveflasher-manual.status` as content-based pre-SSH diagnostics; READY and custom image transfer still require SSH content identity.
-
-## 1.0.0-rc17fix3 — persistent manual READY / reviewable DT evidence
-
-- Manual transition no longer freezes at `NETWORK_NOT_READY` after 60 seconds. The family/LAN/SSH readiness monitor runs in the background until READY, so the PC-side 600 s retry now observes state that can actually change.
-- The READY gate no longer depends on `netstat`: SSH LISTEN is parsed from `/proc/net/tcp{,6}`, LAN 192.168.1.1 from `/proc/net/fib_trie` / `/proc/net/route`; `ip` is fallback only. Preflight confirms `sbin/ip`, `bin/netstat`, and `bin/cat` exist in both manual initramfs images.
-- `/tmp/NOKIA_MANUAL_STATE` and `/www/medveflasher-manual.status` now expose ASCII key/value diagnostics: `STATE`, `REASON`, board, br-lan/IP/SSH flags, and `DEFERRED`.
-- Auto transition still performs destructive work autonomously, while Ethernet is required for PC-side live progress/control-plane telemetry. MF/MD transition DTs retain the raw `ri-stock` pre-format NVMEM policy.
-- `fullflash` rc=0 without reboot is no longer classified as FAILED; it becomes verification-pending and requires production verification.
-- `docs/dtb-evidence/` contains byte-exact DTBs extracted from MD/MF auto/manual transition, stock-recovery, and production sysupgrade images, allowing REVIEW_ONLY to independently inspect NVMEM/MTD/network topology without runtime ITBs.
-
-## 1.0.0-rc17fix2 — transition network / Dark MD audit
-
-- Fixed the root cause of missing Ethernet in MF transition before formatting: MAC NVMEM now comes from read-only raw stock RI at `0x05200000+0x3e`, not from the future UBI `ri` volume. This applies to auto and manual transitions.
-- Auto mode needs Ethernet for PC-side live progress/control-plane, not for the autonomous destructive installer itself. RC17fix2 restores that channel.
-- MF target `mtd2` keeps label `ubi` for compatibility with the hardware-confirmed installer, while pre-format `linux,ubi` auto-attach is disabled.
-- All MD ITBs were audited. Production sysupgrade and stock recovery were already Dark 6.18.41; auto/manual transition were still old 6.18.39 r35573. RC17fix2 rebases both transitions onto the selected Dark 6.18.41 / r0-486b4a4 kernel and a minimized initramfs while retaining the fail-closed installer gates.
-- Manual readiness is family-specific; the MF path no longer contains an MD board-name hardcode.
-
-> **rc17 / monitor+restore hardening:** the MF RC16 hardware run confirmed refreshed EVB recovery, BL2-last, and permanent installation end-to-end. RC17 keeps production payloads unchanged, adds content-identified HTTP transition monitoring, treats raw TCP ports as debug telemetry only, family-binds Restore Stock to the validated MD/MF backup, exposes brick UART recovery before stock autodetect, and enforces ASCII-only on-device shell payloads.
-
 # Nokia Router MedveFlasher
-> **rc16 / payload refresh + release hardening:** MD/AN7581 production now uses the selected Dark patched 2026-08-09 snapshot (`r0-486b4a4`, kernel 6.18.41): bundled LuCI sysupgrade `13226255` bytes / `c6f06fcf…`. MD RAM stock recovery keeps the exact kernel/rootfs from the selected Dark initramfs `a8e24301…`, while rebuilding only the recovery DT: `all_flash` remains read-only, `bl2` is writable only in recovery, and production `ubi` is exposed as `ibu`. MF/AN7583 keeps the Uname production UBI build-set unchanged. The EVB BootROM/XMODEM pair remains offline-bundled (`c2ac1c18…` / `b2f5f93f…`) and the refreshed exact-byte pair was hardware-confirmed on Nokia XG-040G-MF in the RC16 recovery run on 2026-08-12. Stale MF `transition_fit_totalsize` metadata is fixed; `verify_kit()` now fail-closes if MANIFEST size/SHA/FIT totalsize/FIT SHA/production metadata differs from any of the four shipped transition bundles. Both production sysupgrades passed build-time LuCI filesystem validation.
 
-> **rc15 / MF permanent HW continuation:** rc14fix6 hardware-confirmed stock→transition, UBI format, canonical volumes, and bosa/ri/FIP/FIT readback. BL2-last failed because the transition DT marked `bl2` read-only. rc15 makes `bl2` writable only in the transition DT, checks MTD_WRITEABLE before format, rechecks the pinned BL2/preloader/FIP immediately before BL2-last, and restores live progress through the shared SSH/Telnet monitor. Production DT/sysupgrade remain protected and unchanged.
+**Version:** 1.0.0-rc24 · **Date:** 13 August 2026
 
+**OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
+**Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
 
-**Version:** 1.0.0-rc24
+**Default transport:** TFTP — always choice 1 in every transport menu. LAN1/2.5G is prohibited for transition/recovery: use LAN2, LAN3, or LAN4.
 
-**Default transport:** TFTP (recommended). It is always item 1 in transport menus; LAN1/2.5G is prohibited for transition/recovery.
-
-> **rc14fix6 / RAM-worker hotfix:** applet detection itself is fixed: vendor BusyBox on MF is not required to print a `Currently defined functions` inventory when invoked without arguments. Required applets are now probed directly through the staged BusyBox before any NAND write. Destructive ordering and UART FIFO isolation are unchanged.
-
-> **rc14fix5 / RAM-worker hotfix:** removed the RAM worker dependency on `awk` for SHA256 token parsing. rc14fix6 later showed that the observed `applet missing` failures came from unreliable parsing of no-argument BusyBox output, not proven absence of a particular applet.
-
-During stage 2, installation phase and network ports are reported separately. Ports are printed only when they change, while the wizard explicitly marks transition boot, installer handoff, reboot, and production OpenWrt verification.
-**Date:** 13 August 2026
-**OpenWrt installation:** Nokia XG-040G-MD (AN7581) and experimental XG-040G-MF/MF-A (AN7583). **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
-
-> **rc9fix / MF:** rc8fix2 hardware-confirmed the scripted `mtd list`, network setup, and first 8-MiB TFTP load through RAM U-Boot. The next blocker was narrow: AN7583 U-Boot has no `hash` command. rc9 uses U-Boot `crc32` for RAM/readback verification while the PC source remains SHA256-pinned. It also adds menu item 8: a fully read-only MD/MF backup through BootROM/UART and a temporary recovery Linux running only in RAM.
-> **rc11 / MF diagnostics:** a second real MF layout is accepted (`MF-B`: `mtd2=0x003B6D40`, `mtd3=0x01D10000`), the wizard gains a full stock audit through Web → Telnet → proven `UID 0`, and the PC parser derives geometry from real `/proc/mtd`/sysfs/dmesg evidence. `STOCK_ALL_FLASH_SIZE` is renamed to `STOCK_RESTORE_SPAN`; normal/permanent MF installation intentionally remains blocked in rc11 pending a separate hardware gate.
-> **rc12fix / MF normal backup:** the live rc12 run hardware-confirmed Web/Telnet/root, MF-A, read-only `/dev/mtd*ro`, and TFTP PUT for all `mtd0..mtd16`. The old fatal rule requiring a second full `mtd16` read to be byte-identical is removed because live stock mutates config/data/log during backup. rc12fix hashes the exact gzip stream on the Nokia (`tee` + FIFO + `sha256sum`) and requires it to match the PC file SHA256, then checks gzip/raw size and the full stock-restore validator. Permanent MF installation remains disabled.
-> **rc13 / firmware capabilities:** the repeat live MF-A backup on rc12fix completed through `MF mtd16 transport SHA256 PASS`, `verify_stock_restore_backup()`, and `BACKUP_HW_VALIDATED`. Therefore `CAP_FULL_BACKUP=YES` for a live MF-A after root/geometry gates. The flashing menu now exposes a read-only capability report; MF `CAP_UBI_FORMAT`, `CAP_UBI_VOLUME_WRITE`, `CAP_BOOTLOADER_REPLACE`, and `CAP_PERMANENT_INSTALL` remain `BLOCKED`. rc13 adds no new destructive MF commands.
-> **rc14 / MF transition HW gate:** hardware-confirmed MF-A now has a separate experimental path: `stock -> HW-validated backup -> mtd14/nsb_master transition FIT -> readback -> personalized U-Boot env last -> reboot -> pinned MF initramfs/RAM OpenWrt`. The workflow stops immediately after proving RAM OpenWrt: `ubiformat`, `ubi write`, `sysupgrade`, and persistent bootloader replacement are unreachable. `CAP_MF_TRANSITION_BOOT=EXPERIMENTAL` and `CAP_RAM_OPENWRT=PARTIAL` until the live run; `CAP_UBI_FORMAT`, `CAP_UBI_VOLUME_WRITE`, and `CAP_PERMANENT_INSTALL` remain `BLOCKED`.
-
-> **rc14fix / MF permanent install:** MF-A now mirrors the proven MD architecture: mandatory `BACKUP_HW_VALIDATED` → live Web/Telnet/UID0 + MF-A `/proc==sysfs` → device-specific transition written to `mtd14` with readback → `mtd0` environment last → MF UBI initramfs. After `CONFIRM FORMAT AND FLASH`, the transition preserves stock `bosa/ri`, formats `0x20000..0xffffffff` as UBI, creates `ubootenv/ubootenv2/bosa/ri/fip/fit`, verifies payload readback, writes the complete BL2 **last**, then installs the bundled MF sysupgrade. A separate manual mode accepts a user-selected compatible `nokia,xg-040g-mf-ubi` sysupgrade after `sysupgrade -T`. Hardware-confirmed UART/BootROM full stock restore remains the fallback.
-> **rc14fix2 / MF hotfix:** fixes the live `RAM BusyBox applet missing: ash` blocker: the autonomous RAM worker uses the available BusyBox `sh` instead of requiring a separate `ash` applet. The MF menu is device-specific; verbose preflight and Telnet protocol markers are removed from the operator console/LATEST while timestamped session diagnostics retain them. Destructive gates and write ordering are unchanged.
-> **rc14fix3 / shared installer:** MD and MF now use one profile-driven installer engine and one `stock-launcher.sh.in`. Installation menus are synchronized. The MF auto/manual bundles are the ready runtime images; duplicate standalone MF transition FITs, the standalone MF sysupgrade, and standalone production preloader/FIP are removed, with no runtime repacking. MF-A safety gates and BL2-last ordering are unchanged.
-> **rc14fix4 / UART-log hotfix:** on stock MF, `/dev/console` may exist and look writable while returning `EIO` on an actual write. UART is no longer a direct sink of the primary `tee`; serial mirroring is isolated behind a draining FIFO, so UART failure cannot stop the RAM worker. NAND write ordering and safety gates are unchanged.
-
-
+**Where else to look:** technical architecture — [ARCHITECTURE_EN.md](ARCHITECTURE_EN.md); hardware-confirmed status — [IMAGE_STATUS_EN.md](IMAGE_STATUS_EN.md); change history — [CHANGELOG.md](CHANGELOG.md).
 
 > [!WARNING]
 > This is a release candidate. Before flashing, take a full verified backup and keep
@@ -126,11 +16,9 @@ During stage 2, installation phase and network ports are reported separately. Po
 
 ---
 
-Technical architecture: [ARCHITECTURE_EN.md](ARCHITECTURE_EN.md). Image and hardware-evidence status: [IMAGE_STATUS_EN.md](IMAGE_STATUS_EN.md).
-
 ## What this does
 
-Nokia Router MedveFlasher installs OpenWrt on the Nokia XG-040G-MD and hardware-gated MF-A without
+Nokia Router MedveFlasher installs OpenWrt on the Nokia XG-040G-MD and XG-040G-MF without
 opening the case or requiring UART for the normal install path. MD and MF use one profile-driven installer engine; only the profile, geometry, and ready transition payloads differ. It can also take
 a full image of the stock firmware, roll back to stock, and revive a bricked
 device — the last one does require a USB-UART adapter.
@@ -169,7 +57,7 @@ brick recovery — a normal install does not use it.
 1. Enable Telnet in the Nokia web UI (see [Preparing stock firmware](#preparing-the-stock-firmware)).
 2. Connect the router by cable, confirm `ping 192.168.1.1`.
 3. Run `START.cmd` (Windows) or `./START.sh` (Linux), pick a language. The wizard then tries to auto-detect MD/MF through the stock Web UI; manual selection is offered only on failure and is marked `UNVERIFIED`.
-4. Use the family-specific install path selected by VERIFIED stock-Web detection. MF-A permanent install is hardware-confirmed end-to-end from RC16; RC17fix2 changes transition network/bootstrap bytes, so the exact RC17fix2 transition still requires a hardware regression. Manual/custom sysupgrade must not continue until the family/LAN/SSH READY gate passes.
+4. Use the install path for whichever model VERIFIED stock-Web detection confirmed. Manual/custom sysupgrade must not continue until the family/LAN/SSH READY gate passes.
 5. Wait for the backup — 250 MB, 20–40 minutes. **Copy it somewhere else too.**
 6. Type `CONFIRM FORMAT AND FLASH` and leave power alone until it finishes.
 
@@ -177,22 +65,24 @@ As long as the backup is intact, the device is recoverable. If something goes
 wrong, see [If an error occurs](#if-an-error-occurs).
 
 
-### rc14 firmware capabilities
+### Firmware capabilities
 
-`1 — flashing / installation / recovery` now uses item `5` for the MF-A transition HW test; the read-only report is item `6 — probe firmware capabilities (read-only)`. It re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
+Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-For the hardware-confirmed MF-A profile before the first transition hardware run, rc14 reports:
+Release profile for 1.0.0-rc24:
 
 ```text
-CAP_FULL_BACKUP          YES - HW CONFIRMED MF-A normal TFTP backup
-CAP_MF_TRANSITION_BOOT   EXPERIMENTAL - rc14 MF-A HW gate available; requires BACKUP_HW_VALIDATED
-CAP_RAM_OPENWRT          PARTIAL - stock transition path needs this hardware run
-CAP_UBI_FORMAT           BLOCKED
-CAP_UBI_VOLUME_WRITE     BLOCKED
-CAP_BOOTLOADER_REPLACE   BLOCKED
-CAP_PERMANENT_INSTALL    BLOCKED
-CAP_UART_RECOVERY        YES - HW CONFIRMED full stock restore
+                          MD / AN7581            MF / AN7583
+CAP_FULL_BACKUP           YES                    YES (MF-A)
+CAP_RAM_OPENWRT           YES                    YES (MF-A)
+CAP_UBI_FORMAT            YES                    YES (MF-A)
+CAP_UBI_VOLUME_WRITE      YES                    YES (MF-A)
+CAP_BOOTLOADER_REPLACE    EXPERIMENTAL_DISABLED  YES (MF-A)
+CAP_PERMANENT_INSTALL     YES                    YES (MF-A)
+CAP_UART_RECOVERY         RC18_SAFE_PENDING_HW   RC18_SAFE_PENDING_HW
 ```
+
+MF-A-MIRROR / MF-B / MF-B-MIRROR variants are recognized but stay live-gated: each needs its own end-to-end hardware run. `RC18_SAFE_PENDING_HW` means the restore path itself is hardware-confirmed while the exact RC18 SAFE FIP bytes await their first regression run.
 
 After the startup Web fingerprint, the installation menu selects the MD or MF profile, but that never authorizes writes: live Web/root/MTD/backup gates are repeated inside the shared installer engine. MD and MF expose the same installation actions; board-specific differences live in the profile. Machine-readable release matrix: `data/FIRMWARE_CAPABILITIES.json`.
 
@@ -627,7 +517,7 @@ character `C` over UART. That means the BootROM is alive and waiting for the nex
 boot stage over the XMODEM protocol.
 
 
-### MD and MF support in RC18
+### MD and MF support
 
 UART restore classifies the backup by stock geometry and selects a SoC-specific profile. The preloader remains release-pinned, while the RC18 FIP is a **RECOVERY_SAFE derivative** of the ordinary RAM U-Boot.
 
@@ -775,21 +665,3 @@ Connect the router by cable
 ```
 
 A full log of each run is in `work/logs/LATEST.log`.
-
-
-## rc10 changes
-
-- The main menu is grouped into flashing/recovery, backup, and preparation/continuation submenus; credentials are a dedicated top-level item.
-- “Resume from stage 2” is explicit: transition OpenWrt is already running from RAM, then the wizard verifies transition, formats UBI, flashes sysupgrade, and monitors first boot.
-- The credential audit shows the hardcoded Web default, device-specific Telnet/FTP/Samba credentials, and every local `/etc/passwd` user with UID/GID/groups/home/shell and privilege classification. UID-0 `su` is tested only against Telnet/FTP passwords returned by the device; there is no dictionary guessing.
-- Secrets are rendered only to the physical console and are excluded from `LATEST.log`/session logs. `telecomadmin` is shown as a credential only when that account actually exists on the device; no unverified password is invented.
-- BootROM backup retries a full SSH handshake after TCP/22 appears to tolerate early Dropbear startup instead of failing immediately with SSH code 255.
-
-### rc10fix: resilient credential audit
-
-If the Nokia stock HTTP server closes a connection without a response, the credential audit performs bounded transport retries and avoids reusing a broken keep-alive socket. When plain compatibility is explicitly allowed, failure of the encrypted POST no longer blocks a separate plain-login attempt. If the Web UI remains unavailable, the credentials menu no longer terminates MedveFlasher: hardcoded/default values have already been shown and, when Telnet is already open, only a read-only `/etc/passwd` and `/etc/group` inventory is offered with manually entered device credentials.
-
-
-### RC10fix2: SSH-free BootROM backup
-
-For MD/MF read-only BootROM backup the recovery FIT is booted with `rdinit=/bin/sh`. Control uses UART and payload data uses gzip/TFTP. The wizard verifies the model, `all_flash`, BusyBox applets, and a RAM-only TFTP probe before the first NAND read. Each chunk is confirmed by a second NAND SHA256 read. UBI, Dropbear, and SSH are not started in this path.

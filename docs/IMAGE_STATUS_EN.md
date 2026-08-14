@@ -1,91 +1,31 @@
-## 1.0.0-rc24 — persistent wizard navigation
-
-- Firmware/transition/recovery payloads: **byte-identical to RC23**.
-- Interactive success/error navigation: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
-- `WRITE_STATE_UNKNOWN` SAFETY-LATCH: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
-- Direct CLI exit-code contract is unchanged.
-
-## 1.0.0-rc23 — PC-side timestamp/backup identity
-
-- Firmware/transition/recovery payloads must remain byte-identical to RC22; RC23 changes only PC orchestration/backup-agent metadata/docs.
-- Timestamp layer: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
-- Live TFTP/USB `DEVICE_MAC.txt`: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
-- Exact RC22 MF permanent install: **HW PASS** in the current run — `[1/8]..[8/8]`, production board/UBI/release, SSH and LuCI were verified.
-- RC22 UART bad-block stock restore: **NOT FULL PASS** — the main stock kernel booted and BMT/BBT plus the partition table initialized, but `/data` UBIFS recovery failed and triggered a watchdog boot loop.
-
-## 1.0.0-rc22 — BootROM restore bad-block fix
-
-- MD/MF firmware payloads: **byte-identical to RC21**.
-- RC22 PC-side BootROM/UART bad-block mapper: **STATIC_QA_PASS / HW_REGRESSION_PENDING**.
-- Hardware trigger: a real restore exposed `mtd bad ubi = 0x05d00000, 0x05d20000, 0x05de0000`; RC21 later failed at IBU 13/30 readback `ubi+0x06000800` with `-74`.
-- RC22 invariant: known bad blocks in the stock UBI-backed mutable region are physical holes, never logical stream compaction; every good span gets readback CRC32.
-- Raw-critical bad block or bad BL2: automatic restore BLOCKED. Bad-block-map change after body writes: BL2 BLOCKED.
-
-## 1.0.0-rc21 — PC-side Stage 6/UX fix
-
-- MD/MF firmware payloads: **byte-identical to RC20**.
-- The MD destructive install path `[1/8]..[6/8]`, UBI migration, BL2-last, and production sysupgrade are already HW PASS on the RC18/RC20 lineage; RC21 changes only PC-side polling/reconciliation/UX.
-- `[7/8]` and `[8/8]`: first use 350 ms fast polling; if network handoff hides the lines, they may be displayed only after the strict production board/UBI/release gate as POST-BOOT VERIFIED.
-- Stalled reboot after sysupgrade: manual power cycling is allowed only with external UART proof of the exact `sysupgrade successful` line; timeout is not authorization.
-- Startup Web credential reuse: STATIC_QA_PASS, hardware regression pending.
-- Rich banner / backup summary / USB wording / `[NET]` telemetry: PC-side only.
-
-## 1.0.0-rc19 — transient recovery clients / restore safety
-
-- MD/MF auto/manual transition and stock recovery: pinned `nokia-tftp` + `nokia-scp` embedded, Dropbear `-B`; static QA PASS, exact RC19 bytes require hardware regression.
-- MD/MF production sysupgrade tails: byte-identical to RC18.
-- RC18 RECOVERY_SAFE AN7581/AN7583 FIPs: byte-identical to RC18.
-- Restore state machine: fallback is pre-write only; post-write disconnect = `WRITE_STATE_UNKNOWN`, automatic retry BLOCKED.
-- MD initramfs panic/reboot: known upstream issue; production/sysupgrade kernel is unaffected.
-
-## 1.0.0-rc18 — RECOVERY_SAFE RAM U-Boot / prompt capability gate
-
-- RC18 packaging correction: SAFE BL33 is now encoded in canonical Airoha LZMA-Alone form **known size + no EOPM** via `LZMA1EXT`. The first RC18 archive failed closed before COM/XMODEM under strict Windows liblzma with `Corrupt input data`; NAND was untouched. Runtime no longer decodes BL33 on the PC and instead pins exact FIP plus compressed BL31/BL33 SHA256.
-- Fixed a critical BootROM recovery defect: the ordinary AN7581 RAM U-Boot used `bootdelay=0` and could reach first-boot `ubi_format -> mtd erase ubi` before an interactive prompt was proven. A U-Boot banner is no longer considered control of the bootloader.
-- RC18 ships recovery-only SAFE FIP derivatives for AN7581 and AN7583. BL31 is preserved byte-for-byte; BL33 gets `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18`, and neutralized persistent UBI environment volume names so NAND `ubootenv/ubootenv2` cannot re-enable autoboot.
-- After a stable prompt, `master.py` requires the exact SAFE marker, `bootdelay=-1`, inert bootcmd, and a fresh nonce. No NAND write/erase/saveenv capability exists before this gate; only UART/XMODEM and then read-only geometry are allowed.
-- Ctrl-C after the banner remains only a secondary safety net: it is sent as a paced series until the prompt, not once. The primary safety boundary is inside the recovery BL33.
-- Linux fallback after a missed BootROM-recovery U-Boot prompt is disabled fail-closed for both families.
-- Full stock restore retains the existing invariant: body/IBU erase+write+readback first, exact stock BL2 LAST. U-Boot prints the `mtd erase ubi` range relative to the partition; physical BL2 is outside that erase.
-- LAN1/2.5G remains prohibited for every transition/recovery process; use LAN2/LAN3/LAN4.
-- Exact RC18 SAFE FIP bytes require the first hardware regression before promotion to HW CONFIRMED.
-
-## 1.0.0-rc17fix5 — LAN1/2.5G excluded from transition/recovery
-
-> **Network safety policy:** LAN1 / 2.5G is considered unstable and **must not be used for any transition or recovery process**. For stock→transition, manual/auto transition, live progress, RAM stock recovery, TFTP/SCP/SSH, and restore, connect the PC only to **LAN2, LAN3, or LAN4**. A link on LAN1 does not make it a supported transport path.
-
-- The build-time patcher `data/recovery/transition-network-source/patch_transition_network.py` enforces this for MD/MF auto/manual transition and stock-recovery FITs. Production sysupgrade images are intentionally out of scope.
-- Initramfs `/etc/board.d/02_network` exposes only `lan2 lan3 lan4` for Nokia; the exact fixed-slot script bytes contain no literal `lan1`.
-- In transition/recovery DTs the single `2500base-x` MAC is `status = "disabled"`; its `openwrt,netdev-name` and NVMEM binding are removed. The primary/internal Ethernet path and switch remain active and use raw `ri-stock` MAC NVMEM.
-- MD Dark and MF Uname production OpenWrt payloads remain byte-for-byte unchanged; the exclusion is transition/recovery-only.
-- Evidence: exact fixed-size `02_network` (MD 767 bytes, MF 591 bytes) and byte-exact DTBs are verified by release QA; see the rc17fix5 section in ARCHITECTURE for the summary.
-
-## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
-
-- Fixed the MF stock-recovery release blocker: the recovery FIT no longer carries the production DT. `all_flash` remains read-only, `bl2` is writable only in RAM recovery, `mtd2=ibu`, and there is no pre-restore `linux,ubi` auto-attach.
-- MD and MF stock-recovery now use the same fail-closed pre-restore NVMEM topology: read-only raw `ri-stock` at `0x05200000/0x00040000`, `macaddr@3e` (`mac-base`, 6 bytes), with Ethernet MAC consumers bound to that raw RI provider. Recovery Ethernet no longer depends on the future UBI `ri` volume.
-- `docs/dtb-evidence/` carries byte-exact DTBs for MD/MF recovery/transition/production. QA now proves for both families that recovery != production, recovery BL2 is writable, `ibu` has no `linux,ubi`, Ethernet uses raw-RI MAC NVMEM, and Ethernet/switch and active DSA LAN2/LAN3/LAN4 are present.
-- Manual READY no longer uses the approximate `/proc/net/route` fallback. The exact address is parsed from `/proc/net/fib_trie`, with exact `ip -4 addr` output as fallback.
-- Both manual initramfs images contain `uhttpd` and its init script. The PC master can now consume `/www/medveflasher-manual.status` as content-based pre-SSH diagnostics; READY and custom image transfer still require SSH content identity.
-
-## 1.0.0-rc17fix3 — persistent manual READY / reviewable DT evidence
-
-- Manual transition no longer freezes at `NETWORK_NOT_READY` after 60 seconds. The family/LAN/SSH readiness monitor runs in the background until READY, so the PC-side 600 s retry now observes state that can actually change.
-- The READY gate no longer depends on `netstat`: SSH LISTEN is parsed from `/proc/net/tcp{,6}`, LAN 192.168.1.1 from `/proc/net/fib_trie` / `/proc/net/route`; `ip` is fallback only. Preflight confirms `sbin/ip`, `bin/netstat`, and `bin/cat` exist in both manual initramfs images.
-- `/tmp/NOKIA_MANUAL_STATE` and `/www/medveflasher-manual.status` now expose ASCII key/value diagnostics: `STATE`, `REASON`, board, br-lan/IP/SSH flags, and `DEFERRED`.
-- Auto transition still performs destructive work autonomously, while Ethernet is required for PC-side live progress/control-plane telemetry. MF/MD transition DTs retain the raw `ri-stock` pre-format NVMEM policy.
-- `fullflash` rc=0 without reboot is no longer classified as FAILED; it becomes verification-pending and requires production verification.
-- `docs/dtb-evidence/` contains byte-exact DTBs extracted from MD/MF auto/manual transition, stock-recovery, and production sysupgrade images, allowing REVIEW_ONLY to independently inspect NVMEM/MTD/network topology without runtime ITBs.
-
-## 1.0.0-rc17fix2 — transition network / Dark MD audit
-
-- Fixed the root cause of missing Ethernet in MF transition before formatting: MAC NVMEM now comes from read-only raw stock RI at `0x05200000+0x3e`, not from the future UBI `ri` volume. This applies to auto and manual transitions.
-- Auto mode needs Ethernet for PC-side live progress/control-plane, not for the autonomous destructive installer itself. RC17fix2 restores that channel.
-- MF target `mtd2` keeps label `ubi` for compatibility with the hardware-confirmed installer, while pre-format `linux,ubi` auto-attach is disabled.
-- All MD ITBs were audited. Production sysupgrade and stock recovery were already Dark 6.18.41; auto/manual transition were still old 6.18.39 r35573. RC17fix2 rebases both transitions onto the selected Dark 6.18.41 / r0-486b4a4 kernel and a minimized initramfs while retaining the fail-closed installer gates.
-- Manual readiness is family-specific; the MF path no longer contains an MD board-name hardcode.
-
 # Nokia Router MedveFlasher 1.0.0-rc24 image status
+
+This file answers one question: **what exactly ships in the release, and which parts of it are confirmed on real hardware.** Per-version chronology lives in [CHANGELOG.md](CHANGELOG.md).
+
+## Hardware-evidence summary
+
+| Path | Status |
+|---|---|
+| MD permanent all-in-UBI install | ✅ **HW PASS** — RC18/RC20 lineage, `[1/8]..[8/8]`, BL2-last, production sysupgrade |
+| MF-A permanent all-in-UBI install | ✅ **HW PASS** — `[1/8]..[8/8]`, UBI migration, production SSH + LuCI |
+| Normal stock backup MD/MF (Telnet + TFTP) | ✅ **HW CONFIRMED** — `BACKUP_HW_VALIDATED` |
+| Read-only BootROM/UART backup | ✅ **HW CONFIRMED** |
+| UART/BootROM full stock restore | ✅ **HW CONFIRMED** on the RC16 preloader/FIP pair |
+| UART stock restore on NAND with bad blocks (RC22 mapper) | ⚠️ **NOT FULL PASS** — see below |
+| RC18 `RECOVERY_SAFE` SAFE FIP, exact bytes | `RC18_SAFE_PENDING_HW` — the path itself is confirmed, the exact bytes await regression |
+| PC-side changes RC21–RC24 | STATIC_QA_PASS, HW regression pending |
+
+### ⚠️ RC22 bad-block restore — why this is not a PASS
+
+On real MF hardware the write and readback completed, BMT/BBT and the partition table came up, and the stock main image and kernel booted — but the `data` UBIFS failed recovery (`ubifs_recover_master_node`) and the device entered a watchdog boot loop. Until a dedicated fix and validation, this path is classified as a **partial hardware failure / recovery not validated**, not a success.
+
+The trigger that produced the mapper in the first place: a real restore exposed `mtd bad ubi = 0x05d00000, 0x05d20000, 0x05de0000`, after which RC21 failed at IBU readback 13/30 at `ubi+0x06000800` with `-74`.
+
+### Payload stability
+
+Firmware/transition/recovery payloads are **unchanged since RC19**. RC20–RC24 alter only PC-side orchestration, metadata, and documentation, so hardware evidence for the install paths carries across those releases without rebuilding images.
+
+---
 
 ## RC17fix2 exact transition artifacts
 
@@ -146,4 +86,3 @@ Both files are carried in the full rollup and checked by exact size/SHA256 befor
 
 `verify_kit()` binds all four transition bundles to MANIFEST using actual full size/SHA256, FIT totalsize/FIT SHA256, and production size/SHA256. This closes the `MANIFEST.json` drift found in rc15fix. Transition-only writable BL2, production read-only BL2, provenance gate before BL2-last, readback, and immediate stage2 stop on `FAILED` are retained.
 - RC17fix changes no firmware payload bytes; only post-UART-restore reboot/stock-Web verification was fixed.
-

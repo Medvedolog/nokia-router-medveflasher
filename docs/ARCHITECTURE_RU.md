@@ -1,67 +1,3 @@
-## 1.0.0-rc24 — interactive navigation / safety-latch contract
-
-Интерактивный `wizard` теперь является persistent state machine, а не one-shot dispatcher. После каждого action обычный success/error завершается навигационным состоянием `section | main | exit`; исключение не завершает Python-процесс само по себе. Direct CLI subcommands остаются вне этого wrapper и сохраняют машинно-проверяемые exit codes.
-
-Safety invariant: меню не является разрешением на destructive retry. `WriteStateUnknownError` устанавливает process-local `SAFETY-LATCH`; пока latch активен, normal install, no-UART restore и destructive Stage 2 недоступны. Разрешены read-only diagnostics/backup и полный BootROM/UART recovery. Только успешное завершение полного UART recovery снимает latch. `KeyboardInterrupt` не ловится interactive action wrapper'ом.
-
-## 1.0.0-rc23 — timestamp/backup identity contract
-
-Operator console contract: каждая непустая строка и prompt, проходящие через общий `master.py` print/input layer, получают абсолютный локальный prefix `[YYYY-MM-DD HH:MM:SS]`. Timestamp добавляется только к presentation layer и не меняет protocol markers, hashes, UART commands или NAND state-machine. Prompt завершается отдельным newline только в PC log, чтобы следующий timestamp не слипался с prompt; console не получает лишнюю пустую строку.
-
-Backup identity contract: live-stock TFTP/USB backup создаёт `DEVICE_MAC.txt` до финального `SHA256SUMS`. Предпочтительный source — `/sys/class/net/eth0/address`; fallback — первый non-loopback sysfs interface. Файл содержит model/family, local+UTC capture time, primary interface/MAC и все найденные interface MACs. Если каталог resume уже привязан к другому известному MAC, TFTP backup fail-closed блокирует смешивание устройств. Отсутствие файла в legacy backup не является compatibility failure.
-
-## 1.0.0-rc22 — bad-block-aware physical restore contract
-
-UART stock restore теперь использует физическую модель canonical `mtd16`, а не logical compaction U-Boot `mtd write` через bad blocks. Контракт:
-
-`RECOVERY_SAFE prompt -> exact geometry -> mtd bad bl2/ubi -> TFTP first chunk while NAND untouched -> explicit confirmation -> erase ubi -> rescan bad map -> physical good-span write/readback/CRC32 -> stable bad map -> BL2 LAST`.
-
-Разрешённый автоматический skip внутри canonical stock span ограничен physical `0x052C0000..0x0EB60000`, где stock layout использует UBI-backed config/data/oopsfs/log_truncated. Для raw-critical областей BMT semantics не доказаны, поэтому bad block там является capability-gate failure. Ни один `mtd write` good-span не должен пересекать known bad eraseblock; RAM source offset всегда равен physical NAND offset относительно chunk, чтобы skip не сдвигал последующие данные.
-
-**HW qualification (RC22/RC24):** exact bad-block restore остаётся не подтверждённым как полный stock restore. На реальном MF запись/readback завершились, stock main image/kernel загрузились, но `data` UBIFS не восстановился (`ubifs_recover_master_node`), после чего stock ушёл в watchdog reboot. Поэтому этот mapper нельзя считать HW PASS; до отдельного исправления/валидации его статус — partial hardware failure / recovery not validated.
-
-## 1.0.0-rc21 — Stage 5 handoff contract
-
-## RC21 Stage 6 postcondition reconciliation
-
-PC-side monitor не выводит `[7/8]`/`[8/8]` по одному факту исчезновения сети. После `[6/8]` cadence временно повышается до 350 мс. Если handoff всё равно скрыл финальные строки, восстановление событий допускается только после строгого production postcondition: ожидаемый `board_name`, canonical UBI volumes и release marker. Такой postcondition означает, что transition прошёл BL2-last/readback и completion gate до production sysupgrade. Timeout без content proof не является разрешением на power-cycle. Для зависания после sysupgrade ручной reboot допускается только при внешнем UART proof точной строки `sysupgrade successful`.
-
-Startup Web credentials после успешного auto-detect хранятся только в RAM Python-процесса, не сериализуются в `work/` и проходят через существующий log-redaction. Rich 15.0.0 vendored в `data/vendor/rich` только для startup banner.
-
-## 1.0.0-rc19 — контракт restore transport
-
-RC19 разделяет **ошибку транспорта до записи** и **неизвестное состояние NAND после старта записи**. До команды `mtd write` мастер может перейти `nokia-tftp -> TCP/nc -> SCP`. После выдачи `mtd write` любой SSH/TCP disconnect переводит операцию в `WRITE_STATE_UNKNOWN`; повторная запись другим транспортом запрещена до отдельной read-only идентификации.
-
-`nokia-tftp` — минимальный AArch64 TFTP GET client внутри transient initramfs, а не сервер. Python TFTP server живёт на ПК. Exact pinned clients: `nokia-tftp` 7792 bytes / `2b6bbc51…`, `nokia-scp` 6072 bytes / `232a4ba7…`. Они встроены во все MD/MF auto/manual transition и stock-recovery FIT. Dropbear transient control-plane запускается с `-B`.
-
-Инвариант stock restore остаётся: `IBU write -> readback SHA256 -> BL2 write LAST -> BL2 readback -> full all_flash SHA256 -> reboot`.
-
-## 1.0.0-rc18 — RECOVERY_SAFE RAM U-Boot / prompt capability gate
-
-Banner U-Boot не считается доказательством контроля: обычный AN7581 RAM U-Boot имеет `bootdelay=0` и может выполнить first-boot `ubi_format -> mtd erase ubi` до доказанного интерактивного prompt. RC18 поставляет recovery-only SAFE derivatives FIP для AN7581/AN7583: BL31 сохраняется byte-for-byte, а BL33 получает `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18` и нейтрализованные persistent UBI environment names, чтобы NAND `ubootenv/ubootenv2` не мог снова включить autoboot. После устойчивого prompt `master.py` требует exact SAFE marker, `bootdelay=-1`, inert bootcmd и свежий nonce, прежде чем появится NAND write/erase/saveenv capability; Ctrl-C после banner остаётся только вторичной страховкой, отправляемой paced-серией, а не один раз. Linux fallback после пропущенного prompt отключён fail-closed для обоих семейств, LAN1/2.5G по-прежнему запрещён для всех transition/recovery процессов, а full stock restore сохраняет прежний инвариант body/IBU erase+write+readback сначала, BL2 — LAST.
-
-SAFE BL33 кодируется через `LZMA_FILTER_LZMA1EXT` (known size, no EOPM) в той же форме, что исходные Airoha payloads: первый опубликованный архив RC18 fail-closed останавливался до COM/XMODEM на строгой Windows liblzma с `Corrupt input data`, NAND при этом не затрагивалась. Runtime preflight больше не декодирует BL33 на ПК, а проверяет exact whole-FIP и compressed BL31/BL33 SHA256.
-
-## 1.0.0-rc17fix5 — запрет LAN1/2.5G для transition/recovery
-
-> **Сетевой safety policy:** LAN1 / 2.5G считается нестабильным и **не должен использоваться ни в одном переходном или аварийном процессе**. Для stock→transition, manual/auto transition, live progress, RAM stock-recovery, TFTP/SCP/SSH и restore подключайте ПК только к **LAN2, LAN3 или LAN4**. Даже если на LAN1 появляется link, это не считается поддерживаемым transport path.
-
-Build-time patcher `data/recovery/transition-network-source/patch_transition_network.py` применяет правило одновременно к MD и MF auto/manual transition и stock-recovery FIT (production sysupgrade он намеренно не трогает): initramfs `/etc/board.d/02_network` для Nokia содержит только `lan2 lan3 lan4` в виде точного fixed-size ASCII-скрипта (MD 767 байт / SHA256 `10244ac2…`, MF 591 байт / SHA256 `af0757d1…`) без literal `lan1`. В transition/recovery DT единственный `2500base-x` MAC переведён в `status = "disabled"`, его `openwrt,netdev-name` и NVMEM binding удалены; primary/internal Ethernet и switch остаются активными на raw `ri-stock` MAC NVMEM. Production OpenWrt payloads MD Dark и MF Uname byte-for-byte не менялись — запрет относится только к transition/recovery control-plane. Release QA статически подтверждает это для всех шести затронутых образов (MD/MF auto/manual transition, MD/MF stock recovery): отсутствие OpenWrt `lan1` name/NVMEM binding, наличие LAN2/LAN3/LAN4, а для stock recovery — ещё и writable recovery BL2 без pre-restore `linux,ubi` auto-attach.
-
-## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
-
-MF stock-recovery использует собственный DT вместо production: `all_flash` остаётся read-only, `bl2` writable только в RAM recovery, `mtd2=ibu`, а `linux,ubi` auto-attach до stock restore отсутствует. MD и MF stock-recovery используют одинаковую fail-closed pre-restore NVMEM схему — read-only raw `ri-stock` `0x05200000/0x00040000`, `macaddr@3e` (`mac-base`, 6 байт) — с Ethernet MAC, привязанным именно к этому raw RI provider, а не к будущему UBI volume `ri`. Release QA сравнивает byte-exact DTB между MD/MF recovery/transition/production, доказывая recovery != production, writable recovery BL2, `ibu` без `linux,ubi`, raw-RI MAC NVMEM и активные Ethernet/switch DSA-порты LAN2/LAN3/LAN4 для обоих семейств.
-
-Manual READY больше не использует приблизительный `/proc/net/route` fallback: точный адрес берётся из `/proc/net/fib_trie`, затем `ip -4 addr` как fallback. Оба manual initramfs содержат `uhttpd` и его init script, поэтому PC-master может читать `/www/medveflasher-manual.status` как content-based pre-SSH диагностику; READY и передача custom sysupgrade всё равно требуют SSH content identity.
-
-## 1.0.0-rc17fix3 — persistent manual READY / reviewable DT evidence
-
-Manual transition больше не замораживает `NETWORK_NOT_READY` через 60 секунд: family/LAN/SSH readiness monitor работает в фоне до READY, поэтому PC-side 600 s retry наблюдает состояние, которое действительно может измениться. READY gate больше не зависит от `netstat` — SSH LISTEN читается из `/proc/net/tcp{,6}`, LAN 192.168.1.1 из `/proc/net/fib_trie`/`/proc/net/route`, `ip` только как fallback — а оба manual initramfs preflight-подтверждают наличие `sbin/ip`, `bin/netstat`, `bin/cat`. `/tmp/NOKIA_MANUAL_STATE` и `/www/medveflasher-manual.status` содержат ASCII key/value диагностику (`STATE`, `REASON`, board, br-lan/IP/SSH flags, `DEFERRED`). Auto transition по-прежнему выполняет destructive stage автономно — Ethernet нужен только для PC-side live progress/control-plane — а MF/MD transition DT сохраняют raw `ri-stock` pre-format NVMEM policy. `fullflash` с `rc=0` без reboot больше не помечается как FAILED: состояние становится verification-pending и ждёт production verification.
-
-## 1.0.0-rc17fix2 — transition network / Dark MD audit
-
-MAC NVMEM для MF transition Ethernet берётся из read-only raw stock RI `0x05200000+0x3e`, а не из будущего UBI volume `ri`, — это относится и к auto, и к manual transition. Ethernet в auto-mode нужен для PC-side live progress/control-plane, а не для самого destructive installer, который остаётся автономным. MF target `mtd2` сохраняет label `ubi` для совместимости с HW-confirmed installer, при этом `linux,ubi` auto-attach до форматирования отключён. Все MD ITB были проверены: production sysupgrade и stock-recovery уже были Dark 6.18.41, а auto/manual transition были rebased с устаревшего 6.18.39 r35573 на тот же Dark 6.18.41 / r0-486b4a4 с минимизированным initramfs и прежними fail-closed installer gates. Manual readiness теперь family-specific — MF-путь больше не содержит MD board-name hardcode.
-
 # Архитектура Nokia Router MedveFlasher
 
 Технический разбор для разработчиков и любопытных: как устроена установка, чем
@@ -69,15 +5,6 @@ MAC NVMEM для MF transition Ethernet берётся из read-only raw stock 
 читать не обязательно — для установки достаточно [инструкции](README_RU.md).
 
 ---
-
-## RC16: provenance payload и build-time recovery transform
-
-RC16 намеренно не пытается свести MD и MF к одному firmware build-set. Для MD production используется выбранный Dark patched snapshot 09.08.2026; для MF production остаётся Uname UBI set. BootROM recovery stages являются третьим, отдельным классом payload и не подменяются production bootloader-артефактами.
-
-MD source initramfs Dark нельзя использовать как stock-recovery без изменения DT: production DT помечает `bl2` read-only и описывает `ubi`. RC16 сохраняет kernel/rootfs source image byte-for-byte, но пересобирает только recovery DT: `all_flash` read-only, `bl2` writable только в RAM recovery, `ibu` покрывает `0x20000..0x10000000`. Это build-time transform; runtime repack отсутствует. Он позволяет сохранить новые PHY/NPU/kernel изменения Dark и одновременно не нарушить доказанный порядок stock restore `IBU -> readback -> BL2 LAST -> readback`.
-
-Release-integrity теперь связывает MANIFEST не только с SHA bundle, но и с фактическим FIT totalsize/FIT SHA и production size/SHA для MD auto/manual и MF auto/manual. Любой metadata drift fail-closed блокирует `verify_kit()`.
-
 
 ## Принципы
 
@@ -491,6 +418,83 @@ docs/                                README, CHANGELOG, IMAGE_STATUS, эта а�
 регенерации сумм. Переводы строк зафиксированы в `.gitattributes`: `.cmd` — CRLF,
 всё остальное — LF.
 
+---
+
+# Приложение. Контракты и инварианты по релизам
+
+Ниже — трассировка: в каком релизе появился тот или иной архитектурный контракт и почему. Это не пользовательская хронология изменений — она в [CHANGELOG_RU.md](CHANGELOG_RU.md). Разделы сгруппированы по релизам и строгого порядка по датам не образуют.
+
+## 1.0.0-rc24 — interactive navigation / safety-latch contract
+
+Интерактивный `wizard` теперь является persistent state machine, а не one-shot dispatcher. После каждого action обычный success/error завершается навигационным состоянием `section | main | exit`; исключение не завершает Python-процесс само по себе. Direct CLI subcommands остаются вне этого wrapper и сохраняют машинно-проверяемые exit codes.
+
+Safety invariant: меню не является разрешением на destructive retry. `WriteStateUnknownError` устанавливает process-local `SAFETY-LATCH`; пока latch активен, normal install, no-UART restore и destructive Stage 2 недоступны. Разрешены read-only diagnostics/backup и полный BootROM/UART recovery. Только успешное завершение полного UART recovery снимает latch. `KeyboardInterrupt` не ловится interactive action wrapper'ом.
+
+## 1.0.0-rc23 — timestamp/backup identity contract
+
+Operator console contract: каждая непустая строка и prompt, проходящие через общий `master.py` print/input layer, получают абсолютный локальный prefix `[YYYY-MM-DD HH:MM:SS]`. Timestamp добавляется только к presentation layer и не меняет protocol markers, hashes, UART commands или NAND state-machine. Prompt завершается отдельным newline только в PC log, чтобы следующий timestamp не слипался с prompt; console не получает лишнюю пустую строку.
+
+Backup identity contract: live-stock TFTP/USB backup создаёт `DEVICE_MAC.txt` до финального `SHA256SUMS`. Предпочтительный source — `/sys/class/net/eth0/address`; fallback — первый non-loopback sysfs interface. Файл содержит model/family, local+UTC capture time, primary interface/MAC и все найденные interface MACs. Если каталог resume уже привязан к другому известному MAC, TFTP backup fail-closed блокирует смешивание устройств. Отсутствие файла в legacy backup не является compatibility failure.
+
+## 1.0.0-rc22 — bad-block-aware physical restore contract
+
+UART stock restore теперь использует физическую модель canonical `mtd16`, а не logical compaction U-Boot `mtd write` через bad blocks. Контракт:
+
+`RECOVERY_SAFE prompt -> exact geometry -> mtd bad bl2/ubi -> TFTP first chunk while NAND untouched -> explicit confirmation -> erase ubi -> rescan bad map -> physical good-span write/readback/CRC32 -> stable bad map -> BL2 LAST`.
+
+Разрешённый автоматический skip внутри canonical stock span ограничен physical `0x052C0000..0x0EB60000`, где stock layout использует UBI-backed config/data/oopsfs/log_truncated. Для raw-critical областей BMT semantics не доказаны, поэтому bad block там является capability-gate failure. Ни один `mtd write` good-span не должен пересекать known bad eraseblock; RAM source offset всегда равен physical NAND offset относительно chunk, чтобы skip не сдвигал последующие данные.
+
+**HW qualification (RC22/RC24):** exact bad-block restore остаётся не подтверждённым как полный stock restore. На реальном MF запись/readback завершились, stock main image/kernel загрузились, но `data` UBIFS не восстановился (`ubifs_recover_master_node`), после чего stock ушёл в watchdog reboot. Поэтому этот mapper нельзя считать HW PASS; до отдельного исправления/валидации его статус — partial hardware failure / recovery not validated.
+
+## 1.0.0-rc21 — Stage 5 handoff contract
+
+## RC21 Stage 6 postcondition reconciliation
+
+PC-side monitor не выводит `[7/8]`/`[8/8]` по одному факту исчезновения сети. После `[6/8]` cadence временно повышается до 350 мс. Если handoff всё равно скрыл финальные строки, восстановление событий допускается только после строгого production postcondition: ожидаемый `board_name`, canonical UBI volumes и release marker. Такой postcondition означает, что transition прошёл BL2-last/readback и completion gate до production sysupgrade. Timeout без content proof не является разрешением на power-cycle. Для зависания после sysupgrade ручной reboot допускается только при внешнем UART proof точной строки `sysupgrade successful`.
+
+Startup Web credentials после успешного auto-detect хранятся только в RAM Python-процесса, не сериализуются в `work/` и проходят через существующий log-redaction. Rich 15.0.0 vendored в `data/vendor/rich` только для startup banner.
+
+## 1.0.0-rc19 — контракт restore transport
+
+RC19 разделяет **ошибку транспорта до записи** и **неизвестное состояние NAND после старта записи**. До команды `mtd write` мастер может перейти `nokia-tftp -> TCP/nc -> SCP`. После выдачи `mtd write` любой SSH/TCP disconnect переводит операцию в `WRITE_STATE_UNKNOWN`; повторная запись другим транспортом запрещена до отдельной read-only идентификации.
+
+`nokia-tftp` — минимальный AArch64 TFTP GET client внутри transient initramfs, а не сервер. Python TFTP server живёт на ПК. Exact pinned clients: `nokia-tftp` 7792 bytes / `2b6bbc51…`, `nokia-scp` 6072 bytes / `232a4ba7…`. Они встроены во все MD/MF auto/manual transition и stock-recovery FIT. Dropbear transient control-plane запускается с `-B`.
+
+Инвариант stock restore остаётся: `IBU write -> readback SHA256 -> BL2 write LAST -> BL2 readback -> full all_flash SHA256 -> reboot`.
+
+## 1.0.0-rc18 — RECOVERY_SAFE RAM U-Boot / prompt capability gate
+
+Banner U-Boot не считается доказательством контроля: обычный AN7581 RAM U-Boot имеет `bootdelay=0` и может выполнить first-boot `ubi_format -> mtd erase ubi` до доказанного интерактивного prompt. RC18 поставляет recovery-only SAFE derivatives FIP для AN7581/AN7583: BL31 сохраняется byte-for-byte, а BL33 получает `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18` и нейтрализованные persistent UBI environment names, чтобы NAND `ubootenv/ubootenv2` не мог снова включить autoboot. После устойчивого prompt `master.py` требует exact SAFE marker, `bootdelay=-1`, inert bootcmd и свежий nonce, прежде чем появится NAND write/erase/saveenv capability; Ctrl-C после banner остаётся только вторичной страховкой, отправляемой paced-серией, а не один раз. Linux fallback после пропущенного prompt отключён fail-closed для обоих семейств, LAN1/2.5G по-прежнему запрещён для всех transition/recovery процессов, а full stock restore сохраняет прежний инвариант body/IBU erase+write+readback сначала, BL2 — LAST.
+
+SAFE BL33 кодируется через `LZMA_FILTER_LZMA1EXT` (known size, no EOPM) в той же форме, что исходные Airoha payloads: первый опубликованный архив RC18 fail-closed останавливался до COM/XMODEM на строгой Windows liblzma с `Corrupt input data`, NAND при этом не затрагивалась. Runtime preflight больше не декодирует BL33 на ПК, а проверяет exact whole-FIP и compressed BL31/BL33 SHA256.
+
+## 1.0.0-rc17fix5 — запрет LAN1/2.5G для transition/recovery
+
+> **Сетевой safety policy:** LAN1 / 2.5G считается нестабильным и **не должен использоваться ни в одном переходном или аварийном процессе**. Для stock→transition, manual/auto transition, live progress, RAM stock-recovery, TFTP/SCP/SSH и restore подключайте ПК только к **LAN2, LAN3 или LAN4**. Даже если на LAN1 появляется link, это не считается поддерживаемым transport path.
+
+Build-time patcher `data/recovery/transition-network-source/patch_transition_network.py` применяет правило одновременно к MD и MF auto/manual transition и stock-recovery FIT (production sysupgrade он намеренно не трогает): initramfs `/etc/board.d/02_network` для Nokia содержит только `lan2 lan3 lan4` в виде точного fixed-size ASCII-скрипта (MD 767 байт / SHA256 `10244ac2…`, MF 591 байт / SHA256 `af0757d1…`) без literal `lan1`. В transition/recovery DT единственный `2500base-x` MAC переведён в `status = "disabled"`, его `openwrt,netdev-name` и NVMEM binding удалены; primary/internal Ethernet и switch остаются активными на raw `ri-stock` MAC NVMEM. Production OpenWrt payloads MD Dark и MF Uname byte-for-byte не менялись — запрет относится только к transition/recovery control-plane. Release QA статически подтверждает это для всех шести затронутых образов (MD/MF auto/manual transition, MD/MF stock recovery): отсутствие OpenWrt `lan1` name/NVMEM binding, наличие LAN2/LAN3/LAN4, а для stock recovery — ещё и writable recovery BL2 без pre-restore `linux,ubi` auto-attach.
+
+## 1.0.0-rc17fix4 — recovery DT hardening / pre-SSH diagnostics
+
+MF stock-recovery использует собственный DT вместо production: `all_flash` остаётся read-only, `bl2` writable только в RAM recovery, `mtd2=ibu`, а `linux,ubi` auto-attach до stock restore отсутствует. MD и MF stock-recovery используют одинаковую fail-closed pre-restore NVMEM схему — read-only raw `ri-stock` `0x05200000/0x00040000`, `macaddr@3e` (`mac-base`, 6 байт) — с Ethernet MAC, привязанным именно к этому raw RI provider, а не к будущему UBI volume `ri`. Release QA сравнивает byte-exact DTB между MD/MF recovery/transition/production, доказывая recovery != production, writable recovery BL2, `ibu` без `linux,ubi`, raw-RI MAC NVMEM и активные Ethernet/switch DSA-порты LAN2/LAN3/LAN4 для обоих семейств.
+
+Manual READY больше не использует приблизительный `/proc/net/route` fallback: точный адрес берётся из `/proc/net/fib_trie`, затем `ip -4 addr` как fallback. Оба manual initramfs содержат `uhttpd` и его init script, поэтому PC-master может читать `/www/medveflasher-manual.status` как content-based pre-SSH диагностику; READY и передача custom sysupgrade всё равно требуют SSH content identity.
+
+## 1.0.0-rc17fix3 — persistent manual READY / reviewable DT evidence
+
+Manual transition больше не замораживает `NETWORK_NOT_READY` через 60 секунд: family/LAN/SSH readiness monitor работает в фоне до READY, поэтому PC-side 600 s retry наблюдает состояние, которое действительно может измениться. READY gate больше не зависит от `netstat` — SSH LISTEN читается из `/proc/net/tcp{,6}`, LAN 192.168.1.1 из `/proc/net/fib_trie`/`/proc/net/route`, `ip` только как fallback — а оба manual initramfs preflight-подтверждают наличие `sbin/ip`, `bin/netstat`, `bin/cat`. `/tmp/NOKIA_MANUAL_STATE` и `/www/medveflasher-manual.status` содержат ASCII key/value диагностику (`STATE`, `REASON`, board, br-lan/IP/SSH flags, `DEFERRED`). Auto transition по-прежнему выполняет destructive stage автономно — Ethernet нужен только для PC-side live progress/control-plane — а MF/MD transition DT сохраняют raw `ri-stock` pre-format NVMEM policy. `fullflash` с `rc=0` без reboot больше не помечается как FAILED: состояние становится verification-pending и ждёт production verification.
+
+## 1.0.0-rc17fix2 — transition network / Dark MD audit
+
+MAC NVMEM для MF transition Ethernet берётся из read-only raw stock RI `0x05200000+0x3e`, а не из будущего UBI volume `ri`, — это относится и к auto, и к manual transition. Ethernet в auto-mode нужен для PC-side live progress/control-plane, а не для самого destructive installer, который остаётся автономным. MF target `mtd2` сохраняет label `ubi` для совместимости с HW-confirmed installer, при этом `linux,ubi` auto-attach до форматирования отключён. Все MD ITB были проверены: production sysupgrade и stock-recovery уже были Dark 6.18.41, а auto/manual transition были rebased с устаревшего 6.18.39 r35573 на тот же Dark 6.18.41 / r0-486b4a4 с минимизированным initramfs и прежними fail-closed installer gates. Manual readiness теперь family-specific — MF-путь больше не содержит MD board-name hardcode.
+
+## RC16: provenance payload и build-time recovery transform
+
+RC16 намеренно не пытается свести MD и MF к одному firmware build-set. Для MD production используется выбранный Dark patched snapshot 09.08.2026; для MF production остаётся Uname UBI set. BootROM recovery stages являются третьим, отдельным классом payload и не подменяются production bootloader-артефактами.
+
+MD source initramfs Dark нельзя использовать как stock-recovery без изменения DT: production DT помечает `bl2` read-only и описывает `ubi`. RC16 сохраняет kernel/rootfs source image byte-for-byte, но пересобирает только recovery DT: `all_flash` read-only, `bl2` writable только в RAM recovery, `ibu` покрывает `0x20000..0x10000000`. Это build-time transform; runtime repack отсутствует. Он позволяет сохранить новые PHY/NPU/kernel изменения Dark и одновременно не нарушить доказанный порядок stock restore `IBU -> readback -> BL2 LAST -> readback`.
+
+Release-integrity теперь связывает MANIFEST не только с SHA bundle, но и с фактическим FIT totalsize/FIT SHA и production size/SHA для MD auto/manual и MF auto/manual. Любой metadata drift fail-closed блокирует `verify_kit()`.
 
 ## rc10: меню и credential inventory
 

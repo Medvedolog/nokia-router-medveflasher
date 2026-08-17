@@ -109,6 +109,7 @@ flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000
 | **Архитектура** — как это устроено внутри | [ARCHITECTURE_RU](docs/ARCHITECTURE_RU.md) | [ARCHITECTURE_EN](docs/ARCHITECTURE_EN.md) |
 | **История изменений** | [CHANGELOG_RU](docs/CHANGELOG_RU.md) | [CHANGELOG](docs/CHANGELOG.md) |
 | **Статус образов** — что подтверждено железом | [IMAGE_STATUS_RU](docs/IMAGE_STATUS_RU.md) | [IMAGE_STATUS_EN](docs/IMAGE_STATUS_EN.md) |
+| **Pinned runtime assets** — размеры и SHA256 payload | [RELEASE_ASSETS](docs/RELEASE_ASSETS.md) | [RELEASE_ASSETS](docs/RELEASE_ASSETS.md) |
 
 Машиночитаемая матрица возможностей релиза: [`data/FIRMWARE_CAPABILITIES.json`](data/FIRMWARE_CAPABILITIES.json).
 

@@ -467,6 +467,10 @@ jobs:
               fi
             fi
             gh release upload "$TAG" "$ZIP" "$SHA_FILE" --clobber
+            # The notes carry the archive SHA256. Replacing the asset without
+            # refreshing them publishes a checksum that no longer matches the
+            # download, so a reader verifying the ZIP concludes it is corrupt.
+            gh release edit "$TAG" --notes-file "$NOTES"
           else
             args=(release create "$TAG" "$ZIP" "$SHA_FILE" --target "$GITHUB_SHA" --title "Nokia Router MedveFlasher ${VERSION}" --notes-file "$NOTES")
             if [ "${PRERELEASE_INPUT:-true}" = "true" ] || [[ "$VERSION" == *-* ]]; then

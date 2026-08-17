@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "1.0.0-rc24",
+  "version": "1.0.0-rc25",
   "product": "Nokia Router MedveFlasher",
-  "semantics": "RC24 retains RC19 transient recovery clients, RC18 RECOVERY_SAFE RAM U-Boot FIPs, RC21 content-gated Stage 6/handoff behavior, RC23 timestamp+backup MAC identity, and RC24 persistent interactive navigation with SAFETY-LATCH. TFTP remains the first recommended operator transport. The RC22 bad-block UART restore mapper is not full-HW-validated: real MF booted stock main image/kernel after restore but data UBIFS recovery failed and watchdog rebooted.",
+  "semantics": "RC25 keeps the pinned transition/recovery payload bytes from RC24 but changes PC/stock-launcher authorization: MD and MF vendor slot revisions identify the stock family only and are not permanent-write allowlists. Before destructive handoff, fixed stock target partitions and /proc/sysfs geometry remain exact; the selected full backup is revalidated from content; the RAM transition independently requires exact 256MiB NAND, 0x20000 BL2 and 0x0FFE0000 UBI target geometry.",
   "md": {
     "CAP_FULL_BACKUP": {
       "status": "YES",
@@ -14,7 +14,7 @@
     },
     "CAP_UBI_FORMAT": {
       "status": "YES",
-      "evidence": "hardware-confirmed MD stage 2"
+      "evidence": "hardware-confirmed MD stage 2; RAM installer pins physical NAND/BL2/UBI geometry independently of stock mtd2..mtd5 sizes"
     },
     "CAP_UBI_VOLUME_WRITE": {
       "status": "YES",
@@ -26,7 +26,7 @@
     },
     "CAP_PERMANENT_INSTALL": {
       "status": "YES",
-      "evidence": "hardware-confirmed MD permanent install path"
+      "evidence": "hardware-confirmed MD path; rc25 authorizes recognized MD slot revisions only after exact handoff-target and restore-grade backup gates"
     },
     "CAP_UART_RECOVERY": {
       "status": "RC18_SAFE_PENDING_HW",
@@ -39,37 +39,36 @@
   },
   "mf": {
     "CAP_FULL_BACKUP": {
-      "status": "YES_MF_A",
-      "evidence": "rc12fix live MF-A capture: mtd0..mtd16, exact gzip stream SHA256 router==PC, restore-validator PASS, BACKUP_HW_VALIDATED",
-      "other_variants": "MF-A-MIRROR/MF-B/MF-B-MIRROR remain live-gated and require their own end-to-end capture for HW-confirmed status"
+      "status": "YES",
+      "evidence": "restore-grade MF backend; selected backups are revalidated from content before install; slot revision is family evidence, not write authorization"
     },
     "CAP_RAM_OPENWRT": {
-      "status": "YES_MF_A",
+      "status": "YES",
       "evidence": "rc14fix6 hardware run booted Linux 6.18.41 transition on Nokia XG-040G-MF (UBI)."
     },
     "CAP_UBI_FORMAT": {
-      "status": "YES_MF_A",
-      "evidence": "rc14fix6 hardware run formatted and attached the 0xffe0000 UBI region successfully; 2047 good PEBs, 0 bad PEBs."
+      "status": "YES",
+      "evidence": "hardware-confirmed AN7583 UBI format path; RAM installer pins 256MiB NAND, 0x20000 BL2 and 0x0FFE0000 UBI target before ubiformat"
     },
     "CAP_UBI_VOLUME_WRITE": {
-      "status": "YES_MF_A",
+      "status": "YES",
       "evidence": "rc14fix6 hardware run created canonical volumes, wrote bosa/ri/FIP/fallback FIT and passed readback SHA256 before BL2."
     },
     "CAP_BOOTLOADER_REPLACE": {
-      "status": "YES_MF_A",
+      "status": "YES",
       "evidence": "RC16 hardware run: pinned BL2 provenance rechecked immediately before [7/8], complete BL2 partition written LAST, [8/8] completion reached; production keeps BL2 read-only."
     },
     "CAP_PERMANENT_INSTALL": {
-      "status": "YES_MF_A",
-      "evidence": "RC16 hardware run: stock MF-A -> transition -> [1/8]..[8/8] -> production sysupgrade successful -> production nokia,xg-040g-mf-ubi with canonical UBI volumes and LuCI."
+      "status": "YES",
+      "evidence": "RC16 hardware-confirmed AN7583 all-in-UBI path; rc25 applies the same physical-target/backup policy to every recognized MF stock revision"
     },
     "CAP_UART_RECOVERY": {
       "status": "RC18_SAFE_PENDING_HW",
       "evidence": "RC16 confirmed the base EVB preloader/FIP and full stock restore. RC18 keeps the preloader but ships a RECOVERY_SAFE-derived FIP with persistent env neutralized and bootdelay=-1; exact RC18 FIP requires hardware regression."
     },
     "CAP_MF_TRANSITION_BOOT": {
-      "status": "YES_MF_A",
-      "evidence": "RC16 hardware run confirmed transition boot and complete autonomous all-in-UBI migration through [8/8]."
+      "status": "YES",
+      "evidence": "hardware-confirmed AN7583 transition path; exact stock vendor slot revision is not a destructive-write gate in rc25"
     }
   },
   "rc22_bad_block_restore": {

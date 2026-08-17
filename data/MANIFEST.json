@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0-rc24",
+  "version": "1.0.0-rc25",
   "product": "Nokia Router MedveFlasher",
   "supported_device": {
     "install_model": "Nokia XG-040G-MD / Nokia XG-040G-MF",
@@ -17,17 +17,24 @@
         "status": "hardware-confirmed through scripted RAM U-Boot mtd list, network setup and 8-MiB TFTP preflight; rc9 replaces unavailable U-Boot hash with CRC32 verification"
       }
     ],
-    "policy": "MD and MF use one profile-driven installer engine and one stock launcher template. MF-A permanent writes retain HW-validated backup/live root/geometry/explicit-confirmation gates.",
+    "policy": "MD and MF use one profile-driven installer engine and one stock launcher template. MF-A permanent writes retain HW-validated backup/live root/geometry/explicit-confirmation gates. MD slot revisions are recognized within a window for backup/evidence; permanent write requires an exact hardware-observed layout.",
     "stock_layouts": {
       "md": [
         "MD-A 003AF6DA/01CC0000/00480000/02400000",
-        "MD-A-MIRROR"
+        "MD-A-MIRROR",
+        "MD-*-REV (recognition only): canonical slot 00480000/02400000 byte-exact, opposite slot within +-2000 (kernel image) and +-10000 (rootfs slot, 10000-aligned) of the MD reference"
       ],
       "mf": [
         "MF-A 003B6CC0/01D00000/00480000/02400000",
         "MF-A-MIRROR",
         "MF-B 003B6D40/01D10000/00480000/02400000",
         "MF-B-MIRROR"
+      ],
+      "md_permanent_write": [
+        "MD-A 003AF6DA/01CC0000/00480000/02400000",
+        "MD-A-MIRROR 00480000/02400000/003AF6DA/01CC0000",
+        "MD-A-MIRROR-REV 00480000/02400000/003AF742/01CB0000 (hardware observed)",
+        "A revision recognized by the window but absent here backs up and does not install"
       ]
     },
     "normal_stock_backup_models": [
@@ -217,7 +224,10 @@
     "rc18_recovery_safe_uboot": "docs/RC18_RECOVERY_SAFE_UBOOT.md",
     "rc18_recovery_safe_patcher": "data/recovery/recovery-safe-uboot-source/patch_recovery_safe_fip.py",
     "rc18_recovery_safe_source": "data/recovery/recovery-safe-uboot-source/",
-    "rc18_recovery_safe_evidence": "docs/RC18_RECOVERY_SAFE_EVIDENCE.txt"
+    "rc18_recovery_safe_evidence": "docs/RC18_RECOVERY_SAFE_EVIDENCE.txt",
+    "readme_ru": "docs/README_RU.md",
+    "readme_en": "docs/README_EN.md",
+    "release_assets_required": "docs/RELEASE_ASSETS.md"
   },
   "release_layout": {
     "root_files": [
@@ -229,7 +239,7 @@
     ],
     "master": "data/master.py",
     "checksums": "data/SHA256SUMS",
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc24"
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc25"
   },
   "hardware_status": {
     "md_transition_install": "historical MD destructive architecture is hardware-confirmed, but RC17fix2 auto/manual transition bytes are newly rebased to Dark Linux 6.18.41/r0-486b4a4 and require hardware regression before exact-byte confirmation",
@@ -254,7 +264,7 @@
     "rc18_recovery_safe_fips": "STATIC PASS: BL31 byte-identical to pinned sources; BL33 default env has bootdelay=-1/inert bootcmd+preboot/SAFE marker; persistent UBI env volume names neutralized; master requires SAFE marker + nonce before NAND capability. HW regression pending.",
     "rc19_restore_transport": "STATIC_QA_PENDING_HW: pinned AArch64 clients + no-post-write-fallback state machine; exact RC19 recovery FIT bytes need hardware regression."
   },
-  "build_tag": "medveflasher-1.0.0-rc24",
+  "build_tag": "medveflasher-1.0.0-rc25",
   "operator_progress": {
     "telnet_console": "command echo and protocol markers suppressed; preflight runtime messages retained",
     "transition_stage": "content-identified transition state/step telemetry over HTTP/SSH/Telnet control channels; raw TCP port state is NET-DEBUG only and never proves transition or production identity",
@@ -290,9 +300,9 @@
     "ssh_control": "short readiness probe with deterministic passwordless minimal-auth path, one short BatchMode fallback, surfaced diagnostics, and reuse of the proven auth mode for upload/check/fullflash/monitoring"
   },
   "release": {
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc24",
-    "version": "1.0.0-rc24",
-    "build_tag": "medveflasher-1.0.0-rc24"
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc25",
+    "version": "1.0.0-rc25",
+    "build_tag": "medveflasher-1.0.0-rc25"
   },
   "bootrom_backup": {
     "menu_item": "Backup submenu -> read-only BootROM/UART backup",
@@ -712,5 +722,31 @@
     "safety": "WRITE_STATE_UNKNOWN raises a process-local SAFETY-LATCH that blocks normal install/no-UART restore/destructive continuation; successful full BootROM/UART recovery clears the latch; no automatic destructive retry is introduced",
     "cli_contract": "direct subcommands retain ordinary process exit codes and are not wrapped by menu recovery",
     "firmware_payloads": "byte-identical to rc23"
+  },
+  "rc25": {
+    "date": "2026-08-17",
+    "scope": "PC orchestration / stock Web session lifetime / UID0 service escalation / diagnostics / release identity",
+    "runtime_payloads": "byte-identical to RC25; not modified by rc25",
+    "web_session_policy": {
+      "read_only": "stock audit and firmware capabilities close Web session before return",
+      "operational": "backup and install retain Web session only for explicit service provisioning and close it in caller finally"
+    },
+    "service_provisioning": "at most one stock service attempt per failed root-discovery cycle; FTP before Samba",
+    "slot_policy": "recognition window unchanged; permanent-write allowlist unchanged; field-observed MD 00480000/02400000/003AF742/01CB0000 remains exact-authorized",
+    "source_tree_note": "complete runnable release: the six runtime assets omitted from the earlier REVIEW_ONLY input are embedded from the supplied repository archive and verified against the pre-existing size/SHA256 pins; verify_kit remains fail-closed",
+    "runtime_assets": {
+      "status": "embedded_sha256_verified",
+      "count_restored_from_supplied_repository_archive": 6,
+      "verification_tool": "data/verify_release_assets.py"
+    }
+  },
+  "rc25_install_geometry_policy": {
+    "scope": "MD/MF stock -> transition -> OpenWrt UBI install",
+    "slot_views": "mtd2..mtd5 classify MD/MF through canonical-pair + non-overlapping family windows; exact vendor revision does not authorize or veto permanent write",
+    "stock_handoff_gate": "fixed stock partitions remain exact; /proc/mtd must equal sysfs; mtd0 bootloader=0x80000, mtd14/mtd15=0x2880000, mtd16/all_flash=0x0EBA0000, erase=0x20000",
+    "backup_gate": "both MD and MF selected install backups use verify_stock_restore_backup and are revalidated from content; marker files are evidence only",
+    "ram_physical_gate": "board-specific transition installer independently requires physical all_flash=0x10000000, BL2=0x20000, UBI/IBU=0x0FFE0000, erase=0x20000, write=0x800 before ubiformat",
+    "symmetry": "same authorization semantics for MD and MF; payload/board implementations remain SoC-specific",
+    "payload_bytes": "unchanged from rc25"
   }
 }

@@ -171,7 +171,7 @@ nokia_begin_output_mirror() {
 SCRIPT_DIR="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 PROFILE_FAMILY='md'
 PROFILE_LABEL='Nokia XG-040G-MD'
-RELEASE_VERSION='1.0.0-rc24'
+RELEASE_VERSION='1.0.0-rc25'
 BUNDLE_NAME='transition-bundle.bin'
 MANUAL_TRANSITION=0
 BUNDLE_SIZE=21626880
@@ -230,42 +230,94 @@ require_partition() {
     [ "$actual_size" = "$size" ] || die "$name size must be $size, got ${actual_size:-missing}"
 }
 
+# Revision-tolerant stock slot matching; keep in sync with data/master.py.
+# One slot always publishes the canonical pair below and is required to match
+# byte-exact; the opposite slot carries a revision-dependent kernel image size
+# plus a rootfs slot size that steps in 0x10000 units, and only that pair is
+# matched within a window.  The windows stay far inside the MD/MF reference
+# distance because the slot pair is the only discriminator between the models.
+STOCK_SLOT_CANONICAL='00480000:02400000'
+STOCK_SLOT_IMAGE_TOLERANCE=$((0x2000))
+STOCK_SLOT_PARTITION_TOLERANCE=$((0x10000))
+STOCK_SLOT_PARTITION_GRANULARITY=$((0x10000))
+MD_SLOT_REFERENCES='003af6da:01cc0000'
+MF_SLOT_REFERENCES='003b6cc0:01d00000 003b6d40:01d10000'
+
+abs_diff() {
+    if [ "$1" -ge "$2" ]; then echo $(( $1 - $2 )); else echo $(( $2 - $1 )); fi
+}
+
+revision_pair_family() {
+    # $1 = kernel image size, $2 = rootfs slot size, both decimal.
+    _image="$1"; _partition="$2"; _matched=''
+    [ "$_image" -gt 0 ] || { echo unknown; return; }
+    [ "$_partition" -gt "$_image" ] || { echo unknown; return; }
+    [ $(( _partition % STOCK_SLOT_PARTITION_GRANULARITY )) -eq 0 ] || { echo unknown; return; }
+    for _family in md mf; do
+        if [ "$_family" = md ]; then _references="$MD_SLOT_REFERENCES"; else _references="$MF_SLOT_REFERENCES"; fi
+        for _reference in $_references; do
+            _reference_image=$(( 0x${_reference%%:*} ))
+            _reference_partition=$(( 0x${_reference##*:} ))
+            [ "$(abs_diff "$_image" "$_reference_image")" -le "$STOCK_SLOT_IMAGE_TOLERANCE" ] || continue
+            [ "$(abs_diff "$_partition" "$_reference_partition")" -le "$STOCK_SLOT_PARTITION_TOLERANCE" ] || continue
+            case " $_matched " in *" $_family "*) ;; *) _matched="$_matched $_family" ;; esac
+        done
+    done
+    # An ambiguous pair must never pick a family: the wrong family would select
+    # the wrong firmware.
+    set -- $_matched
+    if [ $# -eq 1 ]; then echo "$1"; else echo unknown; fi
+}
+
 verify_stock_slots() {
     [ "$(mtd_index kernel)" = mtd2 ] || die 'kernel must be mtd2'
     [ "$(mtd_index rootfs)" = mtd3 ] || die 'rootfs must be mtd3'
     [ "$(mtd_index kernel_slave)" = mtd4 ] || die 'kernel_slave must be mtd4'
     [ "$(mtd_index rootfs_slave)" = mtd5 ] || die 'rootfs_slave must be mtd5'
 
-    slot_signature="$(mtd_size_hex kernel):$(mtd_size_hex rootfs):$(mtd_size_hex kernel_slave):$(mtd_size_hex rootfs_slave)"
+    master_pair="$(mtd_size_hex kernel):$(mtd_size_hex rootfs)"
+    slave_pair="$(mtd_size_hex kernel_slave):$(mtd_size_hex rootfs_slave)"
+    slot_signature="$master_pair:$slave_pair"
+
+    if [ "$slave_pair" = "$STOCK_SLOT_CANONICAL" ]; then
+        slot_orientation=A
+        revision_pair="$master_pair"
+    elif [ "$master_pair" = "$STOCK_SLOT_CANONICAL" ]; then
+        slot_orientation=A-MIRROR
+        revision_pair="$slave_pair"
+    else
+        die "unsupported $PROFILE_FAMILY stock slot signature: $slot_signature"
+    fi
+    slot_family="$(revision_pair_family "$(( 0x${revision_pair%%:*} ))" "$(( 0x${revision_pair##*:} ))")"
+    [ "$slot_family" = "$PROFILE_FAMILY" ] || die "unsupported $PROFILE_FAMILY stock slot signature: $slot_signature"
+
+    # Exact labels remain diagnostic evidence only.  They do not authorize or
+    # veto the later UBI format: the destructive path is bound to the exact
+    # stock handoff targets here and exact physical NAND/UBI geometry in RAM.
     case "$PROFILE_FAMILY:$slot_signature" in
         md:003af6da:01cc0000:00480000:02400000)
             STOCK_VARIANT=MD-A
-            log2 '[OK] MD stock slot layout A matched.' '[OK] MD stock slot layout A matched.'
             ;;
         md:00480000:02400000:003af6da:01cc0000)
             STOCK_VARIANT=MD-A-MIRROR
-            log2 '[OK] MD mirrored stock slot layout matched.' '[OK] MD mirrored stock slot layout matched.'
             ;;
         mf:003b6cc0:01d00000:00480000:02400000)
             STOCK_VARIANT=MF-A
-            log2 '[OK] MF-A stock slot layout matched.' '[OK] MF-A stock slot layout matched.'
             ;;
         mf:00480000:02400000:003b6cc0:01d00000)
             STOCK_VARIANT=MF-A-MIRROR
-            die 'MF-A-MIRROR is recognized but permanent write is enabled only for hardware-confirmed MF-A'
             ;;
         mf:003b6d40:01d10000:00480000:02400000)
             STOCK_VARIANT=MF-B
-            die 'MF-B is recognized but permanent write is enabled only for hardware-confirmed MF-A'
             ;;
         mf:00480000:02400000:003b6d40:01d10000)
             STOCK_VARIANT=MF-B-MIRROR
-            die 'MF-B-MIRROR is recognized but permanent write is enabled only for hardware-confirmed MF-A'
             ;;
-        *)
-            die "unsupported $PROFILE_FAMILY stock slot signature: $slot_signature"
-            ;;
+        md:*) STOCK_VARIANT="MD-$slot_orientation-REV" ;;
+        mf:*) STOCK_VARIANT="MF-$slot_orientation-REV" ;;
+        *) die "unsupported stock family: $PROFILE_FAMILY" ;;
     esac
+    log2 "[OK] Stock slot family=$PROFILE_FAMILY variant=$STOCK_VARIANT; vendor slot sizes are evidence, not a permanent-write allowlist." "[OK] Stock slot family=$PROFILE_FAMILY variant=$STOCK_VARIANT; vendor slot sizes are evidence, not a permanent-write allowlist."
 }
 
 verify_stock_layout() {
@@ -284,7 +336,7 @@ verify_stock_layout() {
     require_partition nsb_master   mtd14 02880000
     require_partition nsb_slave    mtd15 02880000
     require_partition all_flash    mtd16 0eba0000
-    log2 '[OK] Tochnaya podderzhivaemaya stock-razmetka MTD podtverzhdena.' '[OK] Exact supported stock MTD layout matched.'
+    log2 '[OK] Stock handoff MTD target podtverzhden: fixed partitions exact; slot revision classified separately.' '[OK] Stock handoff MTD target verified: fixed partitions exact; slot revision classified separately.'
 }
 
 check_nand() {
@@ -319,7 +371,7 @@ check_nand() {
             return 0
         fi
         NAND_IDENTITY=unknown
-        log2 '[PREDUPREZhDENIE] Stock kernel ne pokazyvaet model SPI-NAND; prodolzhayu tolko posle tochnykh MF-A/MTD/env proverok.' '[WARN] Stock kernel does not expose the SPI-NAND model; continuing only after exact MF-A/MTD/env checks.'
+        log2 '[PREDUPREZhDENIE] Stock kernel ne pokazyvaet model SPI-NAND; prodolzhayu tolko posle tochnykh MF/MTD/env proverok.' '[WARN] Stock kernel does not expose the SPI-NAND model; continuing only after exact MF/MTD/env checks.'
         return 0
     fi
 

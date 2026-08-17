@@ -4,9 +4,9 @@
 
 **OpenWrt на Nokia XG-040G-MD / MF — без паяльника, без разборки корпуса и без UART**
 
-`1.0.0-rc24` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
+`1.0.0-rc25` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
 
-[![Release](https://img.shields.io/badge/release-1.0.0--rc24-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
+[![Release](https://img.shields.io/badge/release-1.0.0--rc25-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
 [![Targets](https://img.shields.io/badge/SoC-AN7581%20%7C%20AN7583-8250df?style=flat-square)](#поддерживаемое-железо)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-all--in--UBI%20+%20LuCI-00b5e2?style=flat-square&logo=openwrt&logoColor=white)](https://openwrt.org/)
 [![Python](https://img.shields.io/badge/Python%203-stdlib%20only-3776ab?style=flat-square&logo=python&logoColor=white)](#ноль-зависимостей--ну-почти)
@@ -92,7 +92,8 @@ flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000
 > Прошивка NAND — разрушительная операция. Проверенный backup **именно этого** роутера и стабильное питание обязательны.
 
 - **`mtd16` — это не вся физическая NAND.** Это stock restore span `0x0EBA0000`; физический SPI-NAND — `0x10000000`. Разница в 20.375 MiB существует, и называть одно другим не надо.
-- **LAN1 / 2.5G запрещён** для всех transition/recovery операций. Появившийся на нём link не делает его поддерживаемым транспортом. Только LAN2, LAN3, LAN4.
+- **LAN1 / 2.5G запрещён** для всех transition/recovery операций. Появившийся на нём link не делает его поддерживаемым транспортом. Только LAN2, LAN3, LAN4. С RC25 мастер сам предупреждает, если линк ПК согласован на 2.5G, — но это предупреждение, а не блокировка, и гигабитную карту в LAN1 оно не различит.
+- **Вариант слота ничего не разрешает.** С RC25 `mtd2..mtd5` определяют только семейство и ревизию. Право на запись дают backup, точные stock handoff targets и проверка физической геометрии NAND/UBI — не метка `MF-A` или `MD-A`.
 - **Таймаут не является разрешением.** Ни на retry, ни на power-cycle. Открытый TCP-порт — тоже не доказательство состояния, а только телеметрия.
 - **`WRITE_STATE_UNKNOWN` защёлкивает SAFETY-LATCH.** После потери связи в момент записи NAND обычная установка и restore блокируются до успешного полного UART-recovery. Меню при этом остаётся открытым — но только для read-only диагностики.
 - **Backup от чужого роутера — не backup.** Он принесёт чужие MAC, серийники, RI/BOSA и environment. Только в состоянии безысходности.

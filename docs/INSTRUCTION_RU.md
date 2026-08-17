@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Версия:** 1.0.0-rc24 · **Дата:** 13 августа 2026
+**Версия:** 1.0.0-rc25 · **Дата:** 17 августа 2026
 
 **Установка OpenWrt:** Nokia XG-040G-MD (AN7581) и Nokia XG-040G-MF (AN7583) — обе модели проходят полный цикл.
 **Brick recovery:** XG-040G-MD/AN7581 и XG-040G-MF/AN7583.
@@ -69,20 +69,20 @@ Python 3, около 1 ГБ свободного места и полтора ч
 
 Пункт `6 — проверить прошивочные capabilities (read-only)` заново доказывает stock Web, Telnet, `UID 0`, family/variant и `/proc/mtd == sysfs`, после чего пересекает эти live-факты с hardware-status релиза. Сам отчёт **не разрешает запись NAND** и не заменяет pre-write gates конкретной операции.
 
-Профиль релиза 1.0.0-rc24:
+Профиль релиза 1.0.0-rc25:
 
 ```text
                           MD / AN7581            MF / AN7583
-CAP_FULL_BACKUP           YES                    YES (MF-A)
-CAP_RAM_OPENWRT           YES                    YES (MF-A)
-CAP_UBI_FORMAT            YES                    YES (MF-A)
-CAP_UBI_VOLUME_WRITE      YES                    YES (MF-A)
-CAP_BOOTLOADER_REPLACE    EXPERIMENTAL_DISABLED  YES (MF-A)
-CAP_PERMANENT_INSTALL     YES                    YES (MF-A)
+CAP_FULL_BACKUP           YES                    YES
+CAP_RAM_OPENWRT           YES                    YES
+CAP_UBI_FORMAT            YES                    YES
+CAP_UBI_VOLUME_WRITE      YES                    YES
+CAP_BOOTLOADER_REPLACE    EXPERIMENTAL_DISABLED  YES
+CAP_PERMANENT_INSTALL     YES                    YES
 CAP_UART_RECOVERY         RC18_SAFE_PENDING_HW   RC18_SAFE_PENDING_HW
 ```
 
-Варианты MF-A-MIRROR / MF-B / MF-B-MIRROR распознаются, но остаются live-gated: каждому нужен собственный end-to-end аппаратный прогон. `RC18_SAFE_PENDING_HW` означает, что сам путь restore аппаратно подтверждён, а точные байты RC18 SAFE FIP ждут первого regression-прогона.
+С RC25 вариант слота больше не меняет capability внутри семейства: пометок вида `(MF-A)` в таблице нет, потому что `MF-A-MIRROR`, `MF-B`, `MF-B-MIRROR` и распознанные ревизии MD проходят ту же install policy, что и точный вариант. `YES` означает, что путь для семейства существует при текущих live gates, а не что запись уже разрешена: обязательными остаются полный backup, точные stock handoff targets `mtd0/mtd14/mtd15/mtd16` и проверка физической геометрии NAND/UBI в RAM transition. `RC18_SAFE_PENDING_HW` означает, что сам путь restore аппаратно подтверждён, а точные байты RC18 SAFE FIP ждут первого regression-прогона.
 
 После startup Web fingerprint меню установки выбирает профиль MD или MF, но это не является разрешением на запись: live Web/root/MTD/backup gates повторяются внутри общего installer engine. MD и MF показывают одинаковые install actions; board-specific различия находятся в профиле. Машиночитаемая матрица релиза: `data/FIRMWARE_CAPABILITIES.json`.
 
@@ -92,12 +92,12 @@ CAP_UART_RECOVERY         RC18_SAFE_PENDING_HW   RC18_SAFE_PENDING_HW
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc24.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc25.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — из каталога с архивом
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc24.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc25.zip.sha256
 ```
 
 После распаковки контрольные суммы всех файлов комплекта можно проверить из
@@ -189,7 +189,9 @@ touch /mnt/USB_disc1/write-test && rm /mnt/USB_disc1/write-test
 
 ## Подключение роутера
 
-1. Соедините компьютер и LAN-порт Nokia кабелем.
+1. Соедините компьютер и LAN-порт Nokia кабелем. Используйте **LAN2, LAN3 или
+   LAN4**. LAN1 — это порт 2.5G, и он исключён из transition/recovery из-за
+   нестабильности линка.
 2. Роутер должен быть доступен по `192.168.1.1`, компьютер — в той же сети
    (например `192.168.1.2`).
 3. Проверьте связь:
@@ -203,6 +205,26 @@ ping -c 4 192.168.1.1     # Linux
 ```
 
 Если роутер использует другой адрес — укажите его мастеру вместо `192.168.1.1`.
+
+### Проверка порта перед операцией
+
+Перед установкой, backup, откатом на сток, recovery через UART и продолжением
+этапа 2 мастер сам смотрит на скорость линка компьютера. Линк на 2500 Мбит/с и
+выше бывает только на LAN1, потому что LAN2–LAN4 гигабитные, — тогда выводится
+предупреждение и запрос:
+
+```text
+[NETWORK POLICY] ВНИМАНИЕ: eth0 согласован на 2500 Мбит/с — так умеет только LAN1 / 2.5G,
+а он исключён из transition/recovery из-за нестабильности линка.
+[NETWORK POLICY] Перед операцией «установка OpenWrt» переключите кабель в LAN2, LAN3 или LAN4.
+Продолжить всё равно? [Y/n]:
+```
+
+Это предупреждение, а не блокировка: Enter продолжает работу. Обратной стороной
+является то, что гигабитная сетевая карта в LAN1 договаривается на 1000 Мбит/с и
+от LAN2–LAN4 неотличима — такой случай проверка не поймает, поэтому порт всё
+равно проверяйте глазами. Если скорость определить не удалось, мастер просто
+напомнит про политику и продолжит.
 
 ---
 
@@ -235,12 +257,19 @@ python3 --version        # нужен Python 3
 ## Главное меню
 
 ```text
+=== Главное меню ===
 1 — прошивка / установка / восстановление
 2 — backup / резервные копии
-3 — показать credentials, всех пользователей и привилегии устройства
+3 — credentials / пользователи / stock audit
 4 — подготовка / продолжение установки
 5 — выход
+Выберите 1/2/3/4/5:
 ```
+
+Меню выводятся без отметок времени — так и должно быть. Префикс
+`[ГГГГ-ММ-ДД ЧЧ:ММ:СС]` появляется у операционных строк, чтобы вывод ПК можно
+было сопоставить с событиями UART, а у пунктов меню он только мешает читать.
+Строки решений `[BLOCKED]`/`[SAFETY-LATCH]` и завершения `[NAV]` время сохраняют.
 
 Подменю **1** содержит установку OpenWrt на stock MD, установку из готового backup, откат на stock без UART и brick recovery через BootROM/UART для MD/MF.
 

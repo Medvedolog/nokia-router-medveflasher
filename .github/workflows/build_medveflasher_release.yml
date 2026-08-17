@@ -12,6 +12,11 @@ on:
         required: true
         type: boolean
         default: true
+      make_latest:
+        description: "Promote this release to Latest (clears the prerelease flag)"
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -435,6 +440,7 @@ jobs:
           SHA_FILE: ${{ steps.package.outputs.sha }}
           NOTES: ${{ steps.notes.outputs.file }}
           PRERELEASE_INPUT: ${{ inputs.prerelease }}
+          MAKE_LATEST_INPUT: ${{ inputs.make_latest }}
         shell: bash
         run: |
           set -euo pipefail
@@ -448,4 +454,11 @@ jobs:
               args+=(--prerelease)
             fi
             gh "${args[@]}"
+          fi
+
+          # GitHub refuses to mark a prerelease as Latest, so promoting one has to
+          # clear that flag in the same edit.
+          if [ "${MAKE_LATEST_INPUT:-false}" = "true" ]; then
+            gh release edit "$TAG" --prerelease=false --latest
+            echo "Promoted $TAG to Latest."
           fi

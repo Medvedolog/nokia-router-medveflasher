@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      retag:
+        description: "Move an existing tag to the commit being built (rebuild of the same version)"
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -441,12 +446,26 @@ jobs:
           NOTES: ${{ steps.notes.outputs.file }}
           PRERELEASE_INPUT: ${{ inputs.prerelease }}
           MAKE_LATEST_INPUT: ${{ inputs.make_latest }}
+          RETAG_INPUT: ${{ inputs.retag }}
         shell: bash
         run: |
           set -euo pipefail
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; replacing ZIP assets."
+            # Replacing the assets without moving the tag would leave the published
+            # ZIP built from a tree the tag does not point at. Rebuilding the same
+            # version is only honest if the tag follows the commit.
+            if [ "${RETAG_INPUT:-false}" = "true" ]; then
+              TAGGED="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)"
+              if [ "$TAGGED" != "$GITHUB_SHA" ]; then
+                echo "Moving $TAG from $TAGGED to $GITHUB_SHA."
+                gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" \
+                  -f sha="$GITHUB_SHA" -F force=true >/dev/null
+              else
+                echo "$TAG already points at $GITHUB_SHA."
+              fi
+            fi
             gh release upload "$TAG" "$ZIP" "$SHA_FILE" --clobber
           else
             args=(release create "$TAG" "$ZIP" "$SHA_FILE" --target "$GITHUB_SHA" --title "Nokia Router MedveFlasher ${VERSION}" --notes-file "$NOTES")

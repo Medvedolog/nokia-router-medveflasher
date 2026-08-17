@@ -227,7 +227,7 @@
     "rc18_recovery_safe_evidence": "docs/RC18_RECOVERY_SAFE_EVIDENCE.txt",
     "readme_ru": "docs/README_RU.md",
     "readme_en": "docs/README_EN.md",
-    "release_assets_required": "RELEASE_ASSETS_REQUIRED.md"
+    "release_assets_required": "docs/RELEASE_ASSETS.md"
   },
   "release_layout": {
     "root_files": [
@@ -737,7 +737,7 @@
     "runtime_assets": {
       "status": "embedded_sha256_verified",
       "count_restored_from_supplied_repository_archive": 6,
-      "verification_tool": "tools/verify_release_assets.py"
+      "verification_tool": "data/verify_release_assets.py"
     }
   },
   "rc25_install_geometry_policy": {

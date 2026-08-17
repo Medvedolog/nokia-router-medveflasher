@@ -14,7 +14,7 @@ All runtime payloads required for a runnable `1.0.0-rc25` release are embedded i
 Mandatory verification from the repository root:
 
 ```sh
-python3 tools/verify_release_assets.py
+python3 data/verify_release_assets.py
 sha256sum -c data/SHA256SUMS
 python3 data/master.py selftest-safety
 python3 data/master.py selftest-capabilities

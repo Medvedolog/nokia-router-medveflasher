@@ -41,7 +41,10 @@ documentation.
 
 - Repository releases carry no `fix` suffix; the version is `1.0.0-rc25` in every declaration site.
 - A `selftest-safety` case compares `APP_VERSION`, `BUILD_TAG`, root `VERSION`, `data/VERSION`, `MANIFEST.release.version`, `MANIFEST.release.build_tag`, `FIRMWARE_CAPABILITIES.version`, and `RELEASE_VERSION` in `stock-launcher.sh.in`, and fails if any pair disagrees or if a `fix` suffix reappears. The version is duplicated across those files because different consumers read different ones; this test is what keeps the duplication honest.
-- The six pinned runtime payloads are embedded and verified by `tools/verify_release_assets.py` against the sizes and SHA256 values in `RELEASE_ASSETS_REQUIRED.md`. `verify_kit()` remains fail-closed: a missing, resized, or SHA-mismatched payload blocks the operation.
+- The six pinned runtime payloads are embedded and verified by `data/verify_release_assets.py` against the sizes and SHA256 values in `docs/RELEASE_ASSETS.md`. `verify_kit()` remains fail-closed: a missing, resized, or SHA-mismatched payload blocks the operation.
+- The release archive is trimmed to the kit itself: `VERSION`, `LICENSE`, the four launcher scripts, `data/`, `docs/`, and an empty `work/`. Repository-side material — CI workflows, the ZIP import pipeline, the README — no longer ships inside it. `verify_release_assets.py` moved into `data/` and the pinned-asset table into `docs/`, so the archive root carries no loose tooling.
+- Removed the stale `_incoming/` RC24 ZIP-parts manifest and dropped the parenthesis from the import workflow's filename.
+- Fixed release notes losing their backtick-quoted values: the notes heredoc is unquoted, so every `` ` `` ran as command substitution and the published RC24 notes shipped with an empty archive name and SHA256.
 
 ### Credits
 

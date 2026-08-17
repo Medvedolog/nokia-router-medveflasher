@@ -34,7 +34,7 @@ jobs:
       - name: Stock Web parser/crypto selftest
         run: python data/stock_web.py --selftest
       - name: Runtime assets
-        run: python tools/verify_release_assets.py
+        run: python data/verify_release_assets.py
       - name: MF transition selftest
         env:
           NOKIA_LANG: en

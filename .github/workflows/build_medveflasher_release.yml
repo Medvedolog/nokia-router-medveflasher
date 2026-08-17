@@ -134,10 +134,10 @@ jobs:
                   raise SystemExit(f'ERROR: SHA256 mismatch: {rel}\nexpected {expected}\nactual   {actual}')
 
           release_files = {
-              'VERSION', 'START.cmd', 'START.sh', 'RESTORE_STOCK.cmd', 'RESTORE_STOCK.sh',
-              'RELEASE_ASSETS_REQUIRED.md',
+              'VERSION', 'LICENSE',
+              'START.cmd', 'START.sh', 'RESTORE_STOCK.cmd', 'RESTORE_STOCK.sh',
           }
-          for base in ('data', 'docs', 'tools'):
+          for base in ('data', 'docs'):
               for path in (root / base).rglob('*'):
                   if not path.is_file():
                       continue
@@ -275,16 +275,16 @@ jobs:
           rm -rf "$OUT"
           mkdir -p "$STAGE/work"
 
-          cp VERSION START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh RELEASE_ASSETS_REQUIRED.md "$STAGE/"
-          cp -a data docs tools "$STAGE/"
+          cp VERSION LICENSE START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh "$STAGE/"
+          cp -a data docs "$STAGE/"
           rm -rf "$STAGE/data/__pycache__"
           find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
           find "$STAGE" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
-          chmod 0644 "$STAGE/VERSION" "$STAGE/START.cmd" "$STAGE/RESTORE_STOCK.cmd" "$STAGE/RELEASE_ASSETS_REQUIRED.md"
+          chmod 0644 "$STAGE/VERSION" "$STAGE/LICENSE" "$STAGE/START.cmd" "$STAGE/RESTORE_STOCK.cmd"
           chmod 0755 "$STAGE/START.sh" "$STAGE/RESTORE_STOCK.sh"
-          find "$STAGE/data" "$STAGE/docs" "$STAGE/tools" -type d -exec chmod 0755 {} +
-          find "$STAGE/data" "$STAGE/docs" "$STAGE/tools" -type f -exec chmod 0644 {} +
+          find "$STAGE/data" "$STAGE/docs" -type d -exec chmod 0755 {} +
+          find "$STAGE/data" "$STAGE/docs" -type f -exec chmod 0644 {} +
           chmod 0755 "$STAGE/data/backup-agent.sh" "$STAGE/data/nokia-stock-tftp-backup-safe.sh"
           [ ! -f "$STAGE/data/recovery/recovery-clients-bin/nokia-tftp" ] || chmod 0755 "$STAGE/data/recovery/recovery-clients-bin/nokia-tftp"
           [ ! -f "$STAGE/data/recovery/recovery-clients-bin/nokia-scp" ] || chmod 0755 "$STAGE/data/recovery/recovery-clients-bin/nokia-scp"
@@ -391,10 +391,36 @@ jobs:
           - Nokia XG-040G-MD / Airoha AN7581
           - Nokia XG-040G-MF / Airoha AN7583 — full stock → backup → transition → all-in-UBI → production OpenWrt install cycle is hardware-confirmed.
 
-          The release workflow validates `data/SHA256SUMS`, pinned transition/recovery images, embedded production sysupgrade tails, RECOVERY_SAFE FIPs, transient recovery clients, and safety selftests before publishing.
+          ## What the archive contains
 
-          **Archive:** `${ZIP_NAME}`  
-          **SHA256:** `${ZIP_DIGEST}`
+          \`${ZIP_NAME}\` unpacks to a single directory holding the kit and nothing else:
+
+          | | |
+          |---|---|
+          | \`START.cmd\` / \`START.sh\` | entry points (Windows / Linux) |
+          | \`RESTORE_STOCK.cmd\` / \`RESTORE_STOCK.sh\` | stock rollback entry points |
+          | \`data/\` | wizard, installer engine, transition and recovery payloads, \`SHA256SUMS\` |
+          | \`docs/\` | instructions, architecture, changelog, image status (RU / EN) |
+          | \`work/\` | empty working directory for session logs |
+          | \`VERSION\`, \`LICENSE\` | release identity and licence |
+
+          Repository-side material — CI workflows, the import pipeline, README — is not shipped in the archive.
+
+          ## Highlights of this roll-up
+
+          - **Symmetric MD/MF install policy.** \`mtd2..mtd5\` classify the stock family and vendor slot revision only; they are no longer a permanent-write allowlist. Authorization comes from byte-exact stock handoff targets \`mtd0/mtd14/mtd15/mtd16\`, erase geometry, a content-revalidated full backup, and the physical NAND/UBI geometry the RAM installer re-derives before \`ubiformat\`.
+          - **Revision-tolerant recognition.** Field MD revisions such as \`mtd4=0x003AF742\` and \`0x003AF61F\` are recognized; a pair landing in both family windows stays \`unknown\` and fails closed.
+          - **Read-only flows stay read-only.** Audit and capability probes log out before returning; stock service provisioning is opt-in and escalates one service per failed root-discovery cycle.
+          - **Clean menus.** Selector text renders without the RC23 timestamp prefix; operational output, \`[BLOCKED]\`/\`[SAFETY-LATCH]\` decisions and \`[NAV]\` completion lines keep theirs.
+          - **LAN1 advisory.** Installation, backup, restore, UART recovery and Stage 2 warn when the PC link negotiates 2.5G, which only LAN1 can do. It is an advisory, not a gate, and defaults to continuing.
+          - **Release identity is self-checking.** A selftest compares every version declaration in the kit and rejects a \`fix\` suffix.
+
+          Firmware, transition and recovery payload bytes are unchanged from RC24.
+
+          The release workflow validates \`data/SHA256SUMS\`, pinned transition/recovery images, embedded production sysupgrade tails, RECOVERY_SAFE FIPs, transient recovery clients, and safety selftests before publishing.
+
+          **Archive:** \`${ZIP_NAME}\`  
+          **SHA256:** \`${ZIP_DIGEST}\`
 
           RC22 bad-block-aware UART stock restore remains a separate non-final recovery status; it is not promoted to a complete HW PASS by this package build.
           EOF

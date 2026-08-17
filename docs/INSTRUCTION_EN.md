@@ -546,6 +546,51 @@ This mode is for when the router boots neither stock nor OpenWrt but repeats the
 character `C` over UART. That means the BootROM is alive and waiting for the next
 boot stage over the XMODEM protocol.
 
+### Two different Reset paths — do not mix them up
+
+On an MD with a live tcboot, the Reset button leads to **two different** places,
+and what decides which one is when you press it relative to powering up.
+
+**Path A — tcboot Web recovery, no UART needed:**
+
+```
+Reset released
+   ↓
+apply power
+   ↓
+press Reset immediately and hold 5–10 seconds
+   ↓
+on UART: "Reset button is pressed for: 5"
+   ↓
+httpd at 192.168.1.1
+```
+
+Here the bootloader has already started and brought up Ethernet and HTTP itself.
+An Ethernet cable and a browser are enough.
+
+**Path B — BootROM, UART required:**
+
+```
+Reset already held
+   ↓
+apply power
+   ↓
+on UART: "Press x"
+```
+
+Power arrives with the button already held, so tcboot is never reached — you land
+in the BootROM. That is the entry point for the XMODEM procedure described below.
+
+> [!NOTE]
+> Path A is confirmed on live XG-040G-MD / AN7581 hardware: tcboot boots from
+> NAND, initialises DDR, probes the 256 MiB SPI-NAND, and brings up `eth0` and
+> `httpd`. For XG-040G-MF / AN7583 the tcboot network is **not confirmed** — it
+> needs its own PCS, MDIO, pinctrl and switch glue, and that layer is still under
+> research. On MF, assume only path B is available.
+
+The MedveFlasher wizard drives path B: it runs the UART procedure and does not
+operate the tcboot web interface.
+
 
 ### MD and MF support
 

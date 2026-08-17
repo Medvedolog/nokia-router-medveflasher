@@ -37,6 +37,17 @@ documentation.
 - Installation, backup, no-UART stock restore, BootROM/UART recovery, read-only BootROM/UART backup, and Stage 2 continuation now check the PC's link before the operation starts. A link negotiated at 2500 Mbit/s or faster can only be LAN1, because LAN2..LAN4 are gigabit ports, and it produces a warning naming the operation, a reminder to move the cable to LAN2/LAN3/LAN4, and a prompt that defaults to continuing.
 - The check is an advisory, not a gate. A gigabit PC NIC in LAN1 is indistinguishable from LAN2..LAN4, so a hard block would refuse correct setups while still missing the common mistake. Detection failures degrade to the existing policy reminder, a non-interactive run continues silently, and write authorization still comes only from the live family, MTD, handoff-target and backup gates. A selftest asserts the advisory keeps exactly one failure path: the operator answering "no".
 
+### Reading by fact
+
+- Classifying `mtd2..mtd5` is a precondition for writing, not for reading. `_stock_live_geometry_preflight()` gained `require_slot_family`: the TFTP capture, the USB capture and the capability probe pass `False` and proceed on whatever the device reports, printing the unrecognised layout as evidence; `_install_live_gate()` keeps `True` because the family choice selects the firmware payload. A read-only capture is still authorised by the fixed stock partitions, `/proc/mtd == sysfs`, the `0x20000` erase size and the MAC recorded in `DEVICE_MAC.txt`.
+- The reason is field drift, not convenience: observed MD revisions `mtd4=0x003AF742` and `0x003AF61F` sit against a rootfs reference exactly one eraseblock from the tolerance edge. Widening the reference table would chase every future revision; refusing to copy a NAND over a slot revision would deny a rollback image to the operator who needs one.
+- Removed two leftovers from an older release that consulted an exact-MD table only. Every MF backup, including the hardware-confirmed exact MF-A, fell through to a rejection claiming MF installation awaited a hardware gate — which blocked the no-UART stock restore for MF. `verify_backup()` now pins the observed slot sizes for either family, keeping the dump/`proc` cross-check exact. The dead `backup_direct()` helper, unreachable and carrying the same stale gate, is deleted.
+- A `selftest-safety` case pins the split: capture and diagnostics must read by fact, `_install_live_gate()` must not, the capture must still record `DEVICE_MAC.txt`, and the stale release gate must not return.
+
+### Documentation
+
+- The two MD Reset paths are documented as the distinct entry points they are. Pressing Reset after power lands in tcboot's own Web recovery with `eth0`/`httpd` already up and no UART needed; holding Reset before power preempts tcboot and lands in the BootROM `Press x` prompt, which is the XMODEM path the wizard drives. The MF tcboot network layer is stated as unproven, so only the BootROM path can be assumed there.
+
 ### Release identity
 
 - Repository releases carry no `fix` suffix; the version is `1.0.0-rc25` in every declaration site.

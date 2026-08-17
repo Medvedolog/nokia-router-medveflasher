@@ -1635,21 +1635,17 @@ def verify_backup(directory: Path, *, require_md_slot_layout: bool = True) -> di
         if _layout_matches(sizes, layout):
             selected = layout
             break
-    if selected is None and family == "md":
-        # Revision-tolerant MD match: pin the observed slot sizes instead of a
-        # table entry, so the dump <-> /proc/mtd cross-check below stays exact.
+    if selected is None and family in ("md", "mf"):
+        # Revision-tolerant match for either family: pin the observed slot sizes
+        # instead of a table entry, so the dump <-> /proc/mtd cross-check below
+        # stays exact. The table above only walks the MD layouts, so without this
+        # every MF backup — including the hardware-confirmed exact MF-A — used to
+        # fall through to the rejection below.
         selected = {number: sizes[number] for number in (2, 3, 4, 5)}
     if require_md_slot_layout and selected is None:
-        if family == "mf":
-            raise Error(tr(
-                f"Backup распознан как Nokia XG-040G-MF ({variant}), но normal OpenWrt install в rc12 остаётся заблокирован до отдельного HW gate. "
-                + _slot_layout_diagnostic(sizes),
-                f"The backup is recognized as Nokia XG-040G-MF ({variant}), but normal OpenWrt install remains blocked in rc12 pending a separate HW gate. "
-                + _slot_layout_diagnostic(sizes),
-            ))
         raise Error(tr(
-            "неподдерживаемые размеры stock-слотов: " + _slot_layout_diagnostic(sizes),
-            "unsupported stock slot sizes: " + _slot_layout_diagnostic(sizes),
+            "stock-слоты mtd2..mtd5 не относятся ни к MD, ни к MF: " + _slot_layout_diagnostic(sizes),
+            "the mtd2..mtd5 stock slots belong to neither MD nor MF: " + _slot_layout_diagnostic(sizes),
         ))
 
     expected = dict(FIXED_EXPECTED)
@@ -3142,72 +3138,6 @@ def validate_gzip_size(path: Path, expected: int) -> None:
         raise Error(f"{path.name}: распакованный размер {total}, ожидается {expected}")
 
 
-def backup_direct(telnet: Telnet, router_host: str, destination: Path, local_ip: str | None = None, port: int = 19091) -> Path:
-    nc = find_nc(telnet)
-    local_ip = local_ip or local_ip_for(router_host)
-    destination.mkdir(parents=True, exist_ok=True)
-    rc, proc_text = telnet.command("cat /proc/mtd", timeout=15, echo=False)
-    proc = parse_proc_mtd_text(proc_text)
-    if rc or tuple(sorted(proc)) != EXPECTED_NUMBERS:
-        raise Error("не удалось получить точную stock-разметку /proc/mtd")
-    write_text(destination / "proc_mtd.txt", "\n".join(
-        f'mtd{n}: {size:08x} {erase:08x} "{name}"' for n, (size, erase, name) in sorted(proc.items())
-    ) + "\n")
-    for meta_name, command in (("cmdline.txt", "cat /proc/cmdline"), ("uname.txt", "uname -a"), ("id.txt", "id")):
-        _, text = telnet.command(command, timeout=15, echo=False)
-        cleaned = re.sub(r"__NOKIA_RC_\d+_\d+__", "", text)
-        write_text(destination / meta_name, cleaned.strip() + "\n")
-
-    for number in EXPECTED_NUMBERS:
-        size, _, name = proc[number]
-        target = destination / f"mtd{number}_{name}.bin.gz"
-        partial = target.with_suffix(target.suffix + ".part")
-        for attempt in range(1, 4):
-            partial.unlink(missing_ok=True)
-            ready = threading.Event()
-            result = ReceiverResult()
-            thread = threading.Thread(target=receive_one, args=("0.0.0.0", port, partial, ready, result), daemon=True)
-            thread.start()
-            ready.wait(5)
-            if result.error:
-                raise Error(f"не удалось открыть TCP-порт {port}: {result.error}")
-            print(f"[{number}/16] Приём mtd{number} ({name}), попытка {attempt}...")
-            cmd = f"dd if=/dev/mtd{number} bs=131072 2>/tmp/nokia-dd-{number}.log | gzip -1 | {nc} {shlex.quote(local_ip)} {port}"
-            telnet.send_line(cmd + f"; __rc=$?; echo __STREAM_{number}_${{__rc}}__")
-            thread.join(timeout=max(300, size // 100000 + 120))
-            if thread.is_alive():
-                print("Тайм-аут потока; повтор раздела.")
-                continue
-            marker_text = telnet.wait_regex(rf"__STREAM_{number}_(\d+)__", 30, echo=False)
-            marker = re.search(rf"__STREAM_{number}_(\d+)__", marker_text)
-            if result.error or not marker or marker.group(1) != "0":
-                print(f"Сетевая ошибка: {result.error or 'router rc != 0'}")
-                continue
-            try:
-                validate_gzip_size(partial, size)
-            except Error as exc:
-                print(exc)
-                continue
-            partial.replace(target)
-            print(f"  OK: {target.name}, {target.stat().st_size} байт, SHA256 {sha_file(target)}")
-            break
-        else:
-            raise Error(f"не удалось надёжно снять mtd{number} после трёх попыток")
-
-    # Convenience board-data files.
-    (destination / "bosa.bin").write_bytes(read_dump(find_dump(destination, 6)))
-    (destination / "ri.bin").write_bytes(read_dump(find_dump(destination, 7)))
-    sums = []
-    for path in sorted(p for p in destination.iterdir() if p.is_file() and p.name not in ("SHA256SUMS.txt", "BACKUP_COMPLETE")):
-        sums.append(f"{sha_file(path)}  {path.name}")
-    write_text(destination / "SHA256SUMS.txt", "\n".join(sums) + "\n")
-    write_text(destination / "BACKUP_COMPLETE", "Nokia XG-040G-MD direct network backup complete\n")
-    verify_backup(destination)
-    return destination
-
-
-
-
 def _stock_sysfs_mtd_snapshot(telnet: Telnet) -> dict[int, tuple[int, int, str]]:
     command = (
         'for d in /sys/class/mtd/mtd[0-9]*; do [ -d "$d" ] || continue; '
@@ -3227,7 +3157,24 @@ def _stock_sysfs_mtd_snapshot(telnet: Telnet) -> dict[int, tuple[int, int, str]]
     return out
 
 
-def _stock_live_geometry_preflight(telnet: Telnet, expected_family: str, require_ro: bool = True) -> tuple[dict[int, tuple[int, int, str]], str, str]:
+def _stock_live_geometry_preflight(
+    telnet: Telnet,
+    expected_family: str,
+    require_ro: bool = True,
+    *,
+    require_slot_family: bool = True,
+) -> tuple[dict[int, tuple[int, int, str]], str, str]:
+    """Prove live stock geometry before an operation touches the device.
+
+    ``require_slot_family`` is what separates reading from writing. Installation
+    needs mtd2..mtd5 to name a family, because that choice selects the firmware
+    payload. Backup does not: it is read-only, the device is identified by the
+    fixed partitions, the /proc/mtd <-> sysfs cross-check and the MAC recorded in
+    DEVICE_MAC.txt, and refusing to copy a NAND because a vendor slot revision
+    drifted would deny a rollback image to exactly the operator who needs one.
+    Callers that only read pass ``require_slot_family=False`` and get whatever is
+    actually there, with the unrecognised layout reported as evidence.
+    """
     rc, proc_text = telnet.command("cat /proc/mtd", timeout=20, echo=False)
     proc = parse_proc_mtd_text(proc_text)
     if rc or tuple(sorted(proc)) != EXPECTED_NUMBERS:
@@ -3236,8 +3183,17 @@ def _stock_live_geometry_preflight(telnet: Telnet, expected_family: str, require
     family = detect_stock_backup_family(sizes)
     variant = detect_stock_backup_variant(sizes)
     if family not in ("md", "mf"):
-        raise Error(tr("stock slot layout не распознан: " + _slot_layout_diagnostic(sizes), "stock slot layout is not recognized: " + _slot_layout_diagnostic(sizes)))
-    if expected_family in ("md", "mf") and family != expected_family:
+        if require_slot_family:
+            raise Error(tr("stock slot layout не распознан: " + _slot_layout_diagnostic(sizes), "stock slot layout is not recognized: " + _slot_layout_diagnostic(sizes)))
+        print(tr(
+            "[WARNING] Ревизия stock-слотов mtd2..mtd5 не распознана: " + _slot_layout_diagnostic(sizes),
+            "[WARNING] The mtd2..mtd5 stock slot revision is not recognized: " + _slot_layout_diagnostic(sizes),
+        ))
+        print(tr(
+            "[INFO] Backup продолжается по факту: фиксированные разделы, /proc/mtd == sysfs и MAC устройства проверяются как обычно. Установка на этом аппарате останется заблокированной до распознавания семейства.",
+            "[INFO] Backup continues as observed: the fixed partitions, /proc/mtd == sysfs and the device MAC are verified as usual. Installation on this unit stays blocked until the family is recognized.",
+        ))
+    if family in ("md", "mf") and expected_family in ("md", "mf") and family != expected_family:
         raise Error(tr(
             f"модель/разметка не совпали: Web={expected_family.upper()}, MTD={family.upper()} ({variant})",
             f"model/layout mismatch: Web={expected_family.upper()}, MTD={family.upper()} ({variant})",
@@ -3266,17 +3222,21 @@ def _stock_live_geometry_preflight(telnet: Telnet, expected_family: str, require
             f"/proc/mtd и sysfs не согласованы (missing={missing}, mismatch={mismatch}); backup заблокирован",
             f"/proc/mtd and sysfs disagree (missing={missing}, mismatch={mismatch}); backup is blocked",
         ))
-    if family == "mf" and require_ro:
+    # An unrecognised slot revision must not silently drop the MF read-only
+    # device requirement, so fall back to the family the Web UI reported.
+    effective_family = family if family in ("md", "mf") else expected_family
+    if effective_family == "mf" and require_ro:
         rc, ro_text = telnet.command(
             'ok=1; n=0; while [ $n -le 16 ]; do [ -r /dev/mtd${n}ro ] || { echo MISSING_RO=$n; ok=0; }; n=$((n+1)); done; echo RO_OK=$ok',
             timeout=20, echo=False)
         if rc or "RO_OK=1" not in ro_text:
             raise Error(tr("MF backup требует доступные /dev/mtd0ro..mtd16ro", "MF backup requires readable /dev/mtd0ro..mtd16ro"))
+    label = family.upper() if family in ("md", "mf") else f"{(expected_family or 'unknown').upper()} (по Web, слот не распознан)"
     print(tr(
-        f"[OK] Stock geometry: {family.upper()} / {variant}; /proc/mtd == sysfs; restore span 0x{proc[16][0]:08X}.",
-        f"[OK] Stock geometry: {family.upper()} / {variant}; /proc/mtd == sysfs; restore span 0x{proc[16][0]:08X}.",
+        f"[OK] Stock geometry: {label} / {variant}; /proc/mtd == sysfs; restore span 0x{proc[16][0]:08X}.",
+        f"[OK] Stock geometry: {label} / {variant}; /proc/mtd == sysfs; restore span 0x{proc[16][0]:08X}.",
     ))
-    return proc, family, variant
+    return proc, effective_family, variant
 
 
 def _human_transfer_size(value: int) -> str:
@@ -3429,7 +3389,8 @@ def backup_tftp(
             detected_family = detect_stock_backup_family(sizes)
             detected_variant = detect_stock_backup_variant(sizes)
         else:
-            proc, detected_family, detected_variant = _stock_live_geometry_preflight(telnet, expected_family)
+            proc, detected_family, detected_variant = _stock_live_geometry_preflight(
+                telnet, expected_family, require_slot_family=False)
             rc, stream_tools = telnet.command(
                 'ok=1; for x in tee sha256sum; do command -v "$x" >/dev/null 2>&1 || { echo MISSING_STREAM_TOOL=$x; ok=0; }; done; '
                 '(command -v mkfifo >/dev/null 2>&1 || command -v mknod >/dev/null 2>&1) || { echo MISSING_STREAM_TOOL=mkfifo_or_mknod; ok=0; }; '
@@ -3675,7 +3636,11 @@ def backup_tftp(
             sums.append(f"{sha_file(path)}  {path.name}")
         write_text(destination / "SHA256SUMS.txt", "\n".join(sums) + "\n")
         validation = verify_stock_restore_backup(destination)
-        if str(validation.get("stock_family")) != detected_family:
+        validated_family = str(validation.get("stock_family"))
+        # "unknown" is not a contradiction: the slot revision was already reported
+        # as unrecognised above. Only a different *named* family means the dump
+        # disagrees with the live device, and that still blocks.
+        if validated_family in ("md", "mf") and validated_family != detected_family:
             raise Error(tr("итоговый validator определил другую family", "the final validator detected a different family"))
         write_text(destination / "BACKUP_COMPLETE", f"{model_name} direct TFTP backup complete ({detected_variant})\n")
         # Common MD/MF evidence marker.  It records that the backup passed the
@@ -8647,6 +8612,60 @@ def _readonly_flow_selftest() -> None:
             raise Error(f"read-only selftest: {name} no longer defaults service provisioning to off")
 
 
+def _rc25_readonly_by_fact_selftest() -> None:
+    """Reading must not depend on recognising a vendor slot revision."""
+    source = Path(__file__).read_text(encoding="utf-8")
+
+    start = source.index("\ndef _stock_live_geometry_preflight(")
+    end = source.find("\ndef ", start + 1)
+    preflight = source[start:end if end != -1 else len(source)]
+    if "require_slot_family: bool = True" not in preflight:
+        raise Error("read-by-fact selftest: the preflight lost its require_slot_family switch")
+    if "if require_slot_family:" not in preflight:
+        raise Error("read-by-fact selftest: an unrecognised slot revision is unconditionally fatal again")
+    # The evidence a read-only capture actually relies on must stay mandatory.
+    for token in ("FIXED_EXPECTED", "sysfs", "0x20000"):
+        if token not in preflight:
+            raise Error(f"read-by-fact selftest: the preflight stopped proving {token}")
+
+    # Capture and diagnostics read; only the installer chooses a payload.
+    for name, expected in (
+        ("backup_tftp", False),
+        ("backup_only_wizard", False),
+        ("firmware_capabilities_wizard", False),
+        ("_install_live_gate", True),
+    ):
+        start = source.index(f"\ndef {name}(")
+        end = source.find("\ndef ", start + 1)
+        body = source[start:end if end != -1 else len(source)]
+        if "_stock_live_geometry_preflight(" not in body:
+            raise Error(f"read-by-fact selftest: {name} no longer runs the live geometry preflight")
+        relaxed = "require_slot_family=False" in body
+        if relaxed == expected:
+            state = "reads by fact" if expected else "requires a recognised family"
+            raise Error(f"read-by-fact selftest: {name} unexpectedly {state}")
+
+    # Device identity comes from the MAC, so it must be recorded even when the
+    # slot revision is unknown.
+    start = source.index("\ndef backup_tftp(")
+    end = source.find("\ndef ", start + 1)
+    capture = source[start:end if end != -1 else len(source)]
+    if "_write_backup_device_mac(" not in capture:
+        raise Error("read-by-fact selftest: the capture stopped recording DEVICE_MAC.txt")
+
+    # An older release left an exact-MD table behind that rejected every MF
+    # backup, including the hardware-confirmed exact MF-A. It must not come back.
+    # The token is assembled so this check does not match its own source.
+    stale_gate = "rc" + "12"
+    if stale_gate in source.replace('"rc" + "12"', ""):
+        raise Error("read-by-fact selftest: a stale release-gate reference is present again")
+    start = source.index("\ndef verify_backup(")
+    end = source.find("\ndef ", start + 1)
+    validator = source[start:end if end != -1 else len(source)]
+    if 'family in ("md", "mf")' not in validator:
+        raise Error("read-by-fact selftest: verify_backup pins observed slots for one family only")
+
+
 def _rc25_menu_timestamp_selftest() -> None:
     """Menus must render clean; operational output must stay timestamped."""
     stamped = _timestamp_text("operational line")
@@ -10961,7 +10980,7 @@ def backup_only_wizard() -> None:
                 if family == "mf":
                     # New MF backend: require the same strict live geometry proof as TFTP.
                     # Keep the established MD USB backup behavior unchanged.
-                    _stock_live_geometry_preflight(telnet, family)
+                    _stock_live_geometry_preflight(telnet, family, require_slot_family=False)
                 mount = input(tr("Путь USB внутри Nokia [автоопределение: /mnt/USB_disc1]: ", "USB path inside Nokia [auto-detect: /mnt/USB_disc1]: ")).strip() or None
                 mount = resolve_router_usb_mount(telnet, mount)
                 verify_router_usb_storage(telnet, mount)
@@ -11185,7 +11204,8 @@ def firmware_capabilities_wizard() -> None:
         root_ok = uid == 0
         if not root_ok:
             raise Error(tr("CAP_STOCK_ROOT: UID 0 не доказан", "CAP_STOCK_ROOT: UID 0 was not proven"))
-        _proc, detected_family, variant = _stock_live_geometry_preflight(telnet, family, require_ro=False)
+        _proc, detected_family, variant = _stock_live_geometry_preflight(
+            telnet, family, require_ro=False, require_slot_family=False)
         geometry_ok = detected_family == family
         rc, io_text = telnet.command(
             'ok=1; n=0; while [ $n -le 16 ]; do '
@@ -11649,9 +11669,10 @@ def main(argv: list[str] | None = None) -> int:
             _stock_slot_tolerance_selftest()
             _readonly_flow_selftest()
             _rc25_menu_timestamp_selftest()
+            _rc25_readonly_by_fact_selftest()
             _rc25_release_identity_selftest()
             _rc25_lan1_advisory_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC25 menu timestamps + release identity + LAN1 advisory safety selftest: OK")
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC25 menu timestamps + read-by-fact backup + release identity + LAN1 advisory safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

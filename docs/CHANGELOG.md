@@ -1,3 +1,52 @@
+# 1.0.0-rc25 — symmetric MD/MF install policy, clean menus, LAN1 advisory
+
+Released to this repository as a single `1.0.0-rc25`. The interim `rc25fix` and
+`rc25fix2` iterations are folded into this entry, which describes the shipped
+state rather than the path taken to it. Firmware payloads are byte-identical to
+RC24; RC25 changes PC-side orchestration, the stock launcher template, and
+documentation.
+
+## 1.0.0-rc25 — 17 August 2026
+
+### Install authorization
+
+- `mtd2..mtd5` now classify the stock family and vendor slot revision only. They are no longer a permanent-write allowlist. `MD_PERMANENT_WRITE_LAYOUTS`, `InstallProfile.allowed_stock_variant`, and the MF-only exact `MF-A` write gate are removed, so MD and MF follow one symmetric destructive policy.
+- MD slot matching is revision-tolerant: the slot carrying the canonical pair `00480000/02400000` must still match byte-exact, while the opposite slot is matched against the MD reference within `±0x2000` (kernel image size) and `±0x10000` (rootfs slot size, `0x10000` alignment required). The field cases `mtd4=0x003AF742` and `mtd4=0x003AF61F` are recognized. Family windows stay far inside half the distance between the family reference points; a pair falling into both families is reported `unknown` and fails closed.
+- `_install_live_gate()` byte-exact checks the stock handoff targets `mtd0/mtd14/mtd15/mtd16` and erase geometry. Stage 2 payloads independently pin physical 256 MiB NAND, `BL2=0x20000`, `UBI/IBU=0x0FFE0000`, erase `0x20000`, and write `0x800` before `ubiformat` is reachable.
+- `stock-launcher.sh.in` no longer dies on a recognized slot revision. It keeps exact fixed partitions and target identity, and reports the vendor slot label as diagnostic evidence.
+- Install backup policy is unified: both MD and MF use `verify_stock_restore_backup()`. `BACKUP_HW_VALIDATED` is evidence, not an authorization token, and every selected backup is re-read and validated from content.
+- Capability reporting follows the same model: `READY` means the family path exists under current live gates while backup and physical-target gates remain mandatory. Variant no longer changes permanent-install capability within a family.
+- `verify_kit()` also checks `MANIFEST.release.version/build_tag/archive_root` against the code, closing the one version-identity site that was not enforced at runtime.
+
+### Stock Web sessions and UID-0 acquisition
+
+- Backup and MF install use `_stock_operational_web_access()` and retain the authenticated `web_client/web_setup` until the operation finishes, so opt-in UID-0 provisioning can actually enable FTP/Samba and re-read credentials.
+- `stock_audit_wizard()` and `firmware_capabilities_wizard()` stay read-only and use `_stock_audit_web_access()`, which logs out before returning. A selftest blocks accidental use of the operational wrapper from a read-only flow.
+- Stock service provisioning is opt-in through `allow_service_provisioning`, default `False`, and `provision_next()` performs exactly one service attempt per failed root-discovery cycle — FTP first, Samba only on the next cycle. An FTP error or timeout can no longer fall through to Samba within the same cycle.
+- Provisioning is described as "no raw MTD, flash, or firmware write" rather than as leaving NAND untouched: it saves a stock Web-UI settings form, and where the firmware persists those settings is not observable from the wizard.
+- `_slot_layout_diagnostic()` no longer reports `outside every family window` for a recognized fuzzy MD/MF pair, so permanent-write rejection diagnostics are internally consistent.
+- The audit parser uses the same revision-tolerant MD/MF classifier and no longer blocks MF variants on exact `MF-A`.
+
+### Operator console
+
+- Menus render without timestamps. The startup-mode selector, main menu, all four submenus, the manual model fallback, and the post-action navigation selector are drawn inside `menu_ui()`, which suspends the RC23 timestamp prefix for selector text only. Operational output, `[BLOCKED]`/`[SAFETY-LATCH]` decisions and the `[NAV]` completion lines keep their timestamps, so PC output still correlates with UART events.
+- A `selftest-safety` case parses the module and fails the build if any of those functions prompts for a choice or prints a numbered option outside `menu_ui()`.
+
+### LAN1 advisory
+
+- Installation, backup, no-UART stock restore, BootROM/UART recovery, read-only BootROM/UART backup, and Stage 2 continuation now check the PC's link before the operation starts. A link negotiated at 2500 Mbit/s or faster can only be LAN1, because LAN2..LAN4 are gigabit ports, and it produces a warning naming the operation, a reminder to move the cable to LAN2/LAN3/LAN4, and a prompt that defaults to continuing.
+- The check is an advisory, not a gate. A gigabit PC NIC in LAN1 is indistinguishable from LAN2..LAN4, so a hard block would refuse correct setups while still missing the common mistake. Detection failures degrade to the existing policy reminder, a non-interactive run continues silently, and write authorization still comes only from the live family, MTD, handoff-target and backup gates. A selftest asserts the advisory keeps exactly one failure path: the operator answering "no".
+
+### Release identity
+
+- Repository releases carry no `fix` suffix; the version is `1.0.0-rc25` in every declaration site.
+- A `selftest-safety` case compares `APP_VERSION`, `BUILD_TAG`, root `VERSION`, `data/VERSION`, `MANIFEST.release.version`, `MANIFEST.release.build_tag`, `FIRMWARE_CAPABILITIES.version`, and `RELEASE_VERSION` in `stock-launcher.sh.in`, and fails if any pair disagrees or if a `fix` suffix reappears. The version is duplicated across those files because different consumers read different ones; this test is what keeps the duplication honest.
+- The six pinned runtime payloads are embedded and verified by `tools/verify_release_assets.py` against the sizes and SHA256 values in `RELEASE_ASSETS_REQUIRED.md`. `verify_kit()` remains fail-closed: a missing, resized, or SHA-mismatched payload blocks the operation.
+
+### Credits
+
+- Hardware run and original patch: Mikhail Skvortsov. The read-only-flow and write-authorization corrections came out of the RC24 review pass.
+
 # 1.0.0-rc24 — persistent interactive menus
 
 ## 1.0.0-rc24 — 13 August 2026

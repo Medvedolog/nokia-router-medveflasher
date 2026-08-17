@@ -25,6 +25,15 @@ MF_SLOT_LAYOUTS = (
     ("MF-B-MIRROR", {2: 0x00480000, 3: 0x02400000, 4: 0x003B6D40, 5: 0x01D10000}),
 )
 
+STOCK_SLOT_CANONICAL_PAIR = (0x00480000, 0x02400000)
+STOCK_SLOT_REVISION_REFERENCE = {
+    "md": ((0x003AF6DA, 0x01CC0000),),
+    "mf": ((0x003B6CC0, 0x01D00000), (0x003B6D40, 0x01D10000)),
+}
+STOCK_SLOT_IMAGE_TOLERANCE = 0x2000
+STOCK_SLOT_PARTITION_TOLERANCE = 0x10000
+STOCK_SLOT_PARTITION_GRANULARITY = 0x10000
+
 
 def split_sections(text: str) -> dict[str, str]:
     text = text.replace("\x00", "")
@@ -126,8 +135,31 @@ def detect_layout(rows: list[dict[str, object]]) -> tuple[str, str]:
     for label, layout in MF_SLOT_LAYOUTS:
         if all(sizes.get(n) == size for n, size in layout.items()):
             return "mf", label
-    return "unknown", "UNKNOWN"
 
+    master = (sizes.get(2), sizes.get(3))
+    slave = (sizes.get(4), sizes.get(5))
+    if None in master or None in slave:
+        return "unknown", "UNKNOWN"
+    if slave == STOCK_SLOT_CANONICAL_PAIR:
+        orientation, pair = "A", master
+    elif master == STOCK_SLOT_CANONICAL_PAIR:
+        orientation, pair = "A-MIRROR", slave
+    else:
+        return "unknown", "UNKNOWN"
+    image, partition = pair
+    if image <= 0 or partition <= image or partition % STOCK_SLOT_PARTITION_GRANULARITY:
+        return "unknown", "UNKNOWN"
+    matched = {
+        family
+        for family, refs in STOCK_SLOT_REVISION_REFERENCE.items()
+        for ref_image, ref_partition in refs
+        if abs(image - ref_image) <= STOCK_SLOT_IMAGE_TOLERANCE
+        and abs(partition - ref_partition) <= STOCK_SLOT_PARTITION_TOLERANCE
+    }
+    if len(matched) != 1:
+        return "unknown", "UNKNOWN"
+    family = next(iter(matched))
+    return family, f"{family.upper()}-{orientation}-REV"
 
 def parse_tools(sec: str) -> dict[str, bool]:
     out: dict[str, bool] = {}
@@ -225,32 +257,20 @@ def build_profile(text: str) -> dict[str, object]:
     backup_ready = stock_root and mtd_consistency == "PASS" and family in ("md", "mf") and restore_span is not None and read_ready and mf_ro_ready and mf_transport_ready
 
     if family == "md":
-        full_backup_cap = "YES - established MD backend" if backup_ready else "BLOCKED/UNKNOWN"
-        ram_cap = "YES - HW CONFIRMED transition path"
-        ubi_format_cap = "YES - HW CONFIRMED MD stage 2"
-        ubi_write_cap = "YES - HW CONFIRMED MD stage 2"
+        full_backup_cap = "YES - restore-grade MD backend available" if backup_ready else "BLOCKED/UNKNOWN"
+        ram_cap = "YES - HW CONFIRMED MD transition path" if stock_root and mtd_consistency == "PASS" else "BLOCKED/UNKNOWN"
+        ubi_format_cap = "READY - RAM stage exact physical target gate" if stock_root and mtd_consistency == "PASS" else "BLOCKED/UNKNOWN"
+        ubi_write_cap = "READY - canonical UBI volumes + readback" if stock_root and mtd_consistency == "PASS" else "BLOCKED/UNKNOWN"
         bootloader_replace_cap = "EXPERIMENTAL - tcboot research; not enabled"
-        permanent_cap = "YES - HW CONFIRMED MD path"
+        permanent_cap = "READY - HW-confirmed MD path; full backup + exact target gates mandatory" if backup_ready else "BLOCKED/UNKNOWN"
         uart_cap = "YES - HW CONFIRMED"
     elif family == "mf":
-        if backup_ready and variant == "MF-A":
-            full_backup_cap = "YES - HW CONFIRMED MF-A normal TFTP backup"
-        elif backup_ready:
-            full_backup_cap = "READY - live gates PASS; variant HW capture pending"
-        else:
-            full_backup_cap = "BLOCKED/UNKNOWN"
-        if backup_ready and variant == "MF-A":
-            ram_cap = "ENABLED - rc15 shared-engine MF-A transition"
-            ubi_format_cap = "ENABLED - EXPERIMENTAL MF-A; installer requires BACKUP_HW_VALIDATED + explicit confirmation"
-            ubi_write_cap = "ENABLED - EXPERIMENTAL MF-A; canonical UBI volumes + readback"
-            bootloader_replace_cap = "ENABLED - EXPERIMENTAL MF-A; OpenWrt BL2 written last"
-            permanent_cap = "ENABLED - EXPERIMENTAL MF-A; UART full-stock restore is HW-confirmed fallback"
-        else:
-            ram_cap = "PARTIAL/BLOCKED - release write gate requires MF-A"
-            ubi_format_cap = "BLOCKED - MF-A permanent gate not satisfied"
-            ubi_write_cap = "BLOCKED - MF-A permanent gate not satisfied"
-            bootloader_replace_cap = "BLOCKED - MF-A permanent gate not satisfied"
-            permanent_cap = "BLOCKED - MF-A permanent gate not satisfied"
+        full_backup_cap = "YES - restore-grade MF backend available" if backup_ready else "BLOCKED/UNKNOWN"
+        ram_cap = "YES - HW CONFIRMED AN7583 transition path" if stock_root and mtd_consistency == "PASS" else "BLOCKED/UNKNOWN"
+        ubi_format_cap = "READY - RAM stage exact physical target gate" if stock_root and mtd_consistency == "PASS" else "BLOCKED/UNKNOWN"
+        ubi_write_cap = "READY - canonical UBI volumes + readback" if stock_root and mtd_consistency == "PASS" else "BLOCKED/UNKNOWN"
+        bootloader_replace_cap = "READY - pinned MF BL2 written last" if stock_root and mtd_consistency == "PASS" else "BLOCKED/UNKNOWN"
+        permanent_cap = "READY - HW-confirmed MF path; full backup + exact target gates mandatory" if backup_ready else "BLOCKED/UNKNOWN"
         uart_cap = "YES - HW CONFIRMED full stock restore"
     else:
         full_backup_cap = "BLOCKED/UNKNOWN"

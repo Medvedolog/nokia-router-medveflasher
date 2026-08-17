@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc24 · **Date:** 13 August 2026
+**Version:** 1.0.0-rc25 · **Date:** 17 August 2026
 
 **OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
 **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
@@ -69,20 +69,20 @@ wrong, see [If an error occurs](#if-an-error-occurs).
 
 Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-Release profile for 1.0.0-rc24:
+Release profile for 1.0.0-rc25:
 
 ```text
                           MD / AN7581            MF / AN7583
-CAP_FULL_BACKUP           YES                    YES (MF-A)
-CAP_RAM_OPENWRT           YES                    YES (MF-A)
-CAP_UBI_FORMAT            YES                    YES (MF-A)
-CAP_UBI_VOLUME_WRITE      YES                    YES (MF-A)
-CAP_BOOTLOADER_REPLACE    EXPERIMENTAL_DISABLED  YES (MF-A)
-CAP_PERMANENT_INSTALL     YES                    YES (MF-A)
+CAP_FULL_BACKUP           YES                    YES
+CAP_RAM_OPENWRT           YES                    YES
+CAP_UBI_FORMAT            YES                    YES
+CAP_UBI_VOLUME_WRITE      YES                    YES
+CAP_BOOTLOADER_REPLACE    EXPERIMENTAL_DISABLED  YES
+CAP_PERMANENT_INSTALL     YES                    YES
 CAP_UART_RECOVERY         RC18_SAFE_PENDING_HW   RC18_SAFE_PENDING_HW
 ```
 
-MF-A-MIRROR / MF-B / MF-B-MIRROR variants are recognized but stay live-gated: each needs its own end-to-end hardware run. `RC18_SAFE_PENDING_HW` means the restore path itself is hardware-confirmed while the exact RC18 SAFE FIP bytes await their first regression run.
+From RC25 the slot variant no longer changes capability within a family, so the table carries no `(MF-A)` qualifiers: `MF-A-MIRROR`, `MF-B`, `MF-B-MIRROR`, and recognized MD revisions follow the same install policy as the exact variant. `YES` means the family path exists under current live gates, not that a write is already authorized: a full backup, exact stock handoff targets `mtd0/mtd14/mtd15/mtd16`, and the physical NAND/UBI geometry check in the RAM transition all remain mandatory. `RC18_SAFE_PENDING_HW` means the restore path itself is hardware-confirmed while the exact RC18 SAFE FIP bytes await their first regression run.
 
 After the startup Web fingerprint, the installation menu selects the MD or MF profile, but that never authorizes writes: live Web/root/MTD/backup gates are repeated inside the shared installer engine. MD and MF expose the same installation actions; board-specific differences live in the profile. Machine-readable release matrix: `data/FIRMWARE_CAPABILITIES.json`.
 
@@ -92,12 +92,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc24.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc25.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc24.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc25.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root
@@ -187,7 +187,9 @@ matches the label — so try Enter first at both UID 0 prompts.
 
 ## Connecting the router
 
-1. Connect the computer to the Nokia LAN port by cable.
+1. Connect the computer to the Nokia LAN port by cable. Use **LAN2, LAN3, or
+   LAN4**. LAN1 is the 2.5G port and is excluded from transition/recovery
+   because the link is unstable there.
 2. The router should be reachable at `192.168.1.1`, the computer on the same
    subnet (e.g. `192.168.1.2`).
 3. Check connectivity:
@@ -202,6 +204,26 @@ ping -c 4 192.168.1.1     # Linux
 
 If the router uses a different address, give it to the wizard instead of
 `192.168.1.1`.
+
+### Port check before an operation
+
+Before installation, backup, stock restore, UART recovery, and Stage 2
+continuation, the wizard looks at the computer's link speed. A link at
+2500 Mbit/s or faster can only be LAN1, because LAN2..LAN4 are gigabit ports, and
+it produces a warning and a prompt:
+
+```text
+[NETWORK POLICY] WARNING: eth0 negotiated 2500 Mbit/s, which only LAN1 / 2.5G can do,
+and that port is excluded from transition/recovery because the link is unstable.
+[NETWORK POLICY] Move the cable to LAN2, LAN3, or LAN4 before the 'OpenWrt installation' operation.
+Continue anyway? [Y/n]:
+```
+
+This is an advisory, not a block: Enter continues. The trade-off is that a
+gigabit NIC in LAN1 negotiates 1000 Mbit/s and is indistinguishable from
+LAN2..LAN4, so that case is not caught — check the port yourself as well. When
+the speed cannot be read, the wizard just repeats the policy reminder and
+continues.
 
 ---
 
@@ -233,12 +255,20 @@ cannot open it, run `sudo ./START.sh`.
 ## Main menu
 
 ```text
+=== Main menu ===
 1 — flashing / installation / recovery
 2 — backup
-3 — show credentials, all device users, and privileges
+3 — credentials / users / stock audit
 4 — preparation / continue installation
 5 — exit
+Select 1/2/3/4/5:
 ```
+
+Menus print without timestamps, and that is deliberate. The
+`[YYYY-MM-DD HH:MM:SS]` prefix exists so PC output can be lined up against UART
+events; on menu options it only makes the choices harder to read. The
+`[BLOCKED]`/`[SAFETY-LATCH]` decision lines and the `[NAV]` completion lines keep
+their timestamps.
 
 Submenu **1** contains stock-MD OpenWrt installation, installation from an existing backup, stock restore without UART, and BootROM/UART brick recovery for MD/MF.
 

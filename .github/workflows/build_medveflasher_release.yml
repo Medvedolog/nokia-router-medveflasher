@@ -135,8 +135,9 @@ jobs:
 
           release_files = {
               'VERSION', 'START.cmd', 'START.sh', 'RESTORE_STOCK.cmd', 'RESTORE_STOCK.sh',
+              'RELEASE_ASSETS_REQUIRED.md',
           }
-          for base in ('data', 'docs'):
+          for base in ('data', 'docs', 'tools'):
               for path in (root / base).rglob('*'):
                   if not path.is_file():
                       continue
@@ -274,16 +275,16 @@ jobs:
           rm -rf "$OUT"
           mkdir -p "$STAGE/work"
 
-          cp VERSION START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh "$STAGE/"
-          cp -a data docs "$STAGE/"
+          cp VERSION START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh RELEASE_ASSETS_REQUIRED.md "$STAGE/"
+          cp -a data docs tools "$STAGE/"
           rm -rf "$STAGE/data/__pycache__"
           find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
           find "$STAGE" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
-          chmod 0644 "$STAGE/VERSION" "$STAGE/START.cmd" "$STAGE/RESTORE_STOCK.cmd"
+          chmod 0644 "$STAGE/VERSION" "$STAGE/START.cmd" "$STAGE/RESTORE_STOCK.cmd" "$STAGE/RELEASE_ASSETS_REQUIRED.md"
           chmod 0755 "$STAGE/START.sh" "$STAGE/RESTORE_STOCK.sh"
-          find "$STAGE/data" "$STAGE/docs" -type d -exec chmod 0755 {} +
-          find "$STAGE/data" "$STAGE/docs" -type f -exec chmod 0644 {} +
+          find "$STAGE/data" "$STAGE/docs" "$STAGE/tools" -type d -exec chmod 0755 {} +
+          find "$STAGE/data" "$STAGE/docs" "$STAGE/tools" -type f -exec chmod 0644 {} +
           chmod 0755 "$STAGE/data/backup-agent.sh" "$STAGE/data/nokia-stock-tftp-backup-safe.sh"
           [ ! -f "$STAGE/data/recovery/recovery-clients-bin/nokia-tftp" ] || chmod 0755 "$STAGE/data/recovery/recovery-clients-bin/nokia-tftp"
           [ ! -f "$STAGE/data/recovery/recovery-clients-bin/nokia-scp" ] || chmod 0755 "$STAGE/data/recovery/recovery-clients-bin/nokia-scp"

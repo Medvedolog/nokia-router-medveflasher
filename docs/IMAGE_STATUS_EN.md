@@ -1,4 +1,4 @@
-# Nokia Router MedveFlasher 1.0.0-rc24 image status
+# Nokia Router MedveFlasher 1.0.0-rc25 image status
 
 This file answers one question: **what exactly ships in the release, and which parts of it are confirmed on real hardware.** Per-version chronology lives in [CHANGELOG.md](CHANGELOG.md).
 
@@ -13,7 +13,7 @@ This file answers one question: **what exactly ships in the release, and which p
 | UART/BootROM full stock restore | ✅ **HW CONFIRMED** on the RC16 preloader/FIP pair |
 | UART stock restore on NAND with bad blocks (RC22 mapper) | ⚠️ **NOT FULL PASS** — see below |
 | RC18 `RECOVERY_SAFE` SAFE FIP, exact bytes | `RC18_SAFE_PENDING_HW` — the path itself is confirmed, the exact bytes await regression |
-| PC-side changes RC21–RC24 | STATIC_QA_PASS, HW regression pending |
+| PC-side changes RC21–RC25 | STATIC_QA_PASS, HW regression pending |
 
 ### ⚠️ RC22 bad-block restore — why this is not a PASS
 
@@ -23,7 +23,17 @@ The trigger that produced the mapper in the first place: a real restore exposed 
 
 ### Payload stability
 
-Firmware/transition/recovery payloads are **unchanged since RC19**. RC20–RC24 alter only PC-side orchestration, metadata, and documentation, so hardware evidence for the install paths carries across those releases without rebuilding images.
+Firmware/transition/recovery payloads are **unchanged since RC19**. RC20–RC25 alter only PC-side orchestration, metadata, and documentation, so hardware evidence for the install paths carries across those releases without rebuilding images.
+
+### RC25: slot variant versus hardware evidence
+
+The `MF-A permanent all-in-UBI install` row keeps its variant on purpose: the run
+happened on MF-A hardware, and the evidence describes that. From RC25 the slot
+variant no longer authorizes or refuses an install — `MF-B`, mirrored variants,
+and recognized MD revisions follow the same policy — but hardware confirmation
+stays tied to what was actually run. In RC25 the authorization comes from the
+backup, the exact stock handoff targets, and the physical NAND/UBI geometry
+check, not from a variant label.
 
 ---
 

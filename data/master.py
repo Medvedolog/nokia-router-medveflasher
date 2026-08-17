@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import codecs
+import contextlib
 import ftplib
 import gzip
 import getpass
@@ -29,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc24"
-BUILD_TAG = "medveflasher-1.0.0-rc24"
+APP_VERSION = "1.0.0-rc25"
+BUILD_TAG = "medveflasher-1.0.0-rc25"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -100,8 +102,6 @@ class InstallProfile:
     manual_bundle: Path
     runtime_bundle_name: str
     runtime_env_name: str
-    require_hw_validated_backup: bool = False
-    allowed_stock_variant: str | None = None
     force_tftp: bool = False
 
 
@@ -124,8 +124,6 @@ MF_INSTALL_PROFILE = InstallProfile(
     manual_bundle=MF_MANUAL_TRANSITION_BUNDLE,
     runtime_bundle_name="mf-transition-bundle.bin",
     runtime_env_name="OpenWrt.mf.u-boot-env.bin",
-    require_hw_validated_backup=True,
-    allowed_stock_variant="MF-A",
     force_tftp=True,
 )
 INSTALL_PROFILES = {"md": MD_INSTALL_PROFILE, "mf": MF_INSTALL_PROFILE}
@@ -198,6 +196,15 @@ FIXED_EXPECTED = {
     9: 262144, 10: 10485760, 11: 135135232, 12: 4194304,
     13: 10485760, 14: 42467328, 15: 42467328, 16: STOCK_RESTORE_SPAN,
 }
+# Stock-side objects that stage 1 writes or uses as the canonical handoff span.
+# These remain byte-exact for both MD and MF even though mtd2..mtd5 are
+# revision-tolerant vendor slot views.
+INSTALL_STOCK_HANDOFF = {
+    0: (0x00080000, "bootloader"),
+    14: (0x02880000, "nsb_master"),
+    15: (0x02880000, "nsb_slave"),
+    16: (STOCK_RESTORE_SPAN, "all_flash"),
+}
 SLOT_LAYOUTS = (
     {2: 0x003AF6DA, 3: 0x01CC0000, 4: 0x00480000, 5: 0x02400000},
     {2: 0x00480000, 3: 0x02400000, 4: 0x003AF6DA, 5: 0x01CC0000},
@@ -220,6 +227,36 @@ MD_SLOT_VARIANTS = (
     ("MD-A", SLOT_LAYOUTS[0]),
     ("MD-A-MIRROR", SLOT_LAYOUTS[1]),
 )
+# Revision-tolerant stock slot matching.
+#
+# mtd2/mtd3 (kernel/rootfs) and mtd4/mtd5 (kernel_slave/rootfs_slave) are the
+# only stock partitions whose sizes move between vendor firmware revisions;
+# every other slot is pinned byte-exact by FIXED_EXPECTED.  On every unit seen
+# so far exactly one of the two slots publishes the canonical pair below, and
+# the opposite slot publishes a revision-dependent pair: a raw kernel image
+# size plus a rootfs slot size that steps in 0x10000 units.  Adding one table
+# entry per vendor revision does not scale, so the canonical pair is still
+# required byte-exact and only the revision-dependent pair gets a window.
+STOCK_SLOT_CANONICAL_PAIR = (0x00480000, 0x02400000)
+STOCK_SLOT_REVISION_REFERENCE = {
+    "md": ((0x003AF6DA, 0x01CC0000),),
+    "mf": ((0x003B6CC0, 0x01D00000), (0x003B6D40, 0x01D10000)),
+}
+# The slot pair is the only MD/MF discriminator — every fixed partition is
+# identical across the two models — so the windows must stay well inside half
+# the distance between the family reference points, which is 0x75E6 for the
+# kernel entry and 0x40000 for the rootfs entry.  Observed revision drift is
+# 0x68 (MD kernel), 0x80 (MF kernel) and 0x10000 (both rootfs entries).
+STOCK_SLOT_IMAGE_TOLERANCE = 0x2000
+STOCK_SLOT_PARTITION_TOLERANCE = 0x10000
+STOCK_SLOT_PARTITION_GRANULARITY = 0x10000
+# mtd2..mtd5 are vendor kernel/rootfs slot views, not the physical OpenWrt UBI
+# format target.  They classify MD versus MF and remain relevant to stock
+# restore metadata, but they are deliberately NOT a permanent-write allowlist.
+# Destructive authorization is instead bound to exact fixed stock handoff
+# partitions, /proc<->sysfs agreement, NAND erase geometry, a fully validated
+# device backup, and the exact board-specific transition target checks embedded
+# in the RAM installer (all_flash=0x10000000, BL2=0x20000, UBI=0x0FFE0000).
 EXPECTED_NUMBERS = tuple(range(17))
 IAC, DO, DONT, WILL, WONT = 255, 253, 254, 251, 252
 
@@ -820,14 +857,34 @@ def localize_text(value: object) -> object:
     return _replace_catalog(value, _RU_EN if lang == "en" else _EN_RU)
 
 
+# RC25 menu hygiene. Timestamps exist to correlate PC output with UART/device
+# events during an operation. A menu that is only waiting for a keypress is not
+# such an event, so stamping every menu line just buries the choices in noise.
+# The flag is process-local and always restored, so an operation started from a
+# menu keeps full RC23 timestamping.
+_MENU_RENDERING = False
+
+
+@contextlib.contextmanager
+def menu_ui():
+    """Render selector text without operational timestamps."""
+    global _MENU_RENDERING
+    previous = _MENU_RENDERING
+    _MENU_RENDERING = True
+    try:
+        yield
+    finally:
+        _MENU_RENDERING = previous
+
+
 def _timestamp_text(text: str) -> str:
     """Prefix every non-empty operator line with an absolute local timestamp.
 
     The timestamp is added after localization/colorization, so protocol markers and
     machine data embedded in the message remain unchanged. Blank separator lines stay
-    blank to keep stage output readable.
+    blank to keep stage output readable. Menu rendering is exempt: see menu_ui().
     """
-    if not text:
+    if not text or _MENU_RENDERING:
         return text
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     lines = text.split("\n")
@@ -939,18 +996,21 @@ def _interactive_navigation_prompt(section_ru: str, section_en: str, *, failed: 
             "[NAV] Задание завершено. Скрипт остаётся запущенным.",
             "[NAV] The task is complete. The script remains running.",
         ))
-    print(tr(f"1 — вернуться: {section_ru}", f"1 — back: {section_en}"))
-    print(tr("2 — в главное меню", "2 — main menu"))
-    print(tr("3 — выход", "3 — exit"))
-    while True:
-        choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip().lower() or "1"
-        if choice in {"1", "b", "back", "назад"}:
-            return "section"
-        if choice in {"2", "m", "main", "menu", "главное"}:
-            return "main"
-        if choice in {"3", "q", "quit", "exit", "выход"}:
-            return "exit"
-        print(tr("Неверный выбор. Скрипт не закрывается; выберите 1, 2 или 3.", "Invalid selection. The script remains open; select 1, 2, or 3."))
+    # The [NAV] status lines above stay timestamped: they report when the action
+    # actually ended. Only the selector itself is rendered as menu text.
+    with menu_ui():
+        print(tr(f"1 — вернуться: {section_ru}", f"1 — back: {section_en}"))
+        print(tr("2 — в главное меню", "2 — main menu"))
+        print(tr("3 — выход", "3 — exit"))
+        while True:
+            choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip().lower() or "1"
+            if choice in {"1", "b", "back", "назад"}:
+                return "section"
+            if choice in {"2", "m", "main", "menu", "главное"}:
+                return "main"
+            if choice in {"3", "q", "quit", "exit", "выход"}:
+                return "exit"
+            print(tr("Неверный выбор. Скрипт не закрывается; выберите 1, 2 или 3.", "Invalid selection. The script remains open; select 1, 2, or 3."))
 
 
 def _run_interactive_action(action, *, label_ru: str, label_en: str, section_ru: str, section_en: str) -> tuple[str, bool]:
@@ -1289,6 +1349,17 @@ def verify_kit() -> None:
             "MANIFEST.json version/build_tag не совпадают с кодом",
             "MANIFEST.json version/build_tag do not match the code",
         ))
+    # The nested release block is what the release workflow stamps onto the
+    # archive.  Leaving it unchecked is exactly how two materially different
+    # builds end up shipping under one version string.
+    release_block = release_manifest.get("release") or {}
+    if (release_block.get("version") != APP_VERSION
+            or release_block.get("build_tag") != BUILD_TAG
+            or release_block.get("archive_root") != f"Nokia-Router-MedveFlasher-{APP_VERSION}"):
+        raise Error(tr(
+            "MANIFEST.json release.version/build_tag/archive_root не совпадают с кодом",
+            "MANIFEST.json release.version/build_tag/archive_root do not match the code",
+        ))
     _verify_exact_artifact(RECOVERY_TFTP_CLIENT, 7792, RECOVERY_TFTP_CLIENT_SHA, "pinned AArch64 nokia-tftp")
     _verify_exact_artifact(RECOVERY_SCP_CLIENT, 6072, RECOVERY_SCP_CLIENT_SHA, "pinned AArch64 nokia-scp")
     _verify_exact_artifact(RECOVERY_PRELOADER, 113447, RECOVERY_PRELOADER_SHA, "AN7581 preloader")
@@ -1429,20 +1500,68 @@ def _layout_matches(sizes: dict[int, int], layout: dict[int, int]) -> bool:
     return all(sizes.get(number) == expected for number, expected in layout.items())
 
 
+def _stock_slot_orientation(sizes: dict[int, int]) -> tuple[str, tuple[int, int]] | None:
+    """Split mtd2..mtd5 into the canonical pair and the revision-dependent pair.
+
+    Returns ``(orientation, revision_pair)``, or None when neither slot carries
+    the canonical pair — that is not a stock slot arrangement at all and must
+    stay unrecognised regardless of how close the numbers look.
+    """
+    master = (sizes.get(2), sizes.get(3))
+    slave = (sizes.get(4), sizes.get(5))
+    if None in master or None in slave:
+        return None
+    if slave == STOCK_SLOT_CANONICAL_PAIR:
+        return "A", master
+    if master == STOCK_SLOT_CANONICAL_PAIR:
+        return "A-MIRROR", slave
+    return None
+
+
+def _revision_pair_family(pair: tuple[int, int]) -> str:
+    """Classify a revision-dependent kernel/rootfs pair, fail-closed on doubt."""
+    image, partition = pair
+    if image <= 0 or partition <= image:
+        return "unknown"
+    if partition % STOCK_SLOT_PARTITION_GRANULARITY:
+        return "unknown"
+    matched = {
+        family
+        for family, references in STOCK_SLOT_REVISION_REFERENCE.items()
+        for reference_image, reference_partition in references
+        if abs(image - reference_image) <= STOCK_SLOT_IMAGE_TOLERANCE
+        and abs(partition - reference_partition) <= STOCK_SLOT_PARTITION_TOLERANCE
+    }
+    # An ambiguous pair must never pick a family: these sizes are the only
+    # MD/MF discriminator, and the wrong family selects the wrong firmware.
+    return matched.pop() if len(matched) == 1 else "unknown"
+
+
+def _stock_slot_match(sizes: dict[int, int]) -> tuple[str, str]:
+    """Return ``(family, variant)`` for live or dumped stock slot sizes."""
+    for label, layout in MD_SLOT_VARIANTS + MF_SLOT_VARIANTS:
+        if _layout_matches(sizes, layout):
+            return ("md" if label.startswith("MD") else "mf"), label
+    orientation = _stock_slot_orientation(sizes)
+    if orientation is None:
+        return "unknown", "UNKNOWN"
+    variant_prefix, revision_pair = orientation
+    family = _revision_pair_family(revision_pair)
+    if family == "unknown":
+        return "unknown", "UNKNOWN"
+    # A tolerated match never reuses an exact label.  Exact labels remain useful
+    # evidence for stock backup/restore diagnostics, but install authorization
+    # is intentionally independent of the vendor slot revision.
+    return family, f"{family.upper()}-{variant_prefix}-REV"
+
+
 def detect_stock_backup_family(sizes: dict[int, int]) -> str:
     """Classify known stock slot layouts without weakening install validation."""
-    if any(_layout_matches(sizes, layout) for layout in SLOT_LAYOUTS):
-        return "md"
-    if any(_layout_matches(sizes, layout) for layout in MF_SLOT_LAYOUTS):
-        return "mf"
-    return "unknown"
+    return _stock_slot_match(sizes)[0]
 
 
 def detect_stock_backup_variant(sizes: dict[int, int]) -> str:
-    for label, layout in MD_SLOT_VARIANTS + MF_SLOT_VARIANTS:
-        if _layout_matches(sizes, layout):
-            return label
-    return "UNKNOWN"
+    return _stock_slot_match(sizes)[1]
 
 
 def _slot_layout_diagnostic(sizes: dict[int, int]) -> str:
@@ -1455,7 +1574,27 @@ def _slot_layout_diagnostic(sizes: dict[int, int]) -> str:
         if best_diff is None or diff < best_diff:
             best_label, best_diff = label, diff
     formatted = ", ".join(f"mtd{n}=0x{(got.get(n) or 0):08X}" for n in (2,3,4,5))
-    return f"{formatted}; nearest={best_label}"
+    orientation = _stock_slot_orientation(sizes)
+    if orientation is None:
+        reason = (
+            f"canonical pair 0x{STOCK_SLOT_CANONICAL_PAIR[0]:08X}/"
+            f"0x{STOCK_SLOT_CANONICAL_PAIR[1]:08X} is on neither slot"
+        )
+    else:
+        image, partition = orientation[1]
+        matched_family = _revision_pair_family((image, partition))
+        if matched_family in ("md", "mf"):
+            reason = (
+                f"{orientation[0]} orientation, revision pair "
+                f"0x{image:08X}/0x{partition:08X} is inside the "
+                f"{matched_family.upper()} recognition window"
+            )
+        else:
+            reason = (
+                f"{orientation[0]} orientation, revision pair "
+                f"0x{image:08X}/0x{partition:08X} outside every family window"
+            )
+    return f"{formatted}; nearest={best_label}; {reason}"
 
 
 def verify_backup(directory: Path, *, require_md_slot_layout: bool = True) -> dict:
@@ -1496,6 +1635,10 @@ def verify_backup(directory: Path, *, require_md_slot_layout: bool = True) -> di
         if _layout_matches(sizes, layout):
             selected = layout
             break
+    if selected is None and family == "md":
+        # Revision-tolerant MD match: pin the observed slot sizes instead of a
+        # table entry, so the dump <-> /proc/mtd cross-check below stays exact.
+        selected = {number: sizes[number] for number in (2, 3, 4, 5)}
     if require_md_slot_layout and selected is None:
         if family == "mf":
             raise Error(tr(
@@ -1547,21 +1690,21 @@ def env_module():
 
 
 def _validate_install_backup(profile: InstallProfile, backup_dir: Path) -> dict:
-    if profile.family == "mf":
-        validation = verify_stock_restore_backup(backup_dir)
-        _require_mf_hw_validated_backup(backup_dir, validation)
-        return validation
-    if profile.family == "md":
-        validation = verify_backup(backup_dir)
-        family = str(validation.get("stock_family") or "md")
-        if family not in ("", "md"):
-            raise Error(tr(
-                f"backup не соответствует {profile.model}: family={family}",
-                f"backup does not match {profile.model}: family={family}",
-            ))
-        return validation
-    raise Error(tr("неизвестный install profile", "unknown install profile"))
+    """Validate the same complete stock backup invariant for MD and MF installs.
 
+    Vendor slot sizes identify the stock family, but they do not authorize the
+    later UBI format.  Both families therefore use the restore-grade validator:
+    complete mtd0..mtd16 content, manifest/gzip integrity, canonical mtd16 span,
+    stable raw-slice cross-checks, and stock-BL2 provenance.
+    """
+    validation = verify_stock_restore_backup(backup_dir)
+    family = str(validation.get("stock_family") or "")
+    if family != profile.family:
+        raise Error(tr(
+            f"backup не соответствует {profile.model}: family={family or 'unknown'}",
+            f"backup does not match {profile.model}: family={family or 'unknown'}",
+        ))
+    return validation
 
 def _print_install_backup_validation(profile: InstallProfile, backup_dir: Path, validation: dict) -> None:
     files = validation.get("files") or {}
@@ -1608,25 +1751,6 @@ def _print_install_backup_validation(profile: InstallProfile, backup_dir: Path, 
         ))
     for warning in validation.get("warnings") or []:
         print(tr(f"[WARNING] Backup: {warning}", f"[WARNING] Backup: {warning}"))
-
-
-def _require_mf_hw_validated_backup(backup_dir: Path, validation: dict) -> None:
-    marker = backup_dir / "BACKUP_HW_VALIDATED"
-    if not marker.is_file():
-        raise Error(tr(
-            "для MF install нужен backup с BACKUP_HW_VALIDATED из normal MF TFTP backend",
-            "MF installation requires a backup carrying BACKUP_HW_VALIDATED from the normal MF TFTP backend",
-        ))
-    evidence = marker.read_text(encoding="utf-8", errors="replace")
-    family = str(validation.get("stock_family") or "")
-    variant = str(validation.get("stock_variant") or "")
-    if family != "mf" or variant != "MF-A":
-        raise Error(tr(
-            f"MF permanent write разрешён только для hardware-confirmed MF-A; backup={family}/{variant}",
-            f"MF permanent write is enabled only for hardware-confirmed MF-A; backup={family}/{variant}",
-        ))
-    if "family=mf" not in evidence.lower() or "variant=mf-a" not in evidence.lower():
-        raise Error(tr("BACKUP_HW_VALIDATED не подтверждает MF-A", "BACKUP_HW_VALIDATED does not confirm MF-A"))
 
 
 def personalize_transition(
@@ -2172,6 +2296,78 @@ def login_root(host: str, user: str, password: str, su_user: str = "auto",
         telnet.close()
         raise
 
+# Stock services whose UID-0 account the wizard can enter, in escalation order.
+# FTP alone was sufficient on every unit observed so far, so Samba is attempted
+# only when FTP did not produce a usable account: each service enabled here is
+# extra attack surface that stays on after the run.
+UID0_SERVICE_ESCALATION = (
+    ("FTP", "enable_ftp"),
+    ("Samba", "enable_samba"),
+)
+
+
+def _provision_uid0_service_account(access, label: str, method: str) -> bool:
+    """Publish one UID-0 service account through the stock Web UI.
+
+    Stock MD firmware ships /etc/passwd with ``root`` as its only UID-0 entry,
+    and the Web-UI/Telnet password does not authenticate ``root`` through
+    ``su``.  The UID-0 service accounts the wizard can actually enter —
+    ``user_ftp`` and ``samba_anony`` — exist only while the matching stock
+    service is enabled, so on a unit with those services off there is no
+    reachable root account at all and backup can never start.
+
+    This saves a stock Web-UI settings form.  It sends no raw MTD, flash or
+    firmware write, but where the stock firmware persists its own settings is
+    not observable from here, so this is deliberately NOT described as leaving
+    NAND untouched.  It is a state change: callers opt in through
+    ``allow_service_provisioning`` and read-only flows never do.
+    """
+    setup = getattr(access, "web_setup", None)
+    if setup is None:
+        return False
+    handler = getattr(setup, method, None)
+    if handler is None:
+        return False
+    print(tr(
+        f"[WAIT] Ни один UID 0 аккаунт не подтверждён; включаю {label} через штатный веб-интерфейс, "
+        f"чтобы появился пригодный UID 0 сервис-аккаунт. Сохраняется настройка stock Web UI; "
+        f"raw MTD/flash/firmware write не выполняется.",
+        f"[WAIT] No UID-0 account was confirmed; enabling {label} through the stock web UI so that a "
+        f"usable UID-0 service account appears. This saves a stock Web-UI setting; no raw MTD, flash "
+        f"or firmware write is performed.",
+    ))
+    try:
+        handler()
+    except Exception as exc:
+        print(tr(
+            f"[WARNING] {label} не удалось включить через веб-интерфейс: {_web_failure_detail(exc)}",
+            f"[WARNING] {label} could not be enabled through the web UI: {_web_failure_detail(exc)}",
+        ))
+        return False
+    # A freshly enabled FTP server publishes its own account password; without
+    # re-reading it the next su attempt would still use the stale empty value.
+    try:
+        credentials = setup.read_credentials()
+    except Exception as exc:
+        print(tr(
+            f"[WARNING] Не удалось перечитать реквизиты после включения {label}: {_web_failure_detail(exc)}",
+            f"[WARNING] Credentials could not be re-read after enabling {label}: {_web_failure_detail(exc)}",
+        ))
+    else:
+        access.ftp_user = str(credentials.get("ftp_user") or access.ftp_user)
+        access.ftp_password = str(credentials.get("ftp_password") or "")
+        access.ftp_port = int(credentials.get("ftp_port") or access.ftp_port)
+        access.ftp_enabled = bool(credentials.get("ftp_enabled"))
+        _register_log_secret(access.ftp_password)
+    print(tr(
+        f"[ВНИМАНИЕ] {label} включён и останется включённым после работы мастера; "
+        f"выключите его в штатной веб-морде, когда он больше не нужен.",
+        f"[NOTICE] {label} was enabled and stays enabled after the wizard finishes; "
+        f"switch it off in the stock web UI once it is no longer needed.",
+    ))
+    return True
+
+
 def login_root_profile_dynamic(
     access,
     *,
@@ -2179,6 +2375,7 @@ def login_root_profile_dynamic(
     sessions: int,
     connect_attempts: int,
     preferred_accounts: tuple[str, ...],
+    allow_service_provisioning: bool = False,
 ) -> Telnet:
     """Discover and verify a working UID-0 account on fresh Telnet sessions.
 
@@ -2187,9 +2384,29 @@ def login_root_profile_dynamic(
     accounts such as ``samba_anony`` or ``osgi_admin``.  Account names are
     therefore discovered from /etc/passwd, then every candidate/password pair
     is tested on a new TCP session and accepted only after ``id -u`` returns 0.
+
+    ``allow_service_provisioning`` decides whether a failed cycle may enable a
+    stock service through the Web UI to make a UID-0 account exist at all.  It
+    defaults to False because this helper also serves flows that are declared
+    read-only (stock audit, firmware capability probe); only backup and install
+    opt in.
     """
     total = max(1, sessions)
     last_error: Exception | None = None
+    provisioned = False
+    pending_services = list(UID0_SERVICE_ESCALATION) if allow_service_provisioning else []
+
+    def provision_next() -> bool:
+        """Attempt exactly one stock service per failed root-discovery cycle."""
+        if not pending_services:
+            return False
+        label, method = pending_services.pop(0)
+        # Deliberately do not fall through to the next service when the Web
+        # handler reports a failure.  A handler may have saved the setting and
+        # then timed out waiting for the daemon/port; enabling Samba in the same
+        # cycle would silently widen the device state change.
+        return _provision_uid0_service_account(access, label, method)
+
     for session in range(1, total + 1):
         print(tr(
             f"[WAIT] {model} root-сеанс Telnet {session}/{total}",
@@ -2239,6 +2456,10 @@ def login_root_profile_dynamic(
                 f"в /etc/passwd не найдены UID 0 аккаунты; обнаружены: {detected}",
                 f"no UID-0 accounts were found in /etc/passwd; detected: {detected}",
             ))
+            if session < total and provision_next():
+                provisioned = True
+                time.sleep(2.0 if model == "MD" else 3.0)
+                continue
             break
         print(tr(
             f"[OK] UID 0 аккаунты из /etc/passwd: {detected}. Проверяю фактический su-доступ.",
@@ -2306,6 +2527,10 @@ def login_root_profile_dynamic(
                     continue
 
         if session < total:
+            # One service per failed cycle: FTP first, Samba only if FTP was
+            # not enough.
+            if provision_next():
+                provisioned = True
             print(tr(
                 f"[WARNING] {model}: ни один UID 0 кандидат не подтверждён; повторяю весь цикл на новых соединениях.",
                 f"[WARNING] {model}: no UID-0 candidate was confirmed; retrying the full cycle on fresh connections.",
@@ -2320,13 +2545,27 @@ def login_root_profile_dynamic(
     else:
         summary_ru = "обычный Telnet подтверждён, но UID 0 не получен"
         summary_en = "ordinary Telnet access was confirmed, but UID 0 was not obtained"
+    hint_ru = hint_en = ""
+    if not provisioned:
+        # Without FTP/Samba the stock build exposes only `root`, which the
+        # Web-UI password does not open.  Say so instead of leaving the
+        # operator with a bare su failure.
+        hint_ru = (" Включите FTP (и Samba) в штатной веб-морде: пригодные UID 0 аккаунты "
+                   "user_ftp/samba_anony существуют только вместе с этими сервисами.")
+        hint_en = (" Enable FTP (and Samba) in the stock web UI: the usable UID-0 accounts "
+                   "user_ftp/samba_anony exist only together with those services.")
+    # Deliberately not "NAND untouched": with provisioning enabled a stock
+    # Web-UI settings form may have been saved on this path, and where the
+    # firmware persists its settings is not observable from here.
     raise Error(tr(
-        f"{model}: {summary_ru}. Backup не начат, NAND не изменялась. Последний результат: {detail}",
-        f"{model}: {summary_en}. Backup did not start and NAND was not modified. Last result: {detail}",
+        f"{model}: {summary_ru}. Backup не начат, raw MTD/flash/firmware write не выполнялся."
+        f"{hint_ru} Последний результат: {detail}",
+        f"{model}: {summary_en}. Backup did not start and no raw MTD, flash or firmware write was "
+        f"performed.{hint_en} Last result: {detail}",
     ))
 
 
-def login_root_md(access, sessions: int = 3) -> Telnet:
+def login_root_md(access, sessions: int = 3, *, allow_service_provisioning: bool = False) -> Telnet:
     if access.su_user == "auto":
         return login_root_profile_dynamic(
             access,
@@ -2334,6 +2573,7 @@ def login_root_md(access, sessions: int = 3) -> Telnet:
             sessions=sessions,
             connect_attempts=3,
             preferred_accounts=("useradmin_ftp", "user_ftp", "osgi_admin", "samba_anony", "root"),
+            allow_service_provisioning=allow_service_provisioning,
         )
 
     total = max(1, sessions)
@@ -2377,6 +2617,166 @@ def local_ip_for(host: str) -> str:
         sock.close()
 
 
+# RC25 LAN1 uplink advisory.
+#
+# LAN1 is the only 2.5G port on both XG-040G-MD and XG-040G-MF, and it is excluded
+# from transition/recovery because the link is unstable there. Nothing on the PC
+# reports a vendor port label, but a negotiated link at 2500 Mbit/s or faster can
+# only be LAN1: LAN2..LAN4 are gigabit ports and cannot negotiate above 1000.
+#
+# This is deliberately an advisory, not a gate. A gigabit PC NIC plugged into LAN1
+# negotiates 1000 and is indistinguishable from LAN2..LAN4, so a hard block here
+# would refuse correct setups while still missing the common mistake. Write
+# authorization is unchanged and continues to come from the existing live family,
+# MTD, handoff-target and backup gates.
+LAN1_LINK_SPEED_MBIT = 2500
+
+
+def _lan1_verdict_from_speed(speed_mbit: int | None) -> str:
+    """Classify a negotiated PC link speed as the router's LAN1 port.
+
+    Returns "lan1" for a 2.5G-or-faster link, "other" for a link that a gigabit
+    LAN2..LAN4 port can produce, and "unknown" when the speed is unavailable.
+    """
+    if speed_mbit is None or speed_mbit <= 0:
+        return "unknown"
+    return "lan1" if speed_mbit >= LAN1_LINK_SPEED_MBIT else "other"
+
+
+def _interface_for_local_ip(local_ip: str) -> str | None:
+    """Best-effort name of the interface that carries local_ip."""
+    try:
+        if sys.platform.startswith("linux"):
+            for name in sorted(os.listdir("/sys/class/net")):
+                out = subprocess.run(
+                    ["ip", "-o", "-4", "addr", "show", "dev", name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if f"inet {local_ip}/" in (out.stdout or ""):
+                    return name
+            return None
+        if sys.platform == "darwin":
+            out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5)
+            current = None
+            for line in (out.stdout or "").splitlines():
+                if line and not line[0].isspace():
+                    current = line.split(":", 1)[0]
+                elif f"inet {local_ip} " in line:
+                    return current
+            return None
+        if os.name == "nt":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-NetIPAddress -IPAddress '{local_ip}' -ErrorAction SilentlyContinue).InterfaceAlias"],
+                capture_output=True, text=True, timeout=20,
+            )
+            alias = (out.stdout or "").strip().splitlines()
+            return alias[0].strip() if alias and alias[0].strip() else None
+    except Exception:
+        return None
+    return None
+
+
+def _link_speed_mbit(interface: str) -> int | None:
+    """Negotiated link speed of interface in Mbit/s, or None when unavailable."""
+    try:
+        if sys.platform.startswith("linux"):
+            raw = Path(f"/sys/class/net/{interface}/speed").read_text(encoding="utf-8").strip()
+            value = int(raw)
+            return value if value > 0 else None
+        if sys.platform == "darwin":
+            out = subprocess.run(["ifconfig", interface], capture_output=True, text=True, timeout=5)
+            match = re.search(r"media:.*?(\d+)\s*(G|M)base", out.stdout or "", re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
+                return value * 1000 if match.group(2).upper() == "G" else value
+            return None
+        if os.name == "nt":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-NetAdapter -Name '{interface}' -ErrorAction SilentlyContinue).Speed"],
+                capture_output=True, text=True, timeout=20,
+            )
+            raw = (out.stdout or "").strip().splitlines()
+            if raw and raw[0].strip().isdigit():
+                # Get-NetAdapter reports bits per second.
+                return int(raw[0].strip()) // 1_000_000
+            return None
+    except Exception:
+        return None
+    return None
+
+
+def detect_lan1_uplink(host: str) -> tuple[str, dict[str, object]]:
+    """Classify the PC's link toward host without sending anything to the device."""
+    evidence: dict[str, object] = {"host": host, "local_ip": None, "interface": None, "speed_mbit": None}
+    try:
+        local_ip = local_ip_for(host)
+    except Exception:
+        return "unknown", evidence
+    evidence["local_ip"] = local_ip
+    interface = _interface_for_local_ip(local_ip)
+    evidence["interface"] = interface
+    if not interface:
+        return "unknown", evidence
+    speed = _link_speed_mbit(interface)
+    evidence["speed_mbit"] = speed
+    return _lan1_verdict_from_speed(speed), evidence
+
+
+def warn_if_lan1_uplink(host: str, operation_ru: str, operation_en: str) -> None:
+    """Advise before flashing/backup/restore when the PC appears to sit on LAN1.
+
+    Never raises and never blocks: a wrong guess must not stand between the
+    operator and a recovery. The prompt defaults to continuing, and a
+    non-interactive run continues silently.
+    """
+    try:
+        verdict, evidence = detect_lan1_uplink(host)
+    except Exception:
+        return
+    interface = evidence.get("interface") or "?"
+    speed = evidence.get("speed_mbit")
+    if verdict == "lan1":
+        print(tr(
+            f"[NETWORK POLICY] ВНИМАНИЕ: {interface} согласован на {speed} Мбит/с — так умеет только LAN1 / 2.5G, "
+            f"а он исключён из transition/recovery из-за нестабильности линка.",
+            f"[NETWORK POLICY] WARNING: {interface} negotiated {speed} Mbit/s, which only LAN1 / 2.5G can do, "
+            f"and that port is excluded from transition/recovery because the link is unstable.",
+        ))
+        print(tr(
+            f"[NETWORK POLICY] Перед операцией «{operation_ru}» переключите кабель в LAN2, LAN3 или LAN4.",
+            f"[NETWORK POLICY] Move the cable to LAN2, LAN3, or LAN4 before the '{operation_en}' operation.",
+        ))
+        try:
+            answer = input(tr(
+                "Продолжить всё равно? [Y/n]: ",
+                "Continue anyway? [Y/n]: ",
+            )).strip().lower()
+        except (EOFError, OSError):
+            answer = ""
+        if answer in {"n", "no", "н", "нет"}:
+            raise Error(tr(
+                "операция отменена оператором: ПК подключён к LAN1 / 2.5G",
+                "operation cancelled by the operator: the PC is connected to LAN1 / 2.5G",
+            ))
+        print(tr(
+            "[NETWORK POLICY] Продолжаем по решению оператора. Порт остаётся вероятной причиной обрыва передачи.",
+            "[NETWORK POLICY] Continuing at the operator's decision. The port remains a likely cause of a transfer drop.",
+        ))
+        return
+    if verdict == "other":
+        print(tr(
+            f"[NETWORK POLICY] Линк {interface}: {speed} Мбит/с — признаков LAN1 / 2.5G нет.",
+            f"[NETWORK POLICY] Link {interface}: {speed} Mbit/s — no sign of LAN1 / 2.5G.",
+        ))
+        return
+    print(tr(
+        "[NETWORK POLICY] Скорость линка определить не удалось. Убедитесь сами, что кабель в LAN2, LAN3 или LAN4, а не в LAN1 / 2.5G.",
+        "[NETWORK POLICY] The link speed could not be determined. Confirm yourself that the cable is in LAN2, LAN3, or LAN4 rather than LAN1 / 2.5G.",
+    ))
+
+
 def find_nc(telnet: Telnet) -> str:
     rc, text = telnet.command("command -v nc 2>/dev/null || command -v netcat 2>/dev/null || true", echo=False)
     candidates = re.findall(r"(?:^|\r?\n)(/[A-Za-z0-9_./-]+)(?:\r?\n|$)", text)
@@ -2402,15 +2802,20 @@ class TftpResult:
     block_size: int = 512
 
 
-def login_root_family(access: StockAccess, family: str, sessions: int = 3) -> Telnet:
+def login_root_family(access: StockAccess, family: str, sessions: int = 3, *,
+                      allow_service_provisioning: bool = False) -> Telnet:
     """Open a proven UID-0 stock Telnet shell for the selected hardware family.
 
     MD keeps the established backend unchanged. MF uses the same interactive
     root proof machinery but with the MF label and device-derived UID-0 accounts.
+
+    ``allow_service_provisioning`` stays False unless the caller is a flow that
+    is allowed to change stock settings; see login_root_profile_dynamic.
     """
     family = (family or "").lower()
     if family == "md":
-        return login_root_md(access, sessions=sessions)
+        return login_root_md(access, sessions=sessions,
+                             allow_service_provisioning=allow_service_provisioning)
     if family == "mf":
         return login_root_profile_dynamic(
             access,
@@ -2418,6 +2823,7 @@ def login_root_family(access: StockAccess, family: str, sessions: int = 3) -> Te
             sessions=sessions,
             connect_attempts=3,
             preferred_accounts=("user_ftp", "root", "useradmin_ftp", "osgi_admin", "samba_anony", "telecomadmin"),
+            allow_service_provisioning=allow_service_provisioning,
         )
     raise Error(tr("неизвестный stock-профиль; UID 0 не запрашивается", "unknown stock profile; UID 0 will not be requested"))
 
@@ -3011,7 +3417,7 @@ def backup_tftp(
 
     telnet: Telnet | None = None
     try:
-        telnet = login_root_family(access, expected_family)
+        telnet = login_root_family(access, expected_family, allow_service_provisioning=True)
         tftp = find_tftp(telnet)
         if expected_family == "md":
             # Preserve the hardware-confirmed MD backup/install preflight.
@@ -3104,7 +3510,7 @@ def backup_tftp(
                         f"[WAIT] Открываю новый UID 0 Telnet-сеанс для повтора mtd{number}.",
                         f"[WAIT] Opening a new UID-0 Telnet session to retry mtd{number}.",
                     ))
-                    telnet = login_root_family(access, expected_family)
+                    telnet = login_root_family(access, expected_family, allow_service_provisioning=True)
 
                 ready = threading.Event()
                 cancel = threading.Event()
@@ -3268,20 +3674,18 @@ def backup_tftp(
         for path in sorted(p for p in destination.iterdir() if p.is_file() and p.name not in ("SHA256SUMS.txt", "BACKUP_COMPLETE")):
             sums.append(f"{sha_file(path)}  {path.name}")
         write_text(destination / "SHA256SUMS.txt", "\n".join(sums) + "\n")
-        if detected_family == "md":
-            # Preserve the established MD backup/install validator behavior.
-            verify_backup(destination)
-            write_text(destination / "BACKUP_COMPLETE", "Nokia XG-040G-MD direct TFTP backup complete\n")
-        else:
-            validation = verify_stock_restore_backup(destination)
-            if str(validation.get("stock_family")) != detected_family:
-                raise Error(tr("итоговый validator определил другую family", "the final validator detected a different family"))
-            write_text(destination / "BACKUP_COMPLETE", f"{model_name} direct TFTP backup complete ({detected_variant})\n")
-            write_text(destination / "BACKUP_HW_VALIDATED", f"family={detected_family}\nvariant={detected_variant}\nvalidator=verify_stock_restore_backup\n")
-            print(tr(
-                f"[OK] {model_name} / {detected_variant}: полный stock backup прошёл restore-validator.",
-                f"[OK] {model_name} / {detected_variant}: full stock backup passed the restore validator.",
-            ))
+        validation = verify_stock_restore_backup(destination)
+        if str(validation.get("stock_family")) != detected_family:
+            raise Error(tr("итоговый validator определил другую family", "the final validator detected a different family"))
+        write_text(destination / "BACKUP_COMPLETE", f"{model_name} direct TFTP backup complete ({detected_variant})\n")
+        # Common MD/MF evidence marker.  It records that the backup passed the
+        # restore-grade validator, but the installer never trusts the marker by
+        # itself: selected backups are revalidated from their actual content.
+        write_text(destination / "BACKUP_HW_VALIDATED", f"family={detected_family}\nvariant={detected_variant}\nvalidator=verify_stock_restore_backup\npolicy=content-revalidated-before-install\n")
+        print(tr(
+            f"[OK] {model_name} / {detected_variant}: полный stock backup прошёл restore-validator.",
+            f"[OK] {model_name} / {detected_variant}: full stock backup passed the restore validator.",
+        ))
         return destination
     finally:
         if telnet is not None:
@@ -4329,7 +4733,7 @@ def _stage1_rearm_after_confirmation(
             active.close()
         except Exception:
             pass
-        active = login_root_family(access, profile.family)
+        active = login_root_family(access, profile.family, allow_service_provisioning=True)
         replacement = True
 
     # Confirmation authorizes the operation, but it does not waive freshness.
@@ -7666,6 +8070,7 @@ def stock_restore_running_wizard() -> None:
     ssh_executable()
     local_ip = input(tr("Статический IP компьютера [192.168.1.254]: ", "Static PC IP [192.168.1.254]: ")).strip() or "192.168.1.254"
     router_ip = input(tr("IP Nokia [192.168.1.1]: ", "Nokia IP [192.168.1.1]: ")).strip() or "192.168.1.1"
+    warn_if_lan1_uplink(router_ip, "восстановление stock", "stock restore")
     port_text = input(tr("Порт передачи файлов [1069]: ", "File-transfer port [1069]: ")).strip()
     restore_port = int(port_text) if port_text else 1069
     backup_dir = Path(input(tr("Путь к полному backup, снятому до установки OpenWrt: ", "Path to the complete backup made before installing OpenWrt: ")).strip().strip('"')).expanduser()
@@ -8119,6 +8524,291 @@ def _bootrom_backup_safety_selftest() -> None:
     _verify_recovery_safe_fip(MF_RECOVERY_FIP, "6d97815b5cdf905eff874062f9364ebe41a2a11f4b25944a82aea4fcbdd71e35", "3bb4cf1aa950dd212e1b5781abf55c239ff61326d5ca0c19e9f2c010285f5bb1", "AN7583 RC18 RECOVERY_SAFE FIP")
 
 
+def _stock_slot_tolerance_selftest() -> None:
+    """Vendor revision drift classifies family; it never becomes a write veto."""
+    def variant(kernel: int, rootfs: int, kernel_slave: int, rootfs_slave: int) -> str:
+        return detect_stock_backup_variant(
+            {2: kernel, 3: rootfs, 4: kernel_slave, 5: rootfs_slave})
+
+    def family(kernel: int, rootfs: int, kernel_slave: int, rootfs_slave: int) -> str:
+        return detect_stock_backup_family(
+            {2: kernel, 3: rootfs, 4: kernel_slave, 5: rootfs_slave})
+
+    # Exact labels remain stable as stock evidence.
+    if variant(0x003AF6DA, 0x01CC0000, 0x00480000, 0x02400000) != "MD-A":
+        raise Error("stock slot selftest changed the exact MD-A label")
+    if variant(0x00480000, 0x02400000, 0x003AF6DA, 0x01CC0000) != "MD-A-MIRROR":
+        raise Error("stock slot selftest changed the exact MD-A-MIRROR label")
+    if variant(0x003B6CC0, 0x01D00000, 0x00480000, 0x02400000) != "MF-A":
+        raise Error("stock slot selftest changed the exact MF-A label")
+
+    # Both field-observed and neighbouring in-window MD revisions remain MD.
+    for image in (0x003AF742, 0x003AF61F, 0x003AF700):
+        if family(0x00480000, 0x02400000, image, 0x01CB0000) != "md":
+            raise Error(f"stock slot selftest rejected MD revision 0x{image:08X}")
+        if variant(0x00480000, 0x02400000, image, 0x01CB0000) != "MD-A-MIRROR-REV":
+            raise Error(f"stock slot selftest mislabelled MD revision 0x{image:08X}")
+
+    # MF is symmetric: a tolerated revision remains MF evidence and is not
+    # downgraded merely because its vendor image byte count differs.
+    if family(0x003B6CE0, 0x01D00000, 0x00480000, 0x02400000) != "mf":
+        raise Error("stock slot selftest rejected an in-window MF revision")
+    if variant(0x003B6CE0, 0x01D00000, 0x00480000, 0x02400000) != "MF-A-REV":
+        raise Error("stock slot selftest mislabelled a tolerated MF revision")
+
+    # Family confusion and malformed layouts still fail closed.
+    if family(0x003AF6DA, 0x01D00000, 0x00480000, 0x02400000) != "unknown":
+        raise Error("stock slot selftest accepted a crossed MD/MF slot pair")
+    if family(0x003AF6DA, 0x01CC0000, 0x00480000, 0x02000000) != "unknown":
+        raise Error("stock slot selftest accepted a missing canonical slot pair")
+    if family(0x00480000, 0x02400000, 0x003AF742, 0x01CB0001) != "unknown":
+        raise Error("stock slot selftest accepted an unaligned rootfs slot size")
+    if family(0x00480000, 0x02400000, 0x00390000, 0x01A00000) != "unknown":
+        raise Error("stock slot selftest accepted an out-of-window revision pair")
+
+    diagnostic = _slot_layout_diagnostic({2: 0x00480000, 3: 0x02400000, 4: 0x003AF61F, 5: 0x01CB0000})
+    if "inside the MD recognition window" not in diagnostic or "outside every family window" in diagnostic:
+        raise Error("stock slot selftest produced a contradictory in-window diagnostic")
+
+    handoff = {
+        0: (0x00080000, UBOOT_ERASE_SIZE, "bootloader"),
+        14: (0x02880000, UBOOT_ERASE_SIZE, "nsb_master"),
+        15: (0x02880000, UBOOT_ERASE_SIZE, "nsb_slave"),
+        16: (STOCK_RESTORE_SPAN, UBOOT_ERASE_SIZE, "all_flash"),
+    }
+    _validate_install_handoff_targets(handoff)
+    broken = dict(handoff)
+    broken[14] = (0x02860000, UBOOT_ERASE_SIZE, "nsb_master")
+    try:
+        _validate_install_handoff_targets(broken)
+    except Error:
+        pass
+    else:
+        raise Error("install handoff selftest accepted a changed mtd14 target")
+    broken = dict(handoff)
+    broken[16] = (STOCK_RESTORE_SPAN, 0x10000, "all_flash")
+    try:
+        _validate_install_handoff_targets(broken)
+    except Error:
+        pass
+    else:
+        raise Error("install handoff selftest accepted a changed erase geometry")
+
+    # Regression: neither Python install gate nor the generated launcher may
+    # reintroduce a byte-exact slot allowlist for destructive authorization.
+    source = Path(__file__).read_text(encoding="utf-8")
+    live_start = source.index("\ndef _install_live_gate(") + 1
+    live_end = source.index("\ndef _install_transport(", live_start)
+    live_body = source[live_start:live_end]
+    for forbidden in ("PERMANENT_WRITE_LAYOUTS", "allowed_stock_variant", "hardware-observed layouts"):
+        if forbidden in live_body:
+            raise Error(f"install policy selftest found stale slot write gate: {forbidden}")
+    launcher = LAUNCHER_TEMPLATE.read_text(encoding="utf-8")
+    for forbidden in (
+        "permanent write is enabled only for hardware-confirmed MF-A",
+        "permanent write is enabled only for hardware-observed layouts",
+    ):
+        if forbidden in launcher:
+            raise Error(f"launcher policy selftest found stale slot write gate: {forbidden}")
+
+def _readonly_flow_selftest() -> None:
+    """Flows declared read-only must not be able to enable stock services."""
+    source = Path(__file__).read_text(encoding="utf-8")
+    for wizard in ("stock_audit_wizard", "firmware_capabilities_wizard"):
+        start = source.index(f"def {wizard}(")
+        end = source.find("\ndef ", start + 1)
+        body = source[start:end if end != -1 else len(source)]
+        if "allow_service_provisioning=True" in body:
+            raise Error(f"read-only selftest: {wizard} enables stock service provisioning")
+    for wizard in ("stock_audit_wizard", "firmware_capabilities_wizard"):
+        start = source.index(f"def {wizard}(")
+        end = source.find("\ndef ", start + 1)
+        body = source[start:end if end != -1 else len(source)]
+        if "_stock_operational_web_access()" in body:
+            raise Error(f"read-only selftest: {wizard} retained an operational Web session")
+    backup_start = source.index("def backup_only_wizard(")
+    backup_end = source.find("\ndef ", backup_start + 1)
+    backup_body = source[backup_start:backup_end if backup_end != -1 else len(source)]
+    if "_stock_operational_web_access()" not in backup_body:
+        raise Error("operational Web selftest: backup no longer retains the provisioning session")
+    install_start = source.index("def _install_access(")
+    install_end = source.find("\ndef ", install_start + 1)
+    install_body = source[install_start:install_end if install_end != -1 else len(source)]
+    if "_stock_operational_web_access()" not in install_body:
+        raise Error("operational Web selftest: MF install no longer retains the provisioning session")
+    # The opt-in must stay opt-in: a True default would silently re-arm every
+    # caller that does not pass the flag.  Check each entry point's own
+    # signature rather than a global count, which this selftest's source would
+    # itself perturb.
+    for name in ("login_root_profile_dynamic", "login_root_md", "login_root_family"):
+        start = source.index(f"def {name}(")
+        signature = source[start:source.index(") -> Telnet:", start)]
+        if "allow_service_provisioning: bool = False" not in signature:
+            raise Error(f"read-only selftest: {name} no longer defaults service provisioning to off")
+
+
+def _rc25_menu_timestamp_selftest() -> None:
+    """Menus must render clean; operational output must stay timestamped."""
+    stamped = _timestamp_text("operational line")
+    if not re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] operational line$", stamped):
+        raise Error("RC25 menu selftest: operational output lost its RC23 timestamp")
+    with menu_ui():
+        plain = _timestamp_text("1 — пункт меню")
+    if plain != "1 — пункт меню":
+        raise Error("RC25 menu selftest: menu text is still timestamped")
+    if _MENU_RENDERING:
+        raise Error("RC25 menu selftest: menu_ui() did not restore the previous state")
+    if _timestamp_text("after") == "after":
+        raise Error("RC25 menu selftest: timestamps stayed disabled after menu_ui() exited")
+    try:
+        with menu_ui():
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    if _MENU_RENDERING:
+        raise Error("RC25 menu selftest: menu_ui() leaked suppression after an exception")
+
+    # A token search would pass as soon as any branch used menu_ui(), so the
+    # structural check is done on the parse tree: every selector prompt and
+    # every numbered option must sit inside a menu_ui() block. Status lines such
+    # as [BLOCKED]/[SAFETY-LATCH]/[NAV] report events and stay timestamped.
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    option_pattern = re.compile(r'"\s*\\n?\s*(?:\d+ —|===)')
+    for name in (
+        "_startup_entry_mode",
+        "wizard",
+        "firmware_menu",
+        "backup_menu",
+        "credentials_menu",
+        "service_menu",
+        "_interactive_navigation_prompt",
+    ):
+        node = functions.get(name)
+        if node is None:
+            raise Error(f"RC25 menu selftest: {name} is gone")
+        clean: list[range] = []
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.With):
+                continue
+            for item in inner.items:
+                call = item.context_expr
+                if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "menu_ui":
+                    clean.append(range(inner.lineno, (inner.end_lineno or inner.lineno) + 1))
+        def is_clean(line: int) -> bool:
+            return any(line in span for span in clean)
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Name):
+                continue
+            if inner.func.id == "input" and not is_clean(inner.lineno):
+                raise Error(f"RC25 menu selftest: {name} prompts for a choice outside menu_ui()")
+            if inner.func.id != "print" or is_clean(inner.lineno):
+                continue
+            segment = ast.get_source_segment(source, inner) or ""
+            if option_pattern.search(segment):
+                raise Error(f"RC25 menu selftest: {name} prints a menu option outside menu_ui()")
+
+
+def _rc25_release_identity_selftest() -> None:
+    """One release identity, declared in several files, must never drift apart.
+
+    The kit ships the version in six places because different consumers read
+    different files; this selftest is what keeps the duplication honest.
+    """
+    root = Path(__file__).resolve().parent
+    declarations: dict[str, str] = {
+        "APP_VERSION": APP_VERSION,
+        "BUILD_TAG": BUILD_TAG.replace("medveflasher-", ""),
+    }
+    for label, path in (("data/VERSION", root / "VERSION"), ("VERSION", root.parent / "VERSION")):
+        if path.is_file():
+            declarations[label] = path.read_text(encoding="utf-8").strip()
+
+    manifest_path = root / "MANIFEST.json"
+    if manifest_path.is_file():
+        release = json.loads(manifest_path.read_text(encoding="utf-8")).get("release") or {}
+        if release.get("version"):
+            declarations["MANIFEST.release.version"] = str(release["version"])
+        if release.get("build_tag"):
+            declarations["MANIFEST.release.build_tag"] = str(release["build_tag"]).replace("medveflasher-", "")
+
+    capabilities_path = root / "FIRMWARE_CAPABILITIES.json"
+    if capabilities_path.is_file():
+        version = json.loads(capabilities_path.read_text(encoding="utf-8")).get("version")
+        if version:
+            declarations["FIRMWARE_CAPABILITIES.version"] = str(version)
+
+    launcher_path = root / "stock-launcher.sh.in"
+    if launcher_path.is_file():
+        match = re.search(r"RELEASE_VERSION='([^']+)'", launcher_path.read_text(encoding="utf-8"))
+        if match:
+            declarations["stock-launcher.sh.in"] = match.group(1)
+
+    distinct = sorted(set(declarations.values()))
+    if len(distinct) != 1:
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(declarations.items()))
+        raise Error(f"release identity selftest: version declarations disagree: {detail}")
+    if re.search(r"fix\d*$", distinct[0]):
+        raise Error(f"release identity selftest: repository releases carry no fix suffix, got {distinct[0]}")
+
+
+def _rc25_lan1_advisory_selftest() -> None:
+    """LAN1 detection must classify correctly and must stay advisory."""
+    if _lan1_verdict_from_speed(2500) != "lan1":
+        raise Error("LAN1 selftest: a 2.5G link was not attributed to LAN1")
+    if _lan1_verdict_from_speed(10000) != "lan1":
+        raise Error("LAN1 selftest: a 10G link was not attributed to LAN1")
+    if _lan1_verdict_from_speed(1000) != "other":
+        raise Error("LAN1 selftest: a gigabit link was misattributed to LAN1")
+    for value in (None, 0, -1):
+        if _lan1_verdict_from_speed(value) != "unknown":
+            raise Error(f"LAN1 selftest: speed {value!r} must stay unknown rather than guess a port")
+
+    # Unreachable hosts and missing interfaces must degrade to an advisory, not
+    # an exception raised into a restore path.
+    verdict, evidence = detect_lan1_uplink("192.0.2.1")
+    if verdict not in ("lan1", "other", "unknown"):
+        raise Error(f"LAN1 selftest: unexpected verdict {verdict!r}")
+    if set(evidence) != {"host", "local_ip", "interface", "speed_mbit"}:
+        raise Error("LAN1 selftest: evidence keys changed")
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    for name in (
+        "install_openwrt_wizard",
+        "backup_only_wizard",
+        "stock_restore_running_wizard",
+        "stock_recovery_wizard",
+        "bootrom_backup_wizard",
+        "resume_stage2_wizard",
+    ):
+        start = source.index(f"\ndef {name}(")
+        end = source.find("\ndef ", start + 1)
+        body = source[start:end if end != -1 else len(source)]
+        if "warn_if_lan1_uplink(" not in body:
+            raise Error(f"LAN1 selftest: {name} starts without the LAN1 advisory")
+
+    start = source.index("\ndef warn_if_lan1_uplink(")
+    end = source.find("\ndef ", start + 1)
+    advisory = source[start:end if end != -1 else len(source)]
+    # An operator declining is a cancellation; a detected LAN1 on its own must
+    # never raise, or the advisory would have become a gate. Exactly one raise
+    # may exist, and it must be the one guarded by the operator's answer.
+    raises = [line.strip() for line in advisory.splitlines() if line.strip().startswith("raise ")]
+    if len(raises) != 1:
+        raise Error(f"LAN1 selftest: the advisory must contain exactly one raise, found {len(raises)}")
+    if "операция отменена оператором" not in advisory:
+        raise Error("LAN1 selftest: the advisory's only raise is no longer the operator cancellation")
+    if 'if answer in {"n", "no", "н", "нет"}:' not in advisory:
+        raise Error("LAN1 selftest: cancellation is no longer gated on the operator's answer")
+    if "[Y/n]" not in advisory:
+        raise Error("LAN1 selftest: the prompt no longer defaults to continuing")
+
+
 def _ram_shell_command(serial_port: RecoverySerial, log, command: str, timeout: int = 120, *, echo_label: bool = True) -> bytes:
     """Run a command in the PID1 BusyBox ash recovery shell and return its transcript.
 
@@ -8437,6 +9127,8 @@ def bootrom_backup_wizard() -> None:
         "This mode never runs erase/write/saveenv. Reset is used only to enter BootROM; preloader, U-Boot, and the minimal recovery shell run from RAM.",
     ))
     transition_lan_policy_notice()
+    # The device is not up yet, so this only measures the PC side of the link.
+    warn_if_lan1_uplink("192.168.1.1", "read-only backup через BootROM/UART", "read-only BootROM/UART backup")
     print(tr("1 — Nokia XG-040G-MD / AN7581", "1 — Nokia XG-040G-MD / AN7581"))
     print(tr("2 — Nokia XG-040G-MF / AN7583", "2 — Nokia XG-040G-MF / AN7583"))
     model_choice = input(tr("Модель [1/2]: ", "Model [1/2]: ")).strip()
@@ -8502,6 +9194,8 @@ def stock_recovery_wizard() -> None:
     print(tr("[RECOVERY SAFE] RC18 загружает RAM U-Boot с bootdelay=-1. До SAFE marker + nonce запрещены любые NAND write/erase/saveenv.", "[RECOVERY SAFE] RC18 loads a RAM U-Boot with bootdelay=-1. All NAND write/erase/saveenv operations are blocked until SAFE marker + nonce proof."))
     print(tr("Ethernet должен соединять компьютер с Nokia через LAN2/LAN3/LAN4; компьютеру задайте 192.168.1.254/24.", "Connect the PC to Nokia through LAN2/LAN3/LAN4 and assign 192.168.1.254/24 to the PC."))
     print(tr("Preloader и U-Boot временно загружаются в оперативную память; штатная прошивка восстанавливается непосредственно из U-Boot.", "The preloader and U-Boot are loaded temporarily into memory; stock firmware is restored directly from U-Boot."))
+    # The device is not up yet, so this only measures the PC side of the link.
+    warn_if_lan1_uplink("192.168.1.1", "BootROM/UART recovery", "BootROM/UART recovery")
     if os.name == "nt":
         print(tr("В Windows COM обслуживается встроенным Win32-кодом; pyserial и pip не нужны.", "On Windows the COM port uses the built-in Win32 backend; pyserial and pip are not required."))
     recovery_dependency_preflight()
@@ -9406,7 +10100,7 @@ def _choose_install_mode(profile: InstallProfile) -> bool | None:
 def _install_access(profile: InstallProfile) -> StockAccess:
     # MF permanent write is never authorized from a manual model choice.
     if profile.family == "mf":
-        access, meta = _stock_audit_web_access()
+        access, meta = _stock_operational_web_access()
         if str(meta.get("family") or "") != "mf":
             access.close_web(announce=False)
             raise Error(tr("live Web fingerprint не подтвердил MF", "live Web fingerprint did not confirm MF"))
@@ -9414,22 +10108,47 @@ def _install_access(profile: InstallProfile) -> StockAccess:
     return ask_credentials(require_model_gate=True)
 
 
+def _validate_install_handoff_targets(proc: dict[int, tuple[int, int, str]]) -> None:
+    """Require exact stock-side stage-1 targets, independent of slot revision."""
+    for number, (expected_size, expected_name) in INSTALL_STOCK_HANDOFF.items():
+        if number not in proc:
+            raise Error(tr(f"mtd{number}: stock handoff target отсутствует", f"mtd{number}: stock handoff target is missing"))
+        size, erase, name = proc[number]
+        if size != expected_size or erase != UBOOT_ERASE_SIZE or name != expected_name:
+            raise Error(tr(
+                f"mtd{number}: stock handoff target mismatch: name={name}, size=0x{size:08X}, erase=0x{erase:X}",
+                f"mtd{number}: stock handoff target mismatch: name={name}, size=0x{size:08X}, erase=0x{erase:X}",
+            ))
+
+
 def _install_live_gate(profile: InstallProfile, access: StockAccess, telnet: Telnet) -> tuple[str, str]:
+    """Authorize stock->transition handoff without binding writes to slot revision.
+
+    mtd2..mtd5 are only the vendor kernel/rootfs views used to classify MD/MF.
+    The destructive path is authorized by the fixed stock handoff geometry and
+    /proc<->sysfs agreement proven by ``_stock_live_geometry_preflight``.  The
+    RAM transition then independently requires the exact physical NAND target
+    for its board before ``ubiformat`` is reachable.
+    """
     if profile.family == "md":
         require_supported_model_over_telnet(access, telnet)
-    _proc, family, variant = _stock_live_geometry_preflight(telnet, profile.family, require_ro=(profile.family == "mf"))
+    proc, family, variant = _stock_live_geometry_preflight(
+        telnet, profile.family, require_ro=(profile.family == "mf")
+    )
     if family != profile.family:
         raise Error(tr(
             f"live stock family mismatch: ожидалось {profile.family.upper()}, получено {family.upper()}",
             f"live stock family mismatch: expected {profile.family.upper()}, got {family.upper()}",
         ))
-    if profile.allowed_stock_variant and variant != profile.allowed_stock_variant:
-        raise Error(tr(
-            f"permanent write для {profile.model} разрешён только для {profile.allowed_stock_variant}; обнаружено {variant}",
-            f"permanent write for {profile.model} is enabled only for {profile.allowed_stock_variant}; detected {variant}",
-        ))
+    # These are the stock-side handoff targets that stage 1 actually touches or
+    # uses as the canonical device span. Their exact identity remains a hard
+    # gate for both MD and MF; revision-dependent mtd2..mtd5 sizes do not.
+    _validate_install_handoff_targets(proc)
+    print(tr(
+        f"[OK] Install policy: {family.upper()} / {variant}; slot revision accepted as family evidence; exact stock handoff target verified.",
+        f"[OK] Install policy: {family.upper()} / {variant}; slot revision accepted as family evidence; exact stock handoff target verified.",
+    ))
     return family, variant
-
 
 def _install_transport(profile: InstallProfile, access: StockAccess, install_only: bool = False) -> tuple[str, dict]:
     if profile.force_tftp:
@@ -9454,7 +10173,7 @@ def _capture_install_backup(
 ) -> tuple[Path, Telnet | None]:
     host = access.host
     telnet: Telnet | None = None
-    gate_telnet = login_root_family(access, profile.family)
+    gate_telnet = login_root_family(access, profile.family, allow_service_provisioning=True)
     try:
         _install_live_gate(profile, access, gate_telnet)
     finally:
@@ -9468,14 +10187,15 @@ def _capture_install_backup(
             transport_args.get("tftp_port", 1069), transport_args.get("block_size", 4096),
             expected_family=profile.family,
         )
-        telnet = login_root_family(access, profile.family)
+        telnet = login_root_family(access, profile.family, allow_service_provisioning=True)
         _install_live_gate(profile, access, telnet)
         _validate_install_backup(profile, backup_dir)
         return backup_dir, telnet
 
-    # Non-TFTP installation transport is retained for MD. MF profile forces TFTP
-    # because its permanent gate requires the PC-side BACKUP_HW_VALIDATED marker.
-    telnet = login_root_family(access, profile.family)
+    # Non-TFTP installation transport is retained for MD for compatibility.
+    # MF still forces TFTP as an implementation/transport choice, not as a
+    # destructive authorization distinction.  Backup content policy is shared.
+    telnet = login_root_family(access, profile.family, allow_service_provisioning=True)
     _install_live_gate(profile, access, telnet)
     if transport == "share":
         usb_root, _ = _share_usb_and_install_paths(
@@ -9531,6 +10251,7 @@ def install_openwrt_wizard(profile: InstallProfile, from_existing_backup: bool =
     access = _install_access(profile)
     access.custom_sysupgrade = manual
     host = access.host
+    warn_if_lan1_uplink(host, "установка OpenWrt", "OpenWrt installation")
     telnet: Telnet | None = None
     info: dict | None = None
     transport_args: dict = {}
@@ -9553,7 +10274,7 @@ def install_openwrt_wizard(profile: InstallProfile, from_existing_backup: bool =
             backup_validation = _validate_install_backup(profile, backup_dir)
             _print_install_backup_validation(profile, backup_dir, backup_validation)
             transport, transport_args = _install_transport(profile, access, install_only=True)
-            telnet = login_root_family(access, profile.family)
+            telnet = login_root_family(access, profile.family, allow_service_provisioning=True)
             _install_live_gate(profile, access, telnet)
         else:
             transport, transport_args = _install_transport(profile, access, install_only=False)
@@ -9762,8 +10483,15 @@ def _load_stock_audit_parser():
     return module
 
 
-def _stock_audit_web_access() -> tuple[StockAccess, dict[str, object]]:
-    """Read device-specific access data without changing device configuration."""
+def _stock_web_access(*, retain_web_session: bool) -> tuple[StockAccess, dict[str, object]]:
+    """Read device-specific access data; optionally retain the authenticated Web session.
+
+    Read-only audit/capability flows call this with ``False`` and the session is
+    always logged out before the function returns.  Backup/install call the
+    operational wrapper with ``True`` so an explicit
+    ``allow_service_provisioning=True`` root flow can later enable exactly one
+    stock service when a usable UID-0 account does not yet exist.
+    """
     module = _load_stock_web_module()
     default_user = str(getattr(module, "DEFAULT_WEB_USER", "CMCCAdmin") or "CMCCAdmin")
     default_password = str(getattr(module, "DEFAULT_WEB_PASSWORD", "") or "")
@@ -9782,6 +10510,7 @@ def _stock_audit_web_access() -> tuple[StockAccess, dict[str, object]]:
         raise Error(tr("Web password не указан", "Web password was not provided"))
     _register_log_secret(web_password)
     client = module.StockWeb(host)
+    keep_client = False
     try:
         mode = client.login(web_user, web_password, allow_plain=True)
         setup = module.StockSetup(client)
@@ -9811,13 +10540,20 @@ def _stock_audit_web_access() -> tuple[StockAccess, dict[str, object]]:
             ftp_port=int(creds.get("ftp_port") or 21),
             ftp_enabled=bool(creds.get("ftp_enabled")),
             model_verified=family in ("md", "mf"),
-            model_verification_source="stock-audit-web",
+            model_verification_source=("stock-operational-web" if retain_web_session else "stock-audit-web"),
             family=family,
             model_name=model_text,
             chipset=chipset,
+            web_client=client if retain_web_session else None,
+            web_setup=setup if retain_web_session else None,
+            web_module=module if retain_web_session else None,
         )
-        # The audit is deliberately non-configuring: do not enable Telnet here.
         if not _tcp_open(host, access.telnet_port, timeout=2.0):
+            if retain_web_session:
+                raise Error(tr(
+                    f"Telnet {access.telnet_port} закрыт. Backup/install не включает Telnet скрытно; включите его штатным способом и повторите.",
+                    f"Telnet {access.telnet_port} is closed. Backup/install does not enable Telnet silently; enable it through the stock UI and retry.",
+                ))
             raise Error(tr(
                 f"Telnet {access.telnet_port} закрыт. Stock Audit ничего не включает автоматически; откройте Telnet штатным способом и повторите.",
                 f"Telnet {access.telnet_port} is closed. Stock Audit does not enable services automatically; enable Telnet through the stock UI and retry.",
@@ -9830,14 +10566,26 @@ def _stock_audit_web_access() -> tuple[StockAccess, dict[str, object]]:
             "web_mode": mode,
             "web_creds": "verified",
         }
+        keep_client = retain_web_session
         return access, meta
     finally:
-        try:
-            client.logout()
-        except Exception:
-            pass
+        if not keep_client:
+            try:
+                client.logout()
+            except Exception:
+                pass
         web_password = None
         entered = None
+
+
+def _stock_audit_web_access() -> tuple[StockAccess, dict[str, object]]:
+    """Read-only stock Web access; authenticated session is closed before return."""
+    return _stock_web_access(retain_web_session=False)
+
+
+def _stock_operational_web_access() -> tuple[StockAccess, dict[str, object]]:
+    """Backup/install stock Web access; retains the session for explicit provisioning."""
+    return _stock_web_access(retain_web_session=True)
 
 
 def _audit_run(telnet: Telnet, report: list[str], command: str, timeout: int = 30) -> tuple[int, str]:
@@ -10003,8 +10751,8 @@ def stock_audit_wizard() -> None:
     print(tr(f"[OK] Audit log: {log_path}", f"[OK] Audit log: {log_path}"))
     print(tr(f"[OK] Derived profile: {profile_path}", f"[OK] Derived profile: {profile_path}"))
     print(tr(
-        "[POLICY] rc15: normal MF-A backup HW-confirmed; permanent all-in-UBI install доступен как EXPERIMENTAL только после BACKUP_HW_VALIDATED + live MF-A gates + явного подтверждения.",
-        "[POLICY] rc15: normal MF-A backup is HW-confirmed; permanent all-in-UBI install is EXPERIMENTAL and requires BACKUP_HW_VALIDATED + live MF-A gates + explicit confirmation.",
+        "[POLICY] MD/MF используют одинаковое правило install: slot revision подтверждает family, но не является write allowlist. Перед destructive stage выбранный full backup перечитывается restore-validator'ом, stock handoff target проверяется точно, а RAM transition отдельно проверяет физическую UBI-геометрию.",
+        "[POLICY] MD/MF use the same install rule: the slot revision proves the family but is not a write allowlist. Before the destructive stage the selected full backup is re-read by the restore validator, the stock handoff target is checked exactly, and the RAM transition independently checks physical UBI geometry.",
     ))
 
 
@@ -10020,12 +10768,13 @@ def parse_stock_audit_wizard() -> None:
 
 def credentials_menu() -> str:
     while True:
-        print(tr("\n=== Credentials / диагностика stock ===", "\n=== Credentials / stock diagnostics ==="))
-        print(tr("1 — показать credentials, всех пользователей и привилегии", "1 — show credentials, all users, and privileges"))
-        print(tr("2 — полный stock audit MD/MF (Web → Telnet → доказанный UID 0 → MTD/UBI/upgrade inventory)", "2 — full MD/MF stock audit (Web -> Telnet -> proven UID 0 -> MTD/UBI/upgrade inventory)"))
-        print(tr("3 — разобрать сохранённый stock-audit log", "3 — parse a saved stock-audit log"))
-        print(tr("4 — назад", "4 — back"))
-        choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
+        with menu_ui():
+            print(tr("\n=== Credentials / диагностика stock ===", "\n=== Credentials / stock diagnostics ==="))
+            print(tr("1 — показать credentials, всех пользователей и привилегии", "1 — show credentials, all users, and privileges"))
+            print(tr("2 — полный stock audit MD/MF (Web → Telnet → доказанный UID 0 → MTD/UBI/upgrade inventory)", "2 — full MD/MF stock audit (Web -> Telnet -> proven UID 0 -> MTD/UBI/upgrade inventory)"))
+            print(tr("3 — разобрать сохранённый stock-audit log", "3 — parse a saved stock-audit log"))
+            print(tr("4 — назад", "4 — back"))
+            choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
         action = None
         label_ru = label_en = ""
         if choice == "1":
@@ -10040,7 +10789,8 @@ def credentials_menu() -> str:
         elif choice == "4":
             return "main"
         else:
-            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            with menu_ui():
+                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, _ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -10192,45 +10942,49 @@ def backup_only_wizard() -> None:
         "Модель определяется заново через stock Web и подтверждается реальной MTD-разметкой. Ручной выбор при старте программы не является разрешением на backup.",
         "The model is re-detected through the stock Web UI and confirmed by the live MTD map. A manual startup selection is not authorization for backup.",
     ))
-    access, meta = _stock_audit_web_access()
-    family = str(meta.get("family") or "unknown")
-    if family not in ("md", "mf"):
-        raise Error(tr("Web не подтвердил MD/MF; backup заблокирован", "Web did not confirm MD/MF; backup is blocked"))
-    host = access.host
-    model_name = str(meta.get("model") or ("XG-040G-MF" if family == "mf" else "XG-040G-MD"))
-    print(tr(f"[OK] Backup target: {model_name} / {str(meta.get('chipset') or '?')}", f"[OK] Backup target: {model_name} / {str(meta.get('chipset') or '?')}"))
-    print(tr("1 — полный backup напрямую на ПК через TFTP (рекомендуется)", "1 — complete backup directly to the PC over TFTP (recommended)"))
-    print(tr("2 — полный backup на USB-флешку в порту Nokia", "2 — complete backup to a USB drive in the Nokia USB port"))
-    choice = input(tr("Выберите 1/2 [1]: ", "Select 1/2 [1]: ")).strip() or "1"
-    if choice == "2":
-        print_usb_requirements()
-        telnet = login_root_family(access, family)
-        try:
+    access, meta = _stock_operational_web_access()
+    try:
+        family = str(meta.get("family") or "unknown")
+        if family not in ("md", "mf"):
+            raise Error(tr("Web не подтвердил MD/MF; backup заблокирован", "Web did not confirm MD/MF; backup is blocked"))
+        host = access.host
+        warn_if_lan1_uplink(host, "снятие stock backup", "stock backup")
+        model_name = str(meta.get("model") or ("XG-040G-MF" if family == "mf" else "XG-040G-MD"))
+        print(tr(f"[OK] Backup target: {model_name} / {str(meta.get('chipset') or '?')}", f"[OK] Backup target: {model_name} / {str(meta.get('chipset') or '?')}"))
+        print(tr("1 — полный backup напрямую на ПК через TFTP (рекомендуется)", "1 — complete backup directly to the PC over TFTP (recommended)"))
+        print(tr("2 — полный backup на USB-флешку в порту Nokia", "2 — complete backup to a USB drive in the Nokia USB port"))
+        choice = input(tr("Выберите 1/2 [1]: ", "Select 1/2 [1]: ")).strip() or "1"
+        if choice == "2":
+            print_usb_requirements()
+            telnet = login_root_family(access, family, allow_service_provisioning=True)
+            try:
+                if family == "mf":
+                    # New MF backend: require the same strict live geometry proof as TFTP.
+                    # Keep the established MD USB backup behavior unchanged.
+                    _stock_live_geometry_preflight(telnet, family)
+                mount = input(tr("Путь USB внутри Nokia [автоопределение: /mnt/USB_disc1]: ", "USB path inside Nokia [auto-detect: /mnt/USB_disc1]: ")).strip() or None
+                mount = resolve_router_usb_mount(telnet, mount)
+                verify_router_usb_storage(telnet, mount)
+                cleanup_incomplete_router_backups(telnet, mount)
+                result = backup_to_usb(telnet, mount, family=family)
+                print(tr(f"[OK] Backup готов на USB-флешке: {result}", f"[OK] Backup completed on the USB drive: {result}"))
+                print(tr("Скопируйте весь каталог на ПК и запустите verify-stock-restore перед любой записью NAND.", "Copy the whole directory to the PC and run verify-stock-restore before any NAND write."))
+            finally:
+                telnet.close()
+        elif choice == "1":
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            destination = WORK / "backups" / f"nokia-xg040g{family}-backup-{stamp}"
+            local_ip = input(tr("IP этого ПК для Nokia [auto]: ", "This PC IP for Nokia [auto]: ")).strip() or None
+            port_text = input(tr("UDP-порт TFTP [1069]: ", "TFTP UDP port [1069]: ")).strip()
+            port = int(port_text) if port_text else 1069
+            result = backup_tftp(access, host, destination, local_ip, port, 4096, expected_family=family)
+            print(tr(f"[OK] Backup готов и аппаратно провалидирован на ПК: {result}", f"[OK] Backup completed and hardware-validated on the PC: {result}"))
             if family == "mf":
-                # New MF backend: require the same strict live geometry proof as TFTP.
-                # Keep the established MD USB backup behavior unchanged.
-                _stock_live_geometry_preflight(telnet, family)
-            mount = input(tr("Путь USB внутри Nokia [автоопределение: /mnt/USB_disc1]: ", "USB path inside Nokia [auto-detect: /mnt/USB_disc1]: ")).strip() or None
-            mount = resolve_router_usb_mount(telnet, mount)
-            verify_router_usb_storage(telnet, mount)
-            cleanup_incomplete_router_backups(telnet, mount)
-            result = backup_to_usb(telnet, mount, family=family)
-            print(tr(f"[OK] Backup готов на USB-флешке: {result}", f"[OK] Backup completed on the USB drive: {result}"))
-            print(tr("Скопируйте весь каталог на ПК и запустите verify-stock-restore перед любой записью NAND.", "Copy the whole directory to the PC and run verify-stock-restore before any NAND write."))
-        finally:
-            telnet.close()
-    elif choice == "1":
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        destination = WORK / "backups" / f"nokia-xg040g{family}-backup-{stamp}"
-        local_ip = input(tr("IP этого ПК для Nokia [auto]: ", "This PC IP for Nokia [auto]: ")).strip() or None
-        port_text = input(tr("UDP-порт TFTP [1069]: ", "TFTP UDP port [1069]: ")).strip()
-        port = int(port_text) if port_text else 1069
-        result = backup_tftp(access, host, destination, local_ip, port, 4096, expected_family=family)
-        print(tr(f"[OK] Backup готов и аппаратно провалидирован на ПК: {result}", f"[OK] Backup completed and hardware-validated on the PC: {result}"))
-        if family == "mf":
-            print(tr("[OK] MF normal stock backup HW gate пройден для этой копии: root + MTD/sysfs + TFTP + transport-stream SHA256 + restore-validator.", "[OK] The MF normal stock-backup HW gate passed for this copy: root + MTD/sysfs + TFTP + transport-stream SHA256 + restore validator."))
-    else:
-        raise Error(tr("неверный выбор", "invalid selection"))
+                print(tr("[OK] MF normal stock backup HW gate пройден для этой копии: root + MTD/sysfs + TFTP + transport-stream SHA256 + restore-validator.", "[OK] The MF normal stock-backup HW gate passed for this copy: root + MTD/sysfs + TFTP + transport-stream SHA256 + restore validator."))
+        else:
+            raise Error(tr("неверный выбор", "invalid selection"))
+    finally:
+        access.close_web(announce=False)
 
 
 def personalize_wizard() -> None:
@@ -10251,6 +11005,7 @@ def resume_stage2_wizard() -> None:
         "=== Continue installation after transition OpenWrt ===\nStage 2 means: transition is already running in RAM; the wizard checks its state, then formats the target NAND as UBI, transfers and flashes the persistent OpenWrt sysupgrade, and monitors first boot.",
     ))
     host = input("IP transition OpenWrt [192.168.1.1]: ").strip() or "192.168.1.1"
+    warn_if_lan1_uplink(host, "продолжение установки (этап 2)", "installation continuation (stage 2)")
     manual = False
     manual_state = ""
     expected_board = "nokia,xg-040g-md-ubi"
@@ -10336,12 +11091,12 @@ def _wait_mf_ram_openwrt(host: str, timeout: int = 360) -> str:
 
 
 def _firmware_capability_rows(family: str, variant: str, live_root: bool, geometry_ok: bool, backup_io_ok: bool = True) -> list[tuple[str, str]]:
-    """Intersect release-level hardware evidence with current read-only live gates.
+    """Render release capability plus current live gates without authorizing writes.
 
-    This function never authorizes a destructive operation by itself. Existing
-    install/restore functions keep their own model, backup, geometry and explicit
-    confirmation gates. The report is an operator-visible explanation of why a
-    path is enabled, partial, experimental, or blocked in this release.
+    MD and MF use the same destructive-policy semantics: the vendor slot
+    revision is family evidence only.  A permanent install still requires a
+    restore-grade full backup, exact stock handoff geometry, and the exact
+    board-specific physical UBI target checks in the transition RAM system.
     """
     family = (family or "unknown").lower()
     variant = variant or "UNKNOWN"
@@ -10353,30 +11108,24 @@ def _firmware_capability_rows(family: str, variant: str, live_root: bool, geomet
     ]
     if family == "md":
         rows.extend([
-            ("CAP_FULL_BACKUP", "YES - established MD backend" if backup_live else "BLOCKED - live root/geometry/transport gate"),
-            ("CAP_MF_TRANSITION_BOOT", "N/A - MD uses the established MD transition path"),
-            ("CAP_RAM_OPENWRT", "YES - HW CONFIRMED transition path"),
-            ("CAP_UBI_FORMAT", "YES - HW CONFIRMED in MD stage 2"),
-            ("CAP_UBI_VOLUME_WRITE", "YES - HW CONFIRMED in MD stage 2"),
+            ("CAP_FULL_BACKUP", "YES - restore-grade MD backend available" if backup_live else "BLOCKED - live root/geometry/transport gate"),
+            ("CAP_MF_TRANSITION_BOOT", "N/A - MD uses the hardware-confirmed MD transition path"),
+            ("CAP_RAM_OPENWRT", "YES - HW CONFIRMED MD transition path" if live else "BLOCKED - live family/geometry gate"),
+            ("CAP_UBI_FORMAT", "READY - RAM stage requires exact 256MiB/0x20000/0x0FFE0000 target" if live else "BLOCKED - live family/geometry gate"),
+            ("CAP_UBI_VOLUME_WRITE", "READY - canonical UBI volumes with readback in MD stage 2" if live else "BLOCKED - live family/geometry gate"),
             ("CAP_BOOTLOADER_REPLACE", "EXPERIMENTAL - tcboot research only; not enabled"),
-            ("CAP_PERMANENT_INSTALL", "YES - HW CONFIRMED MD path"),
+            ("CAP_PERMANENT_INSTALL", "READY - HW-confirmed MD path; full backup + exact target gates still mandatory" if backup_live else "BLOCKED - full backup/live target prerequisites"),
             ("CAP_UART_RECOVERY", "RC18 RECOVERY_SAFE - exact FIP HW regression pending"),
         ])
     elif family == "mf":
-        if backup_live and variant == "MF-A":
-            backup = "YES - HW CONFIRMED MF-A normal TFTP backup"
-        elif backup_live and variant in {"MF-A-MIRROR", "MF-B", "MF-B-MIRROR"}:
-            backup = "READY - live gates PASS; this variant still needs end-to-end HW capture"
-        else:
-            backup = "BLOCKED - live root/geometry/read-only transport gate"
         rows.extend([
-            ("CAP_FULL_BACKUP", backup),
-            ("CAP_MF_TRANSITION_BOOT", "ENABLED - rc15 shared MD/MF installer (MF-A permanent path)" if variant == "MF-A" and backup_live else "BLOCKED - requires live MF-A + HW-validated backup"),
-            ("CAP_RAM_OPENWRT", "ENABLED - MF-A transition initramfs included; first permanent run is experimental" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
-            ("CAP_UBI_FORMAT", "ENABLED - EXPERIMENTAL MF-A; explicit CONFIRM FORMAT AND FLASH required" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
-            ("CAP_UBI_VOLUME_WRITE", "ENABLED - EXPERIMENTAL MF-A; bosa/ri/FIP/fit with readback" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
-            ("CAP_BOOTLOADER_REPLACE", "ENABLED - EXPERIMENTAL MF-A; OpenWrt BL2 written last after UBI readbacks" if variant == "MF-A" and backup_live else "BLOCKED - live gate"),
-            ("CAP_PERMANENT_INSTALL", "ENABLED - EXPERIMENTAL MF-A; UART stock restore is HW-confirmed fallback" if variant == "MF-A" and backup_live else "BLOCKED - live MF-A + backup gate"),
+            ("CAP_FULL_BACKUP", "YES - restore-grade MF backend available" if backup_live else "BLOCKED - live root/geometry/transport gate"),
+            ("CAP_MF_TRANSITION_BOOT", "YES - HW CONFIRMED AN7583 transition path" if live else "BLOCKED - live family/geometry gate"),
+            ("CAP_RAM_OPENWRT", "YES - HW CONFIRMED MF transition initramfs path" if live else "BLOCKED - live family/geometry gate"),
+            ("CAP_UBI_FORMAT", "READY - RAM stage requires exact 256MiB/0x20000/0x0FFE0000 target" if live else "BLOCKED - live family/geometry gate"),
+            ("CAP_UBI_VOLUME_WRITE", "READY - canonical UBI volumes with readback in MF stage 2" if live else "BLOCKED - live family/geometry gate"),
+            ("CAP_BOOTLOADER_REPLACE", "READY - pinned MF BL2 written last after UBI readbacks" if live else "BLOCKED - live family/geometry gate"),
+            ("CAP_PERMANENT_INSTALL", "READY - HW-confirmed MF path; full backup + exact target gates still mandatory" if backup_live else "BLOCKED - full backup/live target prerequisites"),
             ("CAP_UART_RECOVERY", "RC18 RECOVERY_SAFE - base path HW confirmed; exact safe FIP pending"),
         ])
     else:
@@ -10392,7 +11141,6 @@ def _firmware_capability_rows(family: str, variant: str, live_root: bool, geomet
         ])
     return rows
 
-
 def _print_firmware_capability_report(model: str, chipset: str, family: str, variant: str, rows: list[tuple[str, str]]) -> None:
     print(tr("\n=== Прошивочные capabilities (read-only report) ===", "\n=== Firmware capabilities (read-only report) ==="))
     print(f"Device                 {model or '?'}" + (f" / {chipset}" if chipset else ""))
@@ -10401,15 +11149,10 @@ def _print_firmware_capability_report(model: str, chipset: str, family: str, var
     for key, value in rows:
         print(f"  {key:<26} {value}")
     print("")
-    if family == "mf":
+    if family in ("md", "mf"):
         print(tr(
-            "[POLICY] Отчёт сам по себе не авторизует запись. В rc15 shared MD/MF installer (MF-A permanent path) доступен только после live root/geometry + BACKUP_HW_VALIDATED + явного подтверждения.",
-            "[POLICY] This report alone does not authorize writes. In rc15, the shared MD/MF installer (MF-A permanent path) is reachable only after live root/geometry + BACKUP_HW_VALIDATED + explicit confirmation.",
-        ))
-    elif family == "md":
-        print(tr(
-            "[POLICY] MD install остаётся на прежнем hardware-confirmed bootcmd+transition path; capability report его не переписывает.",
-            "[POLICY] MD installation remains on the existing hardware-confirmed bootcmd+transition path; this capability report does not refactor it.",
+            "[POLICY] MD/MF симметричны: stock slot revision определяет family, но не разрешает и не запрещает UBI-format. Install отдельно требует полный revalidated backup, точный stock handoff target и точную физическую UBI-геометрию в RAM transition.",
+            "[POLICY] MD/MF are symmetric: the stock slot revision identifies the family but neither authorizes nor vetoes UBI format. Install separately requires a fully revalidated backup, the exact stock handoff target, and exact physical UBI geometry in the RAM transition.",
         ))
 
 
@@ -10444,14 +11187,15 @@ def firmware_capabilities_wizard() -> None:
             raise Error(tr("CAP_STOCK_ROOT: UID 0 не доказан", "CAP_STOCK_ROOT: UID 0 was not proven"))
         _proc, detected_family, variant = _stock_live_geometry_preflight(telnet, family, require_ro=False)
         geometry_ok = detected_family == family
-        backup_io_ok = True
-        if detected_family == "mf":
-            rc, io_text = telnet.command(
-                'ok=1; n=0; while [ $n -le 16 ]; do [ -r /dev/mtd${n}ro ] || ok=0; n=$((n+1)); done; '
-                'for x in gzip tftp sha256sum tee; do command -v "$x" >/dev/null 2>&1 || ok=0; done; echo CAP_BACKUP_IO_OK=$ok',
-                timeout=30, echo=False,
-            )
-            backup_io_ok = rc == 0 and "CAP_BACKUP_IO_OK=1" in io_text
+        rc, io_text = telnet.command(
+            'ok=1; n=0; while [ $n -le 16 ]; do '
+            'if [ "' + detected_family + '" = mf ]; then [ -r /dev/mtd${n}ro ] || ok=0; '
+            'else { [ -r /dev/mtd${n} ] || [ -r /dev/mtd${n}ro ]; } || ok=0; fi; '
+            'n=$((n+1)); done; '
+            'for x in gzip tftp sha256sum tee; do command -v "$x" >/dev/null 2>&1 || ok=0; done; echo CAP_BACKUP_IO_OK=$ok',
+            timeout=30, echo=False,
+        )
+        backup_io_ok = rc == 0 and "CAP_BACKUP_IO_OK=1" in io_text
         rows = [
             ("CAP_WEB_CREDS", "YES - live Web login"),
             ("CAP_TELNET", "YES - live Telnet"),
@@ -10487,6 +11231,20 @@ def _selftest_mf_transition_release() -> None:
     assert "RAM BusyBox applet missing: ash" not in text
     assert "rbb awk" not in text
     assert "for applet in dd reboot sha256sum sleep sync tr wc; do" in text
+    assert "permanent write is enabled only for hardware-confirmed MF-A" not in text
+    assert "permanent write is enabled only for hardware-observed layouts" not in text
+    # The slot policy is intentionally permissive only at the vendor-view layer.
+    # Both board-specific RAM installers must still pin the actual physical NAND
+    # format target before ubiformat can run.
+    md_stage2 = (DATA / "recovery" / "transition-control-source" / "shipped-md-nokia-ubi-installer.sh").read_text(encoding="utf-8")
+    mf_stage2 = (DATA / "recovery" / "transition-control-source" / "shipped-mf-nokia-ubi-installer.sh").read_text(encoding="utf-8")
+    for stage2 in (md_stage2, mf_stage2):
+        assert "require_mtd all_flash 268435456" in stage2
+        assert "require_mtd bl2 131072" in stage2
+        assert "268304384" in stage2
+        assert "ubiformat -y" in stage2
+    assert "require_mtd ibu 268304384" in md_stage2
+    assert "require_mtd ubi 268304384" in mf_stage2
     assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-preloader.bin").exists()
     assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-bl31-uboot.fip").exists()
     assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-squashfs-sysupgrade.itb").exists()
@@ -10495,19 +11253,22 @@ def _selftest_mf_transition_release() -> None:
     print("shared MD/MF transition installer selftest: PASS")
 
 def _selftest_firmware_capabilities() -> None:
-    md = dict(_firmware_capability_rows("md", "MD-A", True, True))
+    md_rev = dict(_firmware_capability_rows("md", "MD-A-MIRROR-REV", True, True))
     mf_a = dict(_firmware_capability_rows("mf", "MF-A", True, True))
     mf_b = dict(_firmware_capability_rows("mf", "MF-B", True, True))
-    mf_blocked = dict(_firmware_capability_rows("mf", "MF-A", False, True))
-    mf_no_io = dict(_firmware_capability_rows("mf", "MF-A", True, True, False))
-    assert md["CAP_PERMANENT_INSTALL"].startswith("YES")
-    assert md["CAP_UBI_FORMAT"].startswith("YES")
+    mf_rev = dict(_firmware_capability_rows("mf", "MF-A-REV", True, True))
+    blocked = dict(_firmware_capability_rows("mf", "MF-A-REV", False, True))
+    no_io = dict(_firmware_capability_rows("md", "MD-A-MIRROR-REV", True, True, False))
+    assert md_rev["CAP_PERMANENT_INSTALL"].startswith("READY")
+    assert md_rev["CAP_UBI_FORMAT"].startswith("READY")
     assert mf_a["CAP_FULL_BACKUP"].startswith("YES")
-    assert mf_a["CAP_MF_TRANSITION_BOOT"].startswith("ENABLED")
-    assert mf_a["CAP_PERMANENT_INSTALL"].startswith("ENABLED")
-    assert mf_b["CAP_FULL_BACKUP"].startswith("READY")
-    assert mf_blocked["CAP_FULL_BACKUP"].startswith("BLOCKED")
-    assert mf_no_io["CAP_FULL_BACKUP"].startswith("BLOCKED")
+    assert mf_a["CAP_MF_TRANSITION_BOOT"].startswith("YES")
+    assert mf_a["CAP_PERMANENT_INSTALL"].startswith("READY")
+    # Exact MF-A, MF-B and tolerated MF revisions share the same install policy.
+    assert mf_b["CAP_PERMANENT_INSTALL"] == mf_a["CAP_PERMANENT_INSTALL"]
+    assert mf_rev["CAP_PERMANENT_INSTALL"] == mf_a["CAP_PERMANENT_INSTALL"]
+    assert blocked["CAP_PERMANENT_INSTALL"].startswith("BLOCKED")
+    assert no_io["CAP_PERMANENT_INSTALL"].startswith("BLOCKED")
     print("firmware-capabilities selftest: PASS")
 
 def firmware_menu() -> str:
@@ -10515,22 +11276,23 @@ def firmware_menu() -> str:
         startup_family = str(_STARTUP_DEVICE_PROFILE.get("family") or "")
         profile = INSTALL_PROFILES.get(startup_family)
         profile_label = profile.model if profile is not None else tr("профиль не выбран (MD/MF)", "no profile selected (MD/MF)")
-        print(tr(
-            f"\n=== Прошивка / восстановление — {profile_label} ===",
-            f"\n=== Flashing / recovery — {profile_label} ===",
-        ))
-        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+        with menu_ui():
             print(tr(
-                "[SAFETY-LATCH] Есть незавершённый/неподтверждённый NAND write. Пункты 1/2/3 блокируются до успешного полного BootROM/UART recovery.",
-                "[SAFETY-LATCH] A NAND write is incomplete/unproven. Options 1/2/3 are blocked until a successful full BootROM/UART recovery.",
+                f"\n=== Прошивка / восстановление — {profile_label} ===",
+                f"\n=== Flashing / recovery — {profile_label} ===",
             ))
-        print(tr("1 — установить OpenWrt UBI (с обязательным backup)", "1 — install OpenWrt UBI (mandatory backup)"))
-        print(tr("2 — установить OpenWrt UBI из готового stock backup", "2 — install OpenWrt UBI from an existing stock backup"))
-        print(tr("3 — восстановить stock без UART", "3 — restore stock without UART"))
-        print(tr("4 — восстановить через BootROM/UART", "4 — recover through BootROM/UART"))
-        print(tr("5 — проверить capabilities", "5 — probe capabilities"))
-        print(tr("6 — назад", "6 — back"))
-        choice = input(tr("Выберите 1/2/3/4/5/6: ", "Select 1/2/3/4/5/6: ")).strip()
+            if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+                print(tr(
+                    "[SAFETY-LATCH] Есть незавершённый/неподтверждённый NAND write. Пункты 1/2/3 блокируются до успешного полного BootROM/UART recovery.",
+                    "[SAFETY-LATCH] A NAND write is incomplete/unproven. Options 1/2/3 are blocked until a successful full BootROM/UART recovery.",
+                ))
+            print(tr("1 — установить OpenWrt UBI (с обязательным backup)", "1 — install OpenWrt UBI (mandatory backup)"))
+            print(tr("2 — установить OpenWrt UBI из готового stock backup", "2 — install OpenWrt UBI from an existing stock backup"))
+            print(tr("3 — восстановить stock без UART", "3 — restore stock without UART"))
+            print(tr("4 — восстановить через BootROM/UART", "4 — recover through BootROM/UART"))
+            print(tr("5 — проверить capabilities", "5 — probe capabilities"))
+            print(tr("6 — назад", "6 — back"))
+            choice = input(tr("Выберите 1/2/3/4/5/6: ", "Select 1/2/3/4/5/6: ")).strip()
         if choice in {"1", "2", "3"} and _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
             print(tr(
                 "[BLOCKED] Этот write-path заблокирован SAFETY-LATCH. Используйте 4 для полного RECOVERY_SAFE BootROM/UART restore либо read-only диагностику.",
@@ -10561,7 +11323,8 @@ def firmware_menu() -> str:
             action = firmware_capabilities_wizard
             label_ru, label_en = "Проверка capabilities: завершена", "Capability probe: complete"
         else:
-            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            with menu_ui():
+                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -10576,11 +11339,12 @@ def firmware_menu() -> str:
 
 def backup_menu() -> str:
     while True:
-        print(tr("\n=== Backup / резервные копии ===", "\n=== Backup ==="))
-        print(tr("1 — снять stock backup через работающую прошивку/Telnet (MD/MF)", "1 — create a stock backup through running firmware/Telnet (MD/MF)"))
-        print(tr("2 — снять read-only backup через BootROM/UART + RAM recovery (MD/MF)", "2 — create a read-only backup through BootROM/UART + RAM recovery (MD/MF)"))
-        print(tr("3 — назад", "3 — back"))
-        choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
+        with menu_ui():
+            print(tr("\n=== Backup / резервные копии ===", "\n=== Backup ==="))
+            print(tr("1 — снять stock backup через работающую прошивку/Telnet (MD/MF)", "1 — create a stock backup through running firmware/Telnet (MD/MF)"))
+            print(tr("2 — снять read-only backup через BootROM/UART + RAM recovery (MD/MF)", "2 — create a read-only backup through BootROM/UART + RAM recovery (MD/MF)"))
+            print(tr("3 — назад", "3 — back"))
+            choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
         if choice == "3":
             return "main"
         if choice == "1":
@@ -10590,7 +11354,8 @@ def backup_menu() -> str:
             action = bootrom_backup_wizard
             label_ru, label_en = "Read-only BootROM/UART backup: завершён", "Read-only BootROM/UART backup: complete"
         else:
-            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            with menu_ui():
+                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, _ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -10603,16 +11368,17 @@ def backup_menu() -> str:
 
 def service_menu() -> str:
     while True:
-        print(tr("\n=== Подготовка / продолжение установки ===", "\n=== Preparation / installation continuation ==="))
-        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
-            print(tr(
-                "[SAFETY-LATCH] Продолжение destructive stage (пункт 2) заблокировано до успешного полного BootROM/UART recovery.",
-                "[SAFETY-LATCH] Destructive-stage continuation (option 2) is blocked until a successful full BootROM/UART recovery.",
-            ))
-        print(tr("1 — подготовить персональный установочный пакет из полного stock backup", "1 — prepare a device-specific installation package from a full stock backup"))
-        print(tr("2 — продолжить после transition OpenWrt: этап 2 = UBI format + запись sysupgrade + контроль первого запуска", "2 — continue after transition OpenWrt: stage 2 = UBI format + sysupgrade flash + first-boot monitoring"))
-        print(tr("3 — назад", "3 — back"))
-        choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
+        with menu_ui():
+            print(tr("\n=== Подготовка / продолжение установки ===", "\n=== Preparation / installation continuation ==="))
+            if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+                print(tr(
+                    "[SAFETY-LATCH] Продолжение destructive stage (пункт 2) заблокировано до успешного полного BootROM/UART recovery.",
+                    "[SAFETY-LATCH] Destructive-stage continuation (option 2) is blocked until a successful full BootROM/UART recovery.",
+                ))
+            print(tr("1 — подготовить персональный установочный пакет из полного stock backup", "1 — prepare a device-specific installation package from a full stock backup"))
+            print(tr("2 — продолжить после transition OpenWrt: этап 2 = UBI format + запись sysupgrade + контроль первого запуска", "2 — continue after transition OpenWrt: stage 2 = UBI format + sysupgrade flash + first-boot monitoring"))
+            print(tr("3 — назад", "3 — back"))
+            choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
         if choice == "3":
             return "main"
         if choice == "1":
@@ -10628,7 +11394,8 @@ def service_menu() -> str:
             action = resume_stage2_wizard
             label_ru, label_en = "Продолжение Stage 2: завершено", "Stage 2 continuation: complete"
         else:
-            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            with menu_ui():
+                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, _ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -10650,18 +11417,20 @@ def _family_from_model_chipset(model: str, chipset: str) -> str:
 
 def _startup_entry_mode() -> str:
     while True:
-        print(tr("\nРежим запуска:", "\nStartup mode:"))
-        print(tr("1 — обычный запуск / автоопределение stock", "1 — normal startup / stock auto-detection"))
-        print(tr("2 — кирпич / BootROM-UART recovery без сетевого автоопределения", "2 — bricked device / BootROM-UART recovery without network auto-detection"))
-        print(tr("3 — выход", "3 — exit"))
-        choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip() or "1"
+        with menu_ui():
+            print(tr("\nРежим запуска:", "\nStartup mode:"))
+            print(tr("1 — обычный запуск / автоопределение stock", "1 — normal startup / stock auto-detection"))
+            print(tr("2 — кирпич / BootROM-UART recovery без сетевого автоопределения", "2 — bricked device / BootROM-UART recovery without network auto-detection"))
+            print(tr("3 — выход", "3 — exit"))
+            choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip() or "1"
         if choice == "1":
             return "normal"
         if choice == "2":
             return "brick"
         if choice == "3":
             return "exit"
-        print(tr("Неверный выбор. Скрипт остаётся запущенным; выберите режим снова.", "Invalid selection. The script remains running; select a startup mode again."))
+        with menu_ui():
+            print(tr("Неверный выбор. Скрипт остаётся запущенным; выберите режим снова.", "Invalid selection. The script remains running; select a startup mode again."))
 
 
 def _startup_device_autodetect() -> dict[str, object]:
@@ -10712,12 +11481,13 @@ def _startup_device_autodetect() -> dict[str, object]:
                 entered = None
             except Exception:
                 pass
-        print(tr("Ручной fallback (не является доказательством модели):", "Manual fallback (not proof of the model):"))
-        print("1 — Nokia XG-040G-MD")
-        print("2 — Nokia XG-040G-MF")
-        print(tr("3 — повторить автоопределение", "3 — retry auto-detection"))
-        print(tr("4 — продолжить без выбранного профиля (например UART recovery)", "4 — continue without a selected profile (for example UART recovery)"))
-        choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
+        with menu_ui():
+            print(tr("Ручной fallback (не является доказательством модели):", "Manual fallback (not proof of the model):"))
+            print("1 — Nokia XG-040G-MD")
+            print("2 — Nokia XG-040G-MF")
+            print(tr("3 — повторить автоопределение", "3 — retry auto-detection"))
+            print(tr("4 — продолжить без выбранного профиля (например UART recovery)", "4 — continue without a selected profile (for example UART recovery)"))
+            choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
         if choice == "3":
             continue
         if choice in ("1", "2"):
@@ -10729,30 +11499,32 @@ def _startup_device_autodetect() -> dict[str, object]:
         if choice == "4":
             _STARTUP_DEVICE_PROFILE = {"family": "unknown", "model": "", "chipset": "", "host": host, "verified": False, "source": "none"}
             return _STARTUP_DEVICE_PROFILE
-        print(tr("Неверный выбор.", "Invalid selection."))
+        with menu_ui():
+            print(tr("Неверный выбор.", "Invalid selection."))
 
 
 def wizard() -> None:
     while True:
-        print(tr("\n=== Главное меню ===", "\n=== Main menu ==="))
-        prof = _STARTUP_DEVICE_PROFILE
-        if prof.get("family") in ("md", "mf"):
-            state = "VERIFIED" if prof.get("verified") else "UNVERIFIED"
-            print(tr(
-                f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
-                f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
-            ))
-        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
-            print(tr(
-                "[SAFETY-LATCH] Неизвестное состояние предыдущего NAND write: destructive пункты ограничены, но скрипт и диагностика остаются доступны.",
-                "[SAFETY-LATCH] A previous NAND write has unknown state: destructive options are restricted, but the script and diagnostics remain available.",
-            ))
-        print(tr("1 — прошивка / установка / восстановление", "1 — flashing / installation / recovery"))
-        print(tr("2 — backup / резервные копии", "2 — backup"))
-        print(tr("3 — credentials / пользователи / stock audit", "3 — credentials / users / stock audit"))
-        print(tr("4 — подготовка / продолжение установки", "4 — preparation / continue installation"))
-        print(tr("5 — выход", "5 — exit"))
-        choice = input(tr("Выберите 1/2/3/4/5: ", "Select 1/2/3/4/5: ")).strip()
+        with menu_ui():
+            print(tr("\n=== Главное меню ===", "\n=== Main menu ==="))
+            prof = _STARTUP_DEVICE_PROFILE
+            if prof.get("family") in ("md", "mf"):
+                state = "VERIFIED" if prof.get("verified") else "UNVERIFIED"
+                print(tr(
+                    f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
+                    f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
+                ))
+            if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+                print(tr(
+                    "[SAFETY-LATCH] Неизвестное состояние предыдущего NAND write: destructive пункты ограничены, но скрипт и диагностика остаются доступны.",
+                    "[SAFETY-LATCH] A previous NAND write has unknown state: destructive options are restricted, but the script and diagnostics remain available.",
+                ))
+            print(tr("1 — прошивка / установка / восстановление", "1 — flashing / installation / recovery"))
+            print(tr("2 — backup / резервные копии", "2 — backup"))
+            print(tr("3 — credentials / пользователи / stock audit", "3 — credentials / users / stock audit"))
+            print(tr("4 — подготовка / продолжение установки", "4 — preparation / continue installation"))
+            print(tr("5 — выход", "5 — exit"))
+            choice = input(tr("Выберите 1/2/3/4/5: ", "Select 1/2/3/4/5: ")).strip()
         if choice == "1":
             nav = firmware_menu()
         elif choice == "2":
@@ -10764,7 +11536,8 @@ def wizard() -> None:
         elif choice == "5":
             return
         else:
-            print(tr("Неверный выбор. Скрипт остаётся в главном меню.", "Invalid selection. The script remains in the main menu."))
+            with menu_ui():
+                print(tr("Неверный выбор. Скрипт остаётся в главном меню.", "Invalid selection. The script remains in the main menu."))
             continue
         if nav == "exit":
             return
@@ -10873,7 +11646,12 @@ def main(argv: list[str] | None = None) -> int:
             _rc23_timestamp_backup_identity_selftest()
             _rc24_interactive_navigation_selftest()
             _stage1_handoff_safety_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff safety selftest: OK")
+            _stock_slot_tolerance_selftest()
+            _readonly_flow_selftest()
+            _rc25_menu_timestamp_selftest()
+            _rc25_release_identity_selftest()
+            _rc25_lan1_advisory_selftest()
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC25 menu timestamps + release identity + LAN1 advisory safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

@@ -1,0 +1,41 @@
+name: source-qa
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  static-and-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python syntax
+        run: |
+          find data -type f -name '*.py' ! -path '*/vendor/*' -print0 | xargs -0 -n1 python -m py_compile
+      - name: Shell syntax
+        run: |
+          find . -type f \( -name '*.sh' -o -name '*.sh.in' \) -print0 | while IFS= read -r -d '' f; do sh -n "$f"; done
+      - name: JSON syntax
+        run: |
+          find data -type f -name '*.json' -print0 | while IFS= read -r -d '' f; do python -m json.tool "$f" >/dev/null; done
+      - name: Source-tree checksums
+        run: sha256sum -c data/SHA256SUMS
+      - name: Safety selftest
+        env:
+          NOKIA_LANG: en
+        run: python data/master.py selftest-safety
+      - name: Capability selftest
+        env:
+          NOKIA_LANG: en
+        run: python data/master.py selftest-capabilities
+      - name: Stock Web parser/crypto selftest
+        run: python data/stock_web.py --selftest
+      - name: Runtime assets
+        run: python tools/verify_release_assets.py
+      - name: MF transition selftest
+        env:
+          NOKIA_LANG: en
+        run: python data/master.py selftest-mf-transition

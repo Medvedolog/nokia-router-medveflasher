@@ -11,7 +11,7 @@ d1d558f5abfc1f4e58f46c661c1553b7b5d35d87e15fce6cb4da3ee03640f0f4  ./data/backup-
 002c8bd69698f32ee64134f5a2749b0ce3c6f80f5bcbc85bbd857cb7ed3ed27f  ./data/diagnostics/mf-stock-audit.sh
 0d07923b2fd4a96b9e2620744f40144f3844e19954ffe1e0c9dad16db4664db6  ./data/diagnostics/mf_audit_parse.py
 2e3df8cde4d1bd13a926f596c37cd945f589df12b336d27f9e50c9cce882832f  ./data/env_patcher.py
-435d9d3774b9d218f85538400966953d01ac0691ffbb4caae164ea97142cef25  ./data/master.py
+b26cb5a48c7444e7eba9405c37ff4f72d8a898afbf2416f5bdd88a3934b3d8ba  ./data/master.py
 9ec21e8f7454011e91f251a0784c0c57b815c39e4defe74cc031eb270e6a9aa3  ./data/mf-transition-bundle.bin
 120488c7b2c26cc3a036a12de1572e207d506e54ea98a4fd94de96f08301a733  ./data/mf-transition-manual-bundle.bin
 7ba1dafaa1a74350b1dec8db6fe941c300be5caf792e4020ff30f0847a1f46de  ./data/nokia-stock-tftp-backup-safe.sh

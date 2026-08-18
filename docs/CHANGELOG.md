@@ -1,3 +1,52 @@
+# 1.0.0-rc29 — the stock restore can be asked for a password, and stops timing out
+
+Restoring stock over SSH from a running OpenWrt failed on real hardware with
+"SSH did not become stably available". SSH had in fact been answering the whole
+time. Two independent defects produced the same timeout. Payload bytes are
+unchanged from RC24.
+
+## 1.0.0-rc29 — 18 August 2026
+
+- **The readiness loop no longer gates on the UBI partition size.**
+  `wait_for_stable_openwrt` classified the running system by comparing two whole
+  `/proc/mtd` lines literally, including `mtd2: 0ffe0000`. A field device
+  publishes `0ff00000` there — seven eraseblocks a different build of the same
+  board leaves unused. The mode therefore stayed unknown, the loop ran to its
+  deadline, and the restore reported that SSH was not stable. It now uses
+  `_all_in_ubi_shape()`, the same structural check the restore gate already used
+  after RC27: the 256 MiB `all_flash` chip, the `0x20000` `bl2` block and the
+  `0x20000` erase size are exact, and the partition size is evidence rather than
+  a gate. RC27 fixed this in the gate and missed the readiness loop.
+
+- **A root password no longer kills detection.** Both deterministic probe modes
+  pass `BatchMode=yes` and are given `/dev/null` on stdin — correct for a
+  detector, which must succeed or fail rather than wait invisibly. On first
+  contact with an *installed* OpenWrt that turned a password-protected root into
+  a timeout: ssh had been told to refuse to ask. The single operator-facing
+  detection may now fall back to one interactive attempt, and only when the probe
+  reached SSH and only authentication was refused, and only when a real console
+  is attached. Every polling loop stays non-interactive.
+
+- **One prompt, not a dozen.** ssh cannot be told to remember a password, so an
+  interactive probe inside a polling loop means one prompt per iteration — twice
+  per call, three calls per transition attempt. The one interactive login now
+  installs a throwaway ed25519 key into `/etc/dropbear/authorized_keys` in the
+  same connection; every later probe and every `scp` is an ordinary batch call
+  again. The key is generated per run into a temporary directory, is verified by
+  a batch probe before being trusted (and dropped if that fails), never reaches
+  the session log, and is overwritten with the rest of the flash by the restore
+  itself. Without `ssh-keygen` the wizard still works, it just asks again.
+
+- **The refusal says what to do.** When authentication is what failed, the error
+  now names the three ways forward — clear the root password (`passwd -d root`),
+  add a key to `/etc/dropbear/authorized_keys`, or restore through BootROM/UART —
+  instead of reporting a bare timeout.
+
+- **`_rc29_restore_ssh_auth_selftest` pins all of it**, including that exactly one
+  call site may prompt, that the readiness loop cannot regain a literal size gate
+  or an interactive probe, and that an unverified session key is dropped rather
+  than carried. Verified against seventeen deliberate regressions.
+
 # 1.0.0-rc28 — the RAM worker keeps its own voice
 
 The detached flash worker was RAM-autonomous in what it executed and silent in

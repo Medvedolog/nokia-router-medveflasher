@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc28"
-BUILD_TAG = "medveflasher-1.0.0-rc28"
+APP_VERSION = "1.0.0-rc29"
+BUILD_TAG = "medveflasher-1.0.0-rc29"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -953,6 +953,25 @@ def _localized_getpass(prompt: str = "Password: ", stream=None) -> str:
 print = _localized_print
 input = _localized_input
 getpass.getpass = _localized_getpass
+
+
+def _console_can_prompt() -> bool:
+    """True when a real operator console is attached to this process.
+
+    ssh reads a password from the terminal, so "ask for the password" only makes
+    sense while someone can type into it. Under a pipe, a service or CI the same
+    call turns into an invisible wait that ends at the timeout, which is exactly
+    the failure this guard exists to prevent. Selftests drive the wizard through
+    a pipe and therefore always stay on the non-interactive path.
+    """
+    if os.environ.get("NOKIA_NONINTERACTIVE", "").strip().lower() in ("1", "yes", "true"):
+        return False
+    try:
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+        return bool(getattr(sys.stdout, "isatty", lambda: False)())
+    except Exception:
+        return False
 
 
 class Error(RuntimeError):
@@ -4612,7 +4631,7 @@ SSH_TIMEOUT_ACCEPTED = -1
 def ssh_run(host: str, command: str, input_text: str | None = None, timeout: int = 900,
             allow_disconnect: bool = False, quiet: bool = False,
             batch_mode: bool = False, minimal_auth: bool = False,
-            allow_timeout: bool = False) -> tuple[int, str]:
+            allow_timeout: bool = False, password_prompts: int = 1) -> tuple[int, str]:
     """Run one SSH command.
 
     ``allow_disconnect`` tolerates a non-zero exit status; it does not cover a
@@ -4627,7 +4646,7 @@ def ssh_run(host: str, command: str, input_text: str | None = None, timeout: int
     argv = [
         ssh, "-T", "-o", "StrictHostKeyChecking=no", "-o", f"UserKnownHostsFile={null}",
         "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-        "-o", "NumberOfPasswordPrompts=1",
+        "-o", f"NumberOfPasswordPrompts={max(1, int(password_prompts))}",
     ]
     if batch_mode:
         argv.extend(["-o", "BatchMode=yes"])
@@ -4642,6 +4661,11 @@ def ssh_run(host: str, command: str, input_text: str | None = None, timeout: int
             "-o", "PubkeyAuthentication=no",
             "-o", "PasswordAuthentication=no",
         ])
+    identity = _RESTORE_SESSION_KEY.get(host)
+    if identity:
+        # Once the operator has authenticated once, every later call is ordinary
+        # and deterministic again -- no prompt, no inherited console.
+        argv.extend(["-o", "IdentitiesOnly=yes", "-i", str(identity)])
     argv.extend([f"root@{host}", command])
     # Interactive calls inherit the console so production OpenWrt may ask for a
     # password. Batch/minimal probes must never inherit console input: a detector
@@ -4734,6 +4758,9 @@ def scp_copy_to_recovery(host: str, source: Path, remote_path: str, timeout: int
         "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=4",
     ]
+    identity = _RESTORE_SESSION_KEY.get(host)
+    if identity:
+        argv.extend(["-o", "IdentitiesOnly=yes", "-i", str(identity)])
     if _RESTORE_SSH_MINIMAL_AUTH.get(host) is True:
         argv.extend([
             "-o", "BatchMode=yes", "-o", "ConnectionAttempts=1",
@@ -7600,12 +7627,82 @@ def _probe_stock_web_fingerprint(host: str) -> tuple[bool, str]:
 
 _RESTORE_SSH_MINIMAL_AUTH: dict[str, bool] = {}
 
-def _restore_probe_ssh(host: str, command: str, timeout: int = 120, quiet: bool = True) -> tuple[int, str]:
+_RESTORE_SESSION_KEY: dict[str, Path] = {}
+_RESTORE_SESSION_KEY_MATERIAL: list[tuple[Path, str]] = []
+
+
+def _restore_session_keypair() -> tuple[Path, str] | None:
+    """One throwaway keypair per run, used to stop asking for the password.
+
+    ssh reads a password from the terminal and cannot be told to remember it, so
+    an interactive probe inside a polling loop means one prompt per iteration.
+    Authenticating once and leaving a key behind turns every later probe, and
+    every scp, into an ordinary deterministic batch call.
+
+    The key is generated on the PC, lives in a temporary directory for the length
+    of the run, and never reaches the session log. On the device it goes to
+    /etc/dropbear/authorized_keys, which the stock restore overwrites along with
+    the rest of the flash.
+    """
+    if _RESTORE_SESSION_KEY_MATERIAL:
+        return _RESTORE_SESSION_KEY_MATERIAL[0]
+    keygen = shutil.which("ssh-keygen")
+    if not keygen:
+        return None
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="medveflasher-restore-"))
+        private = directory / "session_key"
+        subprocess.run([keygen, "-q", "-t", "ed25519", "-N", "", "-C",
+                        "medveflasher-restore", "-f", str(private)],
+                       check=True, capture_output=True, text=True, timeout=60)
+        public = (directory / "session_key.pub").read_text(encoding="utf-8").strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        _write_session_only(f"[RESTORE-KEY] ssh-keygen unavailable: {exc}")
+        return None
+    if not public:
+        return None
+    _RESTORE_SESSION_KEY_MATERIAL.append((private, public))
+    return _RESTORE_SESSION_KEY_MATERIAL[0]
+
+
+def _restore_authorized_key_command(public: str) -> str:
+    """Append the run's public key to Dropbear's authorized_keys, once."""
+    quoted = shlex.quote(public)
+    return (
+        "mkdir -p /etc/dropbear; "
+        f"grep -qxF {quoted} /etc/dropbear/authorized_keys 2>/dev/null || "
+        f"echo {quoted} >> /etc/dropbear/authorized_keys; "
+        "chmod 600 /etc/dropbear/authorized_keys 2>/dev/null; "
+    )
+
+
+
+def _restore_root_password_hint(errors: list[str]) -> bool:
+    """True when the probe reached SSH and only authentication was refused."""
+    text = " ".join(errors).lower()
+    if "permission denied" in text or "authentication" in text:
+        return True
+    # A router that is simply not there fails earlier and differently.
+    return not any(token in text for token in (
+        "connection refused", "no route to host", "timed out", "timeout",
+        "network is unreachable", "тайм-аут"))
+
+
+def _restore_probe_ssh(host: str, command: str, timeout: int = 120, quiet: bool = True,
+                       allow_interactive: bool = False) -> tuple[int, str]:
     """Deterministic SSH probe for transient recovery/production detection.
 
     Recovery root is intentionally blank and Dropbear is pinned with -B in RC19.
     Try the protocol-level none-auth path first, then one ordinary BatchMode path.
     Host keys never come from the operator known_hosts file.
+
+    Both of those modes are deliberately non-interactive, which is right for the
+    polling loops but wrong for the first contact with an *installed* OpenWrt: a
+    production system may legitimately have a root password, and BatchMode makes
+    ssh refuse to ask for it rather than prompt. The probe then failed and the
+    restore ended before reaching ``arm_one_shot_recovery_boot``, which has always
+    been able to prompt. ``allow_interactive`` lets the single detection probe ask
+    once, when an operator is actually at the console.
     """
     preferred = _RESTORE_SSH_MINIMAL_AUTH.get(host)
     modes = [preferred] if preferred is not None else [True, False]
@@ -7625,7 +7722,62 @@ def _restore_probe_ssh(host: str, command: str, timeout: int = 120, quiet: bool 
             return rc,out
         except Error as exc:
             errors.append(str(exc).replace("\n"," ")[-700:])
-    raise Error("restore SSH probe failed: " + " | ".join(errors)[-1600:])
+
+    if allow_interactive and _restore_root_password_hint(errors) and _console_can_prompt():
+        print(tr(
+            f"[INFO] SSH на {host} отвечает, но root без пароля не пускает — у установленной OpenWrt он задан.",
+            f"[INFO] SSH on {host} responds but refuses a passwordless root: the installed OpenWrt has a password set.",
+        ))
+        print(tr(
+            "[INFO] Пароль сейчас запросит сам ssh. Он не сохраняется и в журнал не попадает.",
+            "[INFO] ssh will now ask for it. The password is not stored and never reaches the log.",
+        ))
+        keypair = _restore_session_keypair()
+        effective = command
+        if keypair:
+            effective = _restore_authorized_key_command(keypair[1]) + command
+            print(tr(
+                "[INFO] После входа мастер оставит одноразовый ключ в /etc/dropbear/authorized_keys, "
+                "чтобы больше не спрашивать пароль. Возврат на сток перезаписывает его вместе со всей флеш-памятью.",
+                "[INFO] After the login the wizard leaves a one-off key in /etc/dropbear/authorized_keys "
+                "so it never has to ask again. The stock restore overwrites it along with the whole flash.",
+            ))
+        try:
+            # The timeout now has to cover a human typing, not just a link.
+            rc, out = ssh_run(host, effective, timeout=max(timeout, 180), quiet=quiet,
+                              password_prompts=3)
+        except Error as exc:
+            errors.append(str(exc).replace("\n", " ")[-700:])
+        else:
+            if keypair:
+                # Registering the key is a claim; a batch probe through it is the
+                # proof. If it does not hold, drop it rather than carry a broken
+                # assumption into the polling loops.
+                _RESTORE_SESSION_KEY[host] = keypair[0]
+                try:
+                    ssh_run(host, "true", timeout=30, quiet=True, batch_mode=True)
+                    _RESTORE_SSH_MINIMAL_AUTH[host] = False
+                    _write_session_only(f"[RESTORE-KEY] session key accepted by {host}")
+                except Error as exc:
+                    _RESTORE_SESSION_KEY.pop(host, None)
+                    _write_session_only(f"[RESTORE-KEY] session key rejected by {host}: {exc}")
+            return rc, out
+
+    detail = " | ".join(errors)[-1600:]
+    if _restore_root_password_hint(errors):
+        raise Error(tr(
+            "SSH отвечает, но аутентификация root не прошла. У установленной OpenWrt задан пароль root, "
+            "а автоматические проверки идут без интерактивного ввода.\n"
+            "  Варианты: снять пароль root в OpenWrt (passwd -d root), либо добавить свой ключ в "
+            "/etc/dropbear/authorized_keys, либо восстанавливать через BootROM/UART.\n"
+            "  Подробности ssh: " + detail,
+            "SSH responds but root authentication failed. The installed OpenWrt has a root password, "
+            "while the automatic checks run without interactive input.\n"
+            "  Options: clear the root password in OpenWrt (passwd -d root), add your key to "
+            "/etc/dropbear/authorized_keys, or restore through BootROM/UART.\n"
+            "  ssh detail: " + detail,
+        ))
+    raise Error("restore SSH probe failed: " + detail)
 
 
 # Board identity as the device reports it, kept apart from what the device is
@@ -7781,7 +7933,8 @@ def _restore_environment_diagnostic(output: str, family: str, board_ok: bool,
     return "\n".join(lines)
 
 
-def inspect_restore_environment(host: str, expected_family: str | None = None, quiet: bool = False) -> tuple[str, str]:
+def inspect_restore_environment(host: str, expected_family: str | None = None, quiet: bool = False,
+                                allow_interactive: bool = False) -> tuple[str, str]:
     command = (
         "echo BOARD=$(cat /tmp/sysinfo/board_name 2>/dev/null || true); "
         # board_name is a derived label; the device-tree compatible list is the
@@ -7803,7 +7956,8 @@ def inspect_restore_environment(host: str, expected_family: str | None = None, q
         "else echo TOOL_tftp=0; echo TFTP_IMPL=missing; echo TFTP_PROBE_RC=$bb_tftp_rc; fi; "
         "else echo TOOL_tftp=0; echo TFTP_IMPL=missing; echo TFTP_PROBE_RC=127; fi"
     )
-    _, output = _restore_probe_ssh(host, command, timeout=120, quiet=quiet)
+    _, output = _restore_probe_ssh(host, command, timeout=120, quiet=quiet,
+                                   allow_interactive=allow_interactive)
     low = output.lower()
     family = (expected_family or "").strip().lower()
     if family not in ("md", "mf"):
@@ -8104,16 +8258,24 @@ def wait_for_stable_openwrt(host: str, timeout: int, expected_mode: str | None =
             if expected_mode == "recovery":
                 rc, output = _restore_probe_ssh(host, probe_command, timeout=25, quiet=True)
             else:
-                rc, output = ssh_run(
-                    host, probe_command, timeout=25, allow_disconnect=True, quiet=True
+                # Deterministic like the recovery branch. A production OpenWrt may
+                # have a root password, and an interactive ssh_run here would ask
+                # for it on every one of this loop's iterations -- twice per call,
+                # three calls per transition attempt. The single prompt belongs to
+                # detection, which then installs the session key this probe uses.
+                rc, output = _restore_probe_ssh(
+                    host, probe_command, timeout=25, quiet=True
                 )
             if rc == 0 and "__NOKIA_SSH_READY__" in output:
-                low = output.lower()
-                mode = None
-                if 'mtd2: 0ffe0000 00020000 "ibu"' in low:
-                    mode = "recovery"
-                elif 'mtd2: 0ffe0000 00020000 "ubi"' in low:
-                    mode = "production"
+                # The same structural check the restore gate uses. This loop used
+                # to compare two whole /proc/mtd lines literally, including the
+                # UBI partition size, so a field build publishing 0x0FF00000
+                # where this kit publishes 0x0FFE0000 never matched: the mode
+                # stayed unknown, the loop ran to the deadline, and the restore
+                # died reporting that SSH had not become stable -- while SSH had
+                # been answering correctly the whole time.
+                shape = _all_in_ubi_shape(output)
+                mode = shape if shape in ("recovery", "production") else None
                 if expected_mode is None or mode == expected_mode:
                     consecutive += 1
                     last_mode = mode
@@ -8322,7 +8484,8 @@ def stock_restore_running_wizard() -> None:
     if backup_family not in ("md", "mf"):
         raise Error(tr("backup family MD/MF не определён", "backup MD/MF family is not determined"))
     print(tr(f"[OK] Backup family: {backup_family.upper()}; применяю только соответствующий recovery/production gate.", f"[OK] Backup family: {backup_family.upper()}; only the matching recovery/production gate will be used."))
-    mode, _ = inspect_restore_environment(router_ip, expected_family=backup_family, quiet=True)
+    mode, _ = inspect_restore_environment(router_ip, expected_family=backup_family, quiet=True,
+                                          allow_interactive=True)
     if mode == "production":
         print(tr("[OK] Установленная OpenWrt и разметка Nokia подтверждены.", "[OK] Installed OpenWrt and the Nokia layout are confirmed."))
         print(tr("[WAIT] Подготавливаю временный запуск системы восстановления.", "[WAIT] Preparing a temporary recovery-system boot."))
@@ -9228,6 +9391,137 @@ def _rc25_release_identity_selftest() -> None:
         raise Error(f"release identity selftest: version declarations disagree: {detail}")
     if re.search(r"fix\d*$", distinct[0]):
         raise Error(f"release identity selftest: repository releases carry no fix suffix, got {distinct[0]}")
+
+
+def _rc29_restore_ssh_auth_selftest() -> None:
+    """A restore over a running OpenWrt must ask for root's password, once.
+
+    Both deterministic probe modes pass ``batch_mode=True``, and ssh_run gives a
+    batch probe ``/dev/null`` on stdin. That is correct for the polling loops --
+    a detector must succeed or fail, never wait invisibly -- but on first contact
+    with an *installed* OpenWrt it turned a password-protected root into
+    "timed out": ssh was told to refuse to ask. The restore then ended before
+    reaching arm_one_shot_recovery_boot, which could always have prompted.
+
+    So: batch first, one interactive retry, and only where an operator is really
+    at the console. Anything else keeps the non-interactive path.
+    """
+    # What separates "authentication was refused" from "nothing answered".
+    for message, expected, why in (
+            ("ssh: connect to host 192.168.1.1 port 22: Connection refused", False, "a refused connection"),
+            ("\u0442\u0430\u0439\u043c-\u0430\u0443\u0442 SSH-\u043a\u043e\u043c\u0430\u043d\u0434\u044b", False, "an SSH timeout"),
+            ("ssh: connect to host 192.168.1.1 port 22: No route to host", False, "an absent host"),
+            ("Permission denied (publickey,password).", True, "a refused password"),
+            ("root@192.168.1.1: Permission denied", True, "a refused root login")):
+        if _restore_root_password_hint([message]) is not expected:
+            raise Error(f"restore SSH auth selftest: {why} is classified wrong")
+
+    # An interactive prompt is only offered to an operator who can answer it.
+    real_stdin, real_stdout = sys.stdin, sys.stdout
+
+    class _FakeStream:
+        def __init__(self, tty): self._tty = tty
+        def isatty(self): return self._tty
+
+    try:
+        sys.stdin, sys.stdout = _FakeStream(False), _FakeStream(True)
+        if _console_can_prompt():
+            raise Error("restore SSH auth selftest: a piped stdin is treated as an operator console")
+        sys.stdin, sys.stdout = _FakeStream(True), _FakeStream(False)
+        if _console_can_prompt():
+            raise Error("restore SSH auth selftest: a redirected stdout is treated as an operator console")
+        sys.stdin, sys.stdout = _FakeStream(True), _FakeStream(True)
+        if not _console_can_prompt():
+            raise Error("restore SSH auth selftest: a real console is refused the prompt")
+        os.environ["NOKIA_NONINTERACTIVE"] = "1"
+        try:
+            if _console_can_prompt():
+                raise Error("restore SSH auth selftest: NOKIA_NONINTERACTIVE no longer suppresses the prompt")
+        finally:
+            os.environ.pop("NOKIA_NONINTERACTIVE", None)
+    finally:
+        sys.stdin, sys.stdout = real_stdin, real_stdout
+
+    source = Path(__file__).read_text(encoding="utf-8")
+
+    def _body(name: str) -> str:
+        start = source.index(f"\ndef {name}(")
+        end = source.find("\ndef ", start + 1)
+        return source[start:end if end != -1 else len(source)]
+
+    probe = _body("_restore_probe_ssh")
+    if "batch_mode=True" not in probe:
+        raise Error("restore SSH auth selftest: the deterministic probes no longer run in batch mode")
+    loop_at = probe.index("for minimal in modes")
+    guard = "allow_interactive and _restore_root_password_hint(errors) and _console_can_prompt()"
+    if guard not in probe:
+        raise Error("restore SSH auth selftest: the interactive retry lost one of its three guards")
+    if probe.index(guard) < loop_at:
+        raise Error("restore SSH auth selftest: the interactive retry runs before the batch probes")
+    # Exactly one attempt may inherit the console, so a wrong password cannot
+    # turn the detector into an unbounded chain of prompts.
+    interactive_calls = [line for line in probe.splitlines()
+                         if "ssh_run(" in line and "batch_mode" not in line]
+    if len(interactive_calls) != 1:
+        raise Error(f"restore SSH auth selftest: expected one interactive ssh_run, found {len(interactive_calls)}")
+
+    inspect = _body("inspect_restore_environment")
+    if "allow_interactive: bool = False" not in inspect:
+        raise Error("restore SSH auth selftest: detection no longer defaults to non-interactive")
+    if "allow_interactive=allow_interactive" not in inspect:
+        raise Error("restore SSH auth selftest: detection no longer forwards the operator's console")
+
+    # Only the operator-facing detection may opt in. The polling loops run while
+    # the device reboots, with nobody watching and nothing to type into.
+    opt_in = "allow_interactive" + "=True"
+    marker = "\ndef " + "_rc29_restore_ssh_auth_selftest("
+    outside = source[:source.index(marker)] + source[source.find("\ndef ", source.index(marker) + 1):]
+    if outside.count(opt_in) != 1:
+        raise Error(f"restore SSH auth selftest: {outside.count(opt_in)} call sites enable the prompt, expected 1")
+    if opt_in not in _body("stock_restore_running_wizard"):
+        raise Error("restore SSH auth selftest: the operator-facing detection is no longer the one that may prompt")
+
+    # The reason batch probes cannot hang: ssh never sees the console.
+    if "elif batch_mode or minimal_auth:\n        stdin_target = subprocess.DEVNULL" not in source:
+        raise Error("restore SSH auth selftest: batch probes may inherit console input again")
+
+    # The readiness loop must classify with the shared structural check. It used
+    # to compare whole /proc/mtd lines literally, so the field device that
+    # publishes 0x0FF00000 for its UBI partition never matched "production": the
+    # loop ran to its deadline and the restore reported that SSH was not stable,
+    # while SSH had been answering all along. That is the timeout the operator saw.
+    ready = _body("wait_for_stable_openwrt")
+    stale = "0ff" + "e0000"
+    if stale in ready:
+        raise Error("restore SSH auth selftest: the readiness loop gates on a literal UBI size again")
+    if "_all_in_ubi_shape(output)" not in ready:
+        raise Error("restore SSH auth selftest: the readiness loop no longer uses the shared shape check")
+    field = ('mtd0: 10000000 00020000 "all_flash"\nmtd1: 00020000 00020000 "bl2"\n'
+             'mtd2: 0ff00000 00020000 "ubi"\n')
+    if _all_in_ubi_shape(field) != "production":
+        raise Error("restore SSH auth selftest: the field UBI size is not recognised as production")
+    # Both branches of that loop are deterministic: one prompt belongs to
+    # detection, not to a loop that runs it twice per call, three times per attempt.
+    if "ssh_run(" in ready and "_restore_probe_ssh(" not in ready:
+        raise Error("restore SSH auth selftest: the readiness loop probes interactively again")
+    for line in ready.splitlines():
+        if "ssh_run(" in line and "_restore_probe_ssh(" not in line:
+            raise Error("restore SSH auth selftest: the readiness loop can prompt on every iteration")
+
+    # Authenticating once and leaving a key is what makes that possible.
+    key_command = _restore_authorized_key_command("ssh-ed25519 AAAAC3Nz test@pc")
+    if "grep -qxF" not in key_command or "authorized_keys" not in key_command:
+        raise Error("restore SSH auth selftest: the key install is no longer idempotent")
+    if "'ssh-ed25519 AAAAC3Nz test@pc'" not in key_command:
+        raise Error("restore SSH auth selftest: the public key reaches the device shell unquoted")
+    fallback = probe[probe.index(guard):]
+    if "_restore_authorized_key_command(" not in fallback:
+        raise Error("restore SSH auth selftest: the one interactive login no longer installs the session key")
+    if "_RESTORE_SESSION_KEY.pop(host, None)" not in fallback:
+        raise Error("restore SSH auth selftest: an unverified session key is kept instead of dropped")
+    run = _body("ssh_run")
+    if '"-o", "IdentitiesOnly=yes", "-i", str(identity)' not in run:
+        raise Error("restore SSH auth selftest: later calls no longer offer the session key")
 
 
 def _rc25_lan1_advisory_selftest() -> None:
@@ -12120,7 +12414,8 @@ def main(argv: list[str] | None = None) -> int:
             _rc25a_recovery_reachability_selftest()
             _rc25_release_identity_selftest()
             _rc25_lan1_advisory_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RAM worker autonomy + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
+            _rc29_restore_ssh_auth_selftest()
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RAM worker autonomy + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory + restore SSH auth safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

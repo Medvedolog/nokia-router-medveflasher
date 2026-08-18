@@ -1,6 +1,6 @@
-# Embedded pinned runtime assets — MedveFlasher 1.0.0-rc28
+# Embedded pinned runtime assets — MedveFlasher 1.0.0-rc29
 
-All runtime payloads required for a runnable `1.0.0-rc28` release are embedded in this repository. The six files below were restored from the user-supplied repository archive and accepted only after exact size and SHA256 verification against the pins already carried by MedveFlasher.
+All runtime payloads required for a runnable `1.0.0-rc29` release are embedded in this repository. The six files below were restored from the user-supplied repository archive and accepted only after exact size and SHA256 verification against the pins already carried by MedveFlasher.
 
 | Path | Size (bytes) | Required / verified SHA256 |
 |---|---:|---|

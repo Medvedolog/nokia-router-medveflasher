@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc25"
-BUILD_TAG = "medveflasher-1.0.0-rc25"
+APP_VERSION = "1.0.0-rc26"
+BUILD_TAG = "medveflasher-1.0.0-rc26"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -301,7 +301,44 @@ def _redact_log_text(text: str) -> str:
     return text
 
 
+# Column position of the log stream. A timestamp is a line prefix, so it may only
+# be emitted where a line actually begins: live mirrors write partial chunks and
+# stamping each one would cut the device's own output apart. stdout and stderr are
+# two tees feeding the same files, so the column is shared rather than per-tee.
+_LOG_AT_LINE_START = True
+
+
+def _stamp_log_text(payload: str) -> str:
+    """Prefix every line that begins inside payload, then remember the column.
+
+    A chunk written mid-line passes through untouched: it continues a line the
+    device already started. Blank separator lines stay blank. A carriage return is
+    deliberately not a new line, so a progress counter refreshing with \\r does not
+    collect one stamp per redraw.
+    """
+    global _LOG_AT_LINE_START
+    if not payload:
+        return payload
+    stamp = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+    parts = payload.split("\n")
+    rendered = [
+        stamp + part if part and (_LOG_AT_LINE_START if index == 0 else True) else part
+        for index, part in enumerate(parts)
+    ]
+    _LOG_AT_LINE_START = payload.endswith("\n")
+    return "\n".join(rendered)
+
+
 class _ConsoleTee:
+    """Console sees exactly what the code printed; the log carries the clock.
+
+    RC23 introduced the absolute timestamp so PC output could be correlated with
+    UART events. That is a job for the file you read afterwards, not for the screen
+    the operator is working on, where the prefix competes with the content on every
+    single line. From RC26 the console is clean and work/logs/*.log carries the
+    stamps.
+    """
+
     def __init__(self, console, files):
         self.console = console
         self.files = files
@@ -309,8 +346,9 @@ class _ConsoleTee:
     def write(self, text):
         written = self.console.write(text)
         clean = _redact_log_text(ANSI_RE.sub("", text))
+        stamped = _stamp_log_text(clean)
         for fh in self.files:
-            fh.write(clean)
+            fh.write(stamped)
         return written
 
     def flush(self):
@@ -339,6 +377,7 @@ def _write_session_only(text: str) -> None:
     clean = _redact_log_text(ANSI_RE.sub("", text))
     if not clean.endswith("\n"):
         clean += "\n"
+    clean = _stamp_log_text(clean)
     fh = _SESSION_FILES[0]
     fh.write(clean)
     fh.flush()
@@ -861,71 +900,6 @@ def localize_text(value: object) -> object:
     return _replace_catalog(value, _RU_EN if lang == "en" else _EN_RU)
 
 
-# RC25 menu hygiene. Timestamps exist to correlate PC output with UART/device
-# events during an operation. A menu that is only waiting for a keypress is not
-# such an event, so stamping every menu line just buries the choices in noise.
-# The flag is process-local and always restored, so an operation started from a
-# menu keeps full RC23 timestamping.
-_MENU_RENDERING = False
-
-# Console column tracking. A timestamp is a line prefix, so it may only be
-# emitted where a line actually begins. Live mirrors — the UART character feed,
-# the Telnet echo, the XMODEM progress counter — write partial chunks with
-# end="", and stamping each chunk cut the device's own output into pieces:
-# "Press x" arrived as "P[12:24:31] ress x".
-_AT_LINE_START = True
-
-
-@contextlib.contextmanager
-def menu_ui():
-    """Render selector text without operational timestamps."""
-    global _MENU_RENDERING
-    previous = _MENU_RENDERING
-    _MENU_RENDERING = True
-    try:
-        yield
-    finally:
-        _MENU_RENDERING = previous
-
-
-def _timestamp_text(text: str) -> str:
-    """Prefix every non-empty operator line with an absolute local timestamp.
-
-    The timestamp is added after localization/colorization, so protocol markers and
-    machine data embedded in the message remain unchanged. Blank separator lines stay
-    blank to keep stage output readable. Menu rendering is exempt: see menu_ui().
-    """
-    if not text or _MENU_RENDERING:
-        return text
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    lines = text.split("\n")
-    return "\n".join(f"[{stamp}] {line}" if line else "" for line in lines)
-
-
-def _stamp_stream(payload: str) -> str:
-    """Prefix every line that begins inside payload, then remember the column.
-
-    A chunk written mid-line is passed through untouched: it continues a line the
-    device already started. Blank separator lines stay blank. Carriage returns are
-    deliberately not treated as a new line, so a \\r progress counter refreshes
-    without collecting a stamp per redraw.
-    """
-    global _AT_LINE_START
-    if not payload:
-        return payload
-    if _MENU_RENDERING:
-        _AT_LINE_START = payload.endswith("\n")
-        return payload
-    stamp = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
-    parts = payload.split("\n")
-    rendered = [
-        stamp + part if part and (_AT_LINE_START if index == 0 else True) else part
-        for index, part in enumerate(parts)
-    ]
-    _AT_LINE_START = payload.endswith("\n")
-    return "\n".join(rendered)
-
-
 def _localized_print(*args, **kwargs):
     values = []
     for arg in args:
@@ -941,12 +915,14 @@ def _localized_print(*args, **kwargs):
         sep = " " if sep is None else sep
         end = "\n" if end is None else end
         rendered = sep.join(str(value) for value in values)
-        return _RAW_PRINT(_stamp_stream(rendered + end), end="", **kwargs)
+        return _RAW_PRINT(rendered, end=end, **kwargs)
     return _RAW_PRINT(*values, **kwargs)
 
 
 def _log_prompt_newline() -> None:
     """Terminate an input prompt in PC logs without adding a blank console line."""
+    global _LOG_AT_LINE_START
+    _LOG_AT_LINE_START = True
     for fh in _SESSION_FILES:
         try:
             fh.write("\n")
@@ -956,22 +932,20 @@ def _log_prompt_newline() -> None:
 
 
 def _localized_input(prompt: str = "") -> str:
-    global _AT_LINE_START
-    value = _RAW_INPUT(_timestamp_text(colorize_text(str(localize_text(prompt)))))
-    _AT_LINE_START = True
+    # The prompt goes through sys.stdout, so the tee stamps the log copy of it.
+    value = _RAW_INPUT(colorize_text(str(localize_text(prompt))))
     _log_prompt_newline()
     return value
 
 
 def _localized_getpass(prompt: str = "Password: ", stream=None) -> str:
-    localized = _timestamp_text(colorize_text(str(localize_text(prompt))))
+    localized = colorize_text(str(localize_text(prompt)))
     if os.environ.get("NOKIA_HIDE_PASSWORDS", "").strip().lower() in ("1", "yes", "true"):
         value = _RAW_GETPASS(localized, stream=stream)
     else:
         # Passwords are visible while typed by request. Terminal echo is not
         # generated by Python and therefore is not copied into PC session logs.
         value = _RAW_INPUT(localized)
-    _AT_LINE_START = True
     _log_prompt_newline()
     return value
 
@@ -1036,19 +1010,18 @@ def _interactive_navigation_prompt(section_ru: str, section_en: str, *, failed: 
         ))
     # The [NAV] status lines above stay timestamped: they report when the action
     # actually ended. Only the selector itself is rendered as menu text.
-    with menu_ui():
-        print(tr(f"1 — вернуться: {section_ru}", f"1 — back: {section_en}"))
-        print(tr("2 — в главное меню", "2 — main menu"))
-        print(tr("3 — выход", "3 — exit"))
-        while True:
-            choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip().lower() or "1"
-            if choice in {"1", "b", "back", "назад"}:
-                return "section"
-            if choice in {"2", "m", "main", "menu", "главное"}:
-                return "main"
-            if choice in {"3", "q", "quit", "exit", "выход"}:
-                return "exit"
-            print(tr("Неверный выбор. Скрипт не закрывается; выберите 1, 2 или 3.", "Invalid selection. The script remains open; select 1, 2, or 3."))
+    print(tr(f"1 — вернуться: {section_ru}", f"1 — back: {section_en}"))
+    print(tr("2 — в главное меню", "2 — main menu"))
+    print(tr("3 — выход", "3 — exit"))
+    while True:
+        choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip().lower() or "1"
+        if choice in {"1", "b", "back", "назад"}:
+            return "section"
+        if choice in {"2", "m", "main", "menu", "главное"}:
+            return "main"
+        if choice in {"3", "q", "quit", "exit", "выход"}:
+            return "exit"
+        print(tr("Неверный выбор. Скрипт не закрывается; выберите 1, 2 или 3.", "Invalid selection. The script remains open; select 1, 2, or 3."))
 
 
 def _run_interactive_action(action, *, label_ru: str, label_en: str, section_ru: str, section_en: str) -> tuple[str, bool]:
@@ -8202,21 +8175,18 @@ def stock_restore_running_wizard() -> None:
 
 
 def stock_restore_selector_wizard() -> None:
-    with menu_ui():
-        print("\nСпособ перехода в режим восстановления stock:")
-        print("1 — OpenWrt/recovery уже загружается: продолжить по SSH без UART")
-        print("2 — кирпич, в UART повторяется C: BootROM → XMODEM → recovery → stock")
+    print("\nСпособ перехода в режим восстановления stock:")
+    print("1 — OpenWrt/recovery уже загружается: продолжить по SSH без UART")
+    print("2 — кирпич, в UART повторяется C: BootROM → XMODEM → recovery → stock")
     while True:
-        with menu_ui():
-            choice = input("Выберите 1/2: ").strip().lower()
+        choice = input("Выберите 1/2: ").strip().lower()
         if choice in ("1", "ssh", "openwrt", "recovery"):
             stock_restore_running_wizard()
             return
         if choice in ("2", "uart", "brick", "xmodem"):
             stock_recovery_wizard()
             return
-        with menu_ui():
-            print(tr("Неверный выбор. Введите 1 или 2.", "Invalid selection. Enter 1 or 2."))
+        print(tr("Неверный выбор. Введите 1 или 2.", "Invalid selection. Enter 1 or 2."))
 
 
 
@@ -8516,12 +8486,20 @@ def _uboot_badblock_restore_safety_selftest() -> None:
 
 
 def _rc23_timestamp_backup_identity_selftest() -> None:
-    stamped = _timestamp_text("[OK] one\n[WAIT] two")
-    lines = stamped.splitlines()
-    if len(lines) != 2 or not all(re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ", line) for line in lines):
-        raise Error(f"RC23 timestamp selftest mismatch: {stamped!r}")
-    if _timestamp_text("\n") != "\n":
-        raise Error("RC23 timestamp selftest changed blank separator lines")
+    global _LOG_AT_LINE_START
+    saved_column = _LOG_AT_LINE_START
+    try:
+        _LOG_AT_LINE_START = True
+        stamped = _stamp_log_text("[OK] one\n[WAIT] two\n")
+        lines = [line for line in stamped.splitlines() if line]
+        if len(lines) != 2 or not all(
+                re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ", line) for line in lines):
+            raise Error(f"RC23 timestamp selftest mismatch: {stamped!r}")
+        _LOG_AT_LINE_START = True
+        if _stamp_log_text("\n") != "\n":
+            raise Error("RC23 timestamp selftest changed blank separator lines")
+    finally:
+        _LOG_AT_LINE_START = saved_column
     agent = BACKUP_AGENT.read_text(encoding="utf-8")
     for token in ("DEVICE_MAC.txt", "primary_interface=", "primary_mac=", "NOKIA_BACKUP_FAMILY"):
         if token not in agent:
@@ -8849,102 +8827,67 @@ def _rc25a_recovery_reachability_selftest() -> None:
         raise Error("launcher selftest: the write-target check is no longer conditional on the active slot")
 
 
-def _rc25_menu_timestamp_selftest() -> None:
-    """Menus must render clean; operational output must stay timestamped."""
-    stamped = _timestamp_text("operational line")
-    if not re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] operational line$", stamped):
-        raise Error("RC25 menu selftest: operational output lost its RC23 timestamp")
-    with menu_ui():
-        plain = _timestamp_text("1 — пункт меню")
-    if plain != "1 — пункт меню":
-        raise Error("RC25 menu selftest: menu text is still timestamped")
-    if _MENU_RENDERING:
-        raise Error("RC25 menu selftest: menu_ui() did not restore the previous state")
-    if _timestamp_text("after") == "after":
-        raise Error("RC25 menu selftest: timestamps stayed disabled after menu_ui() exited")
-
-    # A stamp is a line prefix. Live mirrors write partial chunks, and stamping
-    # each one cut the device's own output apart: "Press x" arrived as
-    # "P[12:24:31] ress x".
-    global _AT_LINE_START
-    saved_column = _AT_LINE_START
-    try:
-        _AT_LINE_START = True
-        opened = _stamp_stream("P")
-        if not opened.startswith("["):
-            raise Error("RC25 stream selftest: a line that begins mid-buffer lost its timestamp")
-        for chunk in ("ress", " x"):
-            if _stamp_stream(chunk) != chunk:
-                raise Error("RC25 stream selftest: a chunk continuing a line was timestamped")
-        if _stamp_stream("\n") != "\n":
-            raise Error("RC25 stream selftest: a bare line terminator gained a timestamp")
-        if not _stamp_stream("next line\n").startswith("["):
-            raise Error("RC25 stream selftest: a fresh line lost its timestamp")
-        if not _AT_LINE_START:
-            raise Error("RC25 stream selftest: the column was not reset by a line terminator")
-        # A carriage-return redraw continues the same line and must not collect
-        # one stamp per refresh.
-        _stamp_stream("[XMODEM] 1/887")
-        if _stamp_stream("\r[XMODEM] 2/887").startswith("["):
-            raise Error("RC25 stream selftest: a progress redraw collected a timestamp")
-    finally:
-        _AT_LINE_START = saved_column
-    try:
-        with menu_ui():
-            raise RuntimeError("boom")
-    except RuntimeError:
-        pass
-    if _MENU_RENDERING:
-        raise Error("RC25 menu selftest: menu_ui() leaked suppression after an exception")
-
-    # A token search would pass as soon as any branch used menu_ui(), so the
-    # structural check is done on the parse tree: every selector prompt and
-    # every numbered option must sit inside a menu_ui() block. Status lines such
-    # as [BLOCKED]/[SAFETY-LATCH]/[NAV] report events and stay timestamped.
+def _rc26_console_log_split_selftest() -> None:
+    """The console shows what was printed; work/logs/*.log carries the clock."""
     source = Path(__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    functions = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-    }
-    # The escaped newline is optional as a whole: r'\\n?' would demand the
-    # backslash and only make the "n" optional, so every '"1 — ...' option in the
-    # sources slipped past this check and only '\\n===' headers were ever tested.
-    option_pattern = re.compile(r'"(?:\\n)?\s*(?:\d+ —|===)')
-    for name in (
-        "_startup_entry_mode",
-        "wizard",
-        "firmware_menu",
-        "backup_menu",
-        "credentials_menu",
-        "service_menu",
-        "stock_restore_selector_wizard",
-        "_interactive_navigation_prompt",
-    ):
-        node = functions.get(name)
-        if node is None:
-            raise Error(f"RC25 menu selftest: {name} is gone")
-        clean: list[range] = []
-        for inner in ast.walk(node):
-            if not isinstance(inner, ast.With):
-                continue
-            for item in inner.items:
-                call = item.context_expr
-                if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "menu_ui":
-                    clean.append(range(inner.lineno, (inner.end_lineno or inner.lineno) + 1))
-        def is_clean(line: int) -> bool:
-            return any(line in span for span in clean)
-        for inner in ast.walk(node):
-            if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Name):
-                continue
-            if inner.func.id == "input" and not is_clean(inner.lineno):
-                raise Error(f"RC25 menu selftest: {name} prompts for a choice outside menu_ui()")
-            if inner.func.id != "print" or is_clean(inner.lineno):
-                continue
-            segment = ast.get_source_segment(source, inner) or ""
-            if option_pattern.search(segment):
-                raise Error(f"RC25 menu selftest: {name} prints a menu option outside menu_ui()")
+
+    # Nothing on the console path may stamp. RC23 added the prefix so PC output
+    # could be lined up against UART events, which is a job for the file read
+    # afterwards, not for the screen the operator is working on.
+    start = source.index("\ndef _localized_print(")
+    end = source.find("\ndef ", start + 1)
+    printer = source[start:end if end != -1 else len(source)]
+    if "_stamp_log_text" in printer:
+        raise Error("console/log selftest: the console print stamps again")
+    for name in ("_localized_input", "_localized_getpass"):
+        start = source.index(f"\ndef {name}(")
+        end = source.find("\ndef ", start + 1)
+        body = source[start:end if end != -1 else len(source)]
+        if "_stamp_log_text" in body or "_timestamp_text" in body:
+            raise Error(f"console/log selftest: {name} stamps the prompt on screen")
+
+    # The log side must stamp, and diagnostics that bypass the tee stamp themselves.
+    start = source.index("class _ConsoleTee:")
+    end = source.index("\ndef _write_session_only(")
+    tee = source[start:end]
+    if "_stamp_log_text(clean)" not in tee:
+        raise Error("console/log selftest: the log copy is no longer timestamped")
+    if "self.console.write(text)" not in tee:
+        raise Error("console/log selftest: the console no longer receives the raw text")
+    start = source.index("\ndef _write_session_only(")
+    end = source.find("\ndef ", start + 1)
+    diagnostics = source[start:end if end != -1 else len(source)]
+    if "_stamp_log_text(" not in diagnostics:
+        raise Error("console/log selftest: session-only diagnostics lost their timestamp")
+
+    # The console-side suppression machinery is gone; nothing may reintroduce it.
+    for token in ("menu_ui", "_MENU_RENDERING", "_stamp_stream", "_timestamp_text"):
+        if token in source.replace('"' + token + '"', "").replace("(\"" + token + "\")", ""):
+            raise Error(f"console/log selftest: {token} came back")
+
+    # A stamp is a line prefix: live mirrors write partial chunks, and stamping
+    # each one cut the device's own output apart — "Press x" arrived as
+    # "P[12:24:31] ress x".
+    global _LOG_AT_LINE_START
+    saved_column = _LOG_AT_LINE_START
+    try:
+        _LOG_AT_LINE_START = True
+        if not _stamp_log_text("P").startswith("["):
+            raise Error("console/log selftest: a line beginning mid-buffer lost its timestamp")
+        for chunk in ("ress", " x"):
+            if _stamp_log_text(chunk) != chunk:
+                raise Error("console/log selftest: a chunk continuing a line was timestamped")
+        if _stamp_log_text("\n") != "\n":
+            raise Error("console/log selftest: a bare line terminator gained a timestamp")
+        if not _stamp_log_text("next line\n").startswith("["):
+            raise Error("console/log selftest: a fresh line lost its timestamp")
+        if not _LOG_AT_LINE_START:
+            raise Error("console/log selftest: the column was not reset by a line terminator")
+        _stamp_log_text("[XMODEM] 1/887")
+        if _stamp_log_text("\r[XMODEM] 2/887").startswith("["):
+            raise Error("console/log selftest: a progress redraw collected a timestamp")
+    finally:
+        _LOG_AT_LINE_START = saved_column
 
 
 def _rc25_release_identity_selftest() -> None:
@@ -11006,13 +10949,12 @@ def parse_stock_audit_wizard() -> None:
 
 def credentials_menu() -> str:
     while True:
-        with menu_ui():
-            print(tr("\n=== Credentials / диагностика stock ===", "\n=== Credentials / stock diagnostics ==="))
-            print(tr("1 — показать credentials, всех пользователей и привилегии", "1 — show credentials, all users, and privileges"))
-            print(tr("2 — полный stock audit MD/MF (Web → Telnet → доказанный UID 0 → MTD/UBI/upgrade inventory)", "2 — full MD/MF stock audit (Web -> Telnet -> proven UID 0 -> MTD/UBI/upgrade inventory)"))
-            print(tr("3 — разобрать сохранённый stock-audit log", "3 — parse a saved stock-audit log"))
-            print(tr("4 — назад", "4 — back"))
-            choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
+        print(tr("\n=== Credentials / диагностика stock ===", "\n=== Credentials / stock diagnostics ==="))
+        print(tr("1 — показать credentials, всех пользователей и привилегии", "1 — show credentials, all users, and privileges"))
+        print(tr("2 — полный stock audit MD/MF (Web → Telnet → доказанный UID 0 → MTD/UBI/upgrade inventory)", "2 — full MD/MF stock audit (Web -> Telnet -> proven UID 0 -> MTD/UBI/upgrade inventory)"))
+        print(tr("3 — разобрать сохранённый stock-audit log", "3 — parse a saved stock-audit log"))
+        print(tr("4 — назад", "4 — back"))
+        choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
         action = None
         label_ru = label_en = ""
         if choice == "1":
@@ -11027,8 +10969,7 @@ def credentials_menu() -> str:
         elif choice == "4":
             return "main"
         else:
-            with menu_ui():
-                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, _ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -11515,23 +11456,22 @@ def firmware_menu() -> str:
         startup_family = str(_STARTUP_DEVICE_PROFILE.get("family") or "")
         profile = INSTALL_PROFILES.get(startup_family)
         profile_label = profile.model if profile is not None else tr("профиль не выбран (MD/MF)", "no profile selected (MD/MF)")
-        with menu_ui():
+        print(tr(
+            f"\n=== Прошивка / восстановление — {profile_label} ===",
+            f"\n=== Flashing / recovery — {profile_label} ===",
+        ))
+        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
             print(tr(
-                f"\n=== Прошивка / восстановление — {profile_label} ===",
-                f"\n=== Flashing / recovery — {profile_label} ===",
+                "[SAFETY-LATCH] Есть незавершённый/неподтверждённый NAND write. Пункты 1/2/3 блокируются до успешного полного BootROM/UART recovery.",
+                "[SAFETY-LATCH] A NAND write is incomplete/unproven. Options 1/2/3 are blocked until a successful full BootROM/UART recovery.",
             ))
-            if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
-                print(tr(
-                    "[SAFETY-LATCH] Есть незавершённый/неподтверждённый NAND write. Пункты 1/2/3 блокируются до успешного полного BootROM/UART recovery.",
-                    "[SAFETY-LATCH] A NAND write is incomplete/unproven. Options 1/2/3 are blocked until a successful full BootROM/UART recovery.",
-                ))
-            print(tr("1 — установить OpenWrt UBI (с обязательным backup)", "1 — install OpenWrt UBI (mandatory backup)"))
-            print(tr("2 — установить OpenWrt UBI из готового stock backup", "2 — install OpenWrt UBI from an existing stock backup"))
-            print(tr("3 — восстановить stock без UART", "3 — restore stock without UART"))
-            print(tr("4 — восстановить через BootROM/UART", "4 — recover through BootROM/UART"))
-            print(tr("5 — проверить capabilities", "5 — probe capabilities"))
-            print(tr("6 — назад", "6 — back"))
-            choice = input(tr("Выберите 1/2/3/4/5/6: ", "Select 1/2/3/4/5/6: ")).strip()
+        print(tr("1 — установить OpenWrt UBI (с обязательным backup)", "1 — install OpenWrt UBI (mandatory backup)"))
+        print(tr("2 — установить OpenWrt UBI из готового stock backup", "2 — install OpenWrt UBI from an existing stock backup"))
+        print(tr("3 — восстановить stock без UART", "3 — restore stock without UART"))
+        print(tr("4 — восстановить через BootROM/UART", "4 — recover through BootROM/UART"))
+        print(tr("5 — проверить capabilities", "5 — probe capabilities"))
+        print(tr("6 — назад", "6 — back"))
+        choice = input(tr("Выберите 1/2/3/4/5/6: ", "Select 1/2/3/4/5/6: ")).strip()
         if choice in {"1", "2", "3"} and _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
             print(tr(
                 "[BLOCKED] Этот write-path заблокирован SAFETY-LATCH. Используйте 4 для полного RECOVERY_SAFE BootROM/UART restore либо read-only диагностику.",
@@ -11562,8 +11502,7 @@ def firmware_menu() -> str:
             action = firmware_capabilities_wizard
             label_ru, label_en = "Проверка capabilities: завершена", "Capability probe: complete"
         else:
-            with menu_ui():
-                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -11578,12 +11517,11 @@ def firmware_menu() -> str:
 
 def backup_menu() -> str:
     while True:
-        with menu_ui():
-            print(tr("\n=== Backup / резервные копии ===", "\n=== Backup ==="))
-            print(tr("1 — снять stock backup через работающую прошивку/Telnet (MD/MF)", "1 — create a stock backup through running firmware/Telnet (MD/MF)"))
-            print(tr("2 — снять read-only backup через BootROM/UART + RAM recovery (MD/MF)", "2 — create a read-only backup through BootROM/UART + RAM recovery (MD/MF)"))
-            print(tr("3 — назад", "3 — back"))
-            choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
+        print(tr("\n=== Backup / резервные копии ===", "\n=== Backup ==="))
+        print(tr("1 — снять stock backup через работающую прошивку/Telnet (MD/MF)", "1 — create a stock backup through running firmware/Telnet (MD/MF)"))
+        print(tr("2 — снять read-only backup через BootROM/UART + RAM recovery (MD/MF)", "2 — create a read-only backup through BootROM/UART + RAM recovery (MD/MF)"))
+        print(tr("3 — назад", "3 — back"))
+        choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
         if choice == "3":
             return "main"
         if choice == "1":
@@ -11593,8 +11531,7 @@ def backup_menu() -> str:
             action = bootrom_backup_wizard
             label_ru, label_en = "Read-only BootROM/UART backup: завершён", "Read-only BootROM/UART backup: complete"
         else:
-            with menu_ui():
-                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, _ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -11607,17 +11544,16 @@ def backup_menu() -> str:
 
 def service_menu() -> str:
     while True:
-        with menu_ui():
-            print(tr("\n=== Подготовка / продолжение установки ===", "\n=== Preparation / installation continuation ==="))
-            if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
-                print(tr(
-                    "[SAFETY-LATCH] Продолжение destructive stage (пункт 2) заблокировано до успешного полного BootROM/UART recovery.",
-                    "[SAFETY-LATCH] Destructive-stage continuation (option 2) is blocked until a successful full BootROM/UART recovery.",
-                ))
-            print(tr("1 — подготовить персональный установочный пакет из полного stock backup", "1 — prepare a device-specific installation package from a full stock backup"))
-            print(tr("2 — продолжить после transition OpenWrt: этап 2 = UBI format + запись sysupgrade + контроль первого запуска", "2 — continue after transition OpenWrt: stage 2 = UBI format + sysupgrade flash + first-boot monitoring"))
-            print(tr("3 — назад", "3 — back"))
-            choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
+        print(tr("\n=== Подготовка / продолжение установки ===", "\n=== Preparation / installation continuation ==="))
+        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+            print(tr(
+                "[SAFETY-LATCH] Продолжение destructive stage (пункт 2) заблокировано до успешного полного BootROM/UART recovery.",
+                "[SAFETY-LATCH] Destructive-stage continuation (option 2) is blocked until a successful full BootROM/UART recovery.",
+            ))
+        print(tr("1 — подготовить персональный установочный пакет из полного stock backup", "1 — prepare a device-specific installation package from a full stock backup"))
+        print(tr("2 — продолжить после transition OpenWrt: этап 2 = UBI format + запись sysupgrade + контроль первого запуска", "2 — continue after transition OpenWrt: stage 2 = UBI format + sysupgrade flash + first-boot monitoring"))
+        print(tr("3 — назад", "3 — back"))
+        choice = input(tr("Выберите 1/2/3: ", "Select 1/2/3: ")).strip()
         if choice == "3":
             return "main"
         if choice == "1":
@@ -11633,8 +11569,7 @@ def service_menu() -> str:
             action = resume_stage2_wizard
             label_ru, label_en = "Продолжение Stage 2: завершено", "Stage 2 continuation: complete"
         else:
-            with menu_ui():
-                print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
+            print(tr("Неверный выбор. Меню остаётся открытым.", "Invalid selection. The menu remains open."))
             continue
         nav, _ok = _run_interactive_action(
             action, label_ru=label_ru, label_en=label_en,
@@ -11656,20 +11591,18 @@ def _family_from_model_chipset(model: str, chipset: str) -> str:
 
 def _startup_entry_mode() -> str:
     while True:
-        with menu_ui():
-            print(tr("\nРежим запуска:", "\nStartup mode:"))
-            print(tr("1 — обычный запуск / автоопределение stock", "1 — normal startup / stock auto-detection"))
-            print(tr("2 — кирпич / BootROM-UART recovery без сетевого автоопределения", "2 — bricked device / BootROM-UART recovery without network auto-detection"))
-            print(tr("3 — выход", "3 — exit"))
-            choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip() or "1"
+        print(tr("\nРежим запуска:", "\nStartup mode:"))
+        print(tr("1 — обычный запуск / автоопределение stock", "1 — normal startup / stock auto-detection"))
+        print(tr("2 — кирпич / BootROM-UART recovery без сетевого автоопределения", "2 — bricked device / BootROM-UART recovery without network auto-detection"))
+        print(tr("3 — выход", "3 — exit"))
+        choice = input(tr("Выберите 1/2/3 [1]: ", "Select 1/2/3 [1]: ")).strip() or "1"
         if choice == "1":
             return "normal"
         if choice == "2":
             return "brick"
         if choice == "3":
             return "exit"
-        with menu_ui():
-            print(tr("Неверный выбор. Скрипт остаётся запущенным; выберите режим снова.", "Invalid selection. The script remains running; select a startup mode again."))
+        print(tr("Неверный выбор. Скрипт остаётся запущенным; выберите режим снова.", "Invalid selection. The script remains running; select a startup mode again."))
 
 
 def _startup_device_autodetect() -> dict[str, object]:
@@ -11720,13 +11653,12 @@ def _startup_device_autodetect() -> dict[str, object]:
                 entered = None
             except Exception:
                 pass
-        with menu_ui():
-            print(tr("Ручной fallback (не является доказательством модели):", "Manual fallback (not proof of the model):"))
-            print("1 — Nokia XG-040G-MD")
-            print("2 — Nokia XG-040G-MF")
-            print(tr("3 — повторить автоопределение", "3 — retry auto-detection"))
-            print(tr("4 — продолжить без выбранного профиля (например UART recovery)", "4 — continue without a selected profile (for example UART recovery)"))
-            choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
+        print(tr("Ручной fallback (не является доказательством модели):", "Manual fallback (not proof of the model):"))
+        print("1 — Nokia XG-040G-MD")
+        print("2 — Nokia XG-040G-MF")
+        print(tr("3 — повторить автоопределение", "3 — retry auto-detection"))
+        print(tr("4 — продолжить без выбранного профиля (например UART recovery)", "4 — continue without a selected profile (for example UART recovery)"))
+        choice = input(tr("Выберите 1/2/3/4: ", "Select 1/2/3/4: ")).strip()
         if choice == "3":
             continue
         if choice in ("1", "2"):
@@ -11738,32 +11670,30 @@ def _startup_device_autodetect() -> dict[str, object]:
         if choice == "4":
             _STARTUP_DEVICE_PROFILE = {"family": "unknown", "model": "", "chipset": "", "host": host, "verified": False, "source": "none"}
             return _STARTUP_DEVICE_PROFILE
-        with menu_ui():
-            print(tr("Неверный выбор.", "Invalid selection."))
+        print(tr("Неверный выбор.", "Invalid selection."))
 
 
 def wizard() -> None:
     while True:
-        with menu_ui():
-            print(tr("\n=== Главное меню ===", "\n=== Main menu ==="))
-            prof = _STARTUP_DEVICE_PROFILE
-            if prof.get("family") in ("md", "mf"):
-                state = "VERIFIED" if prof.get("verified") else "UNVERIFIED"
-                print(tr(
-                    f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
-                    f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
-                ))
-            if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
-                print(tr(
-                    "[SAFETY-LATCH] Неизвестное состояние предыдущего NAND write: destructive пункты ограничены, но скрипт и диагностика остаются доступны.",
-                    "[SAFETY-LATCH] A previous NAND write has unknown state: destructive options are restricted, but the script and diagnostics remain available.",
-                ))
-            print(tr("1 — прошивка / установка / восстановление", "1 — flashing / installation / recovery"))
-            print(tr("2 — backup / резервные копии", "2 — backup"))
-            print(tr("3 — credentials / пользователи / stock audit", "3 — credentials / users / stock audit"))
-            print(tr("4 — подготовка / продолжение установки", "4 — preparation / continue installation"))
-            print(tr("5 — выход", "5 — exit"))
-            choice = input(tr("Выберите 1/2/3/4/5: ", "Select 1/2/3/4/5: ")).strip()
+        print(tr("\n=== Главное меню ===", "\n=== Main menu ==="))
+        prof = _STARTUP_DEVICE_PROFILE
+        if prof.get("family") in ("md", "mf"):
+            state = "VERIFIED" if prof.get("verified") else "UNVERIFIED"
+            print(tr(
+                f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
+                f"[DEVICE] {prof.get('model') or prof.get('family','').upper()}" + (f" / {prof.get('chipset')}" if prof.get('chipset') else "") + f" [{state}]",
+            ))
+        if _INTERACTIVE_DESTRUCTIVE_LATCH.get("blocked"):
+            print(tr(
+                "[SAFETY-LATCH] Неизвестное состояние предыдущего NAND write: destructive пункты ограничены, но скрипт и диагностика остаются доступны.",
+                "[SAFETY-LATCH] A previous NAND write has unknown state: destructive options are restricted, but the script and diagnostics remain available.",
+            ))
+        print(tr("1 — прошивка / установка / восстановление", "1 — flashing / installation / recovery"))
+        print(tr("2 — backup / резервные копии", "2 — backup"))
+        print(tr("3 — credentials / пользователи / stock audit", "3 — credentials / users / stock audit"))
+        print(tr("4 — подготовка / продолжение установки", "4 — preparation / continue installation"))
+        print(tr("5 — выход", "5 — exit"))
+        choice = input(tr("Выберите 1/2/3/4/5: ", "Select 1/2/3/4/5: ")).strip()
         if choice == "1":
             nav = firmware_menu()
         elif choice == "2":
@@ -11775,8 +11705,7 @@ def wizard() -> None:
         elif choice == "5":
             return
         else:
-            with menu_ui():
-                print(tr("Неверный выбор. Скрипт остаётся в главном меню.", "Invalid selection. The script remains in the main menu."))
+            print(tr("Неверный выбор. Скрипт остаётся в главном меню.", "Invalid selection. The script remains in the main menu."))
             continue
         if nav == "exit":
             return
@@ -11887,12 +11816,12 @@ def main(argv: list[str] | None = None) -> int:
             _stage1_handoff_safety_selftest()
             _stock_slot_tolerance_selftest()
             _readonly_flow_selftest()
-            _rc25_menu_timestamp_selftest()
+            _rc26_console_log_split_selftest()
             _rc25_readonly_by_fact_selftest()
             _rc25a_recovery_reachability_selftest()
             _rc25_release_identity_selftest()
             _rc25_lan1_advisory_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC25 menu timestamps + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC26 console/log split + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

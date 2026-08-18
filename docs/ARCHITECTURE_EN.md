@@ -432,6 +432,14 @@ is CRLF, everything else is LF.
 
 Below is a traceability record: which release introduced which architectural contract, and why. This is not the user-facing change history — that lives in [CHANGELOG.md](CHANGELOG.md). Sections are grouped by release and do not form a strict chronological order.
 
+## 1.0.0-rc26 — console/log split
+
+**Console contract, restated.** RC23 put an absolute timestamp on operator lines so PC output could be correlated with UART events; RC25 scoped that away from menus. RC26 finishes the thought by asking where the correlation actually happens. It happens in a file, read after the fact — not on the screen the operator is working on, where a 21-character prefix competed with the message on every single line. So the console now shows exactly what the code printed, and `_ConsoleTee` stamps the copy going to `work/logs/`. Every log line carries the clock, menu options and input prompts included, which makes the log a better record than it was before.
+
+The consequence is that the console-side suppression machinery has nothing left to suppress: `menu_ui()`, `_MENU_RENDERING`, `_stamp_stream()` and `_timestamp_text()` are gone, along with all twenty `with menu_ui():` blocks. Their removal was verified by comparing the module's AST before and after, so only the wrappers disappeared. One invariant now replaces a rule that had to be re-applied at every new selector: the console is never stamped, the log always is — and neither can drift without a selftest failing.
+
+Two details keep the log honest. `_write_session_only()` writes past the tee and therefore stamps itself, and `_log_prompt_newline()` resets the log column, so the line following a prompt begins a line rather than continuing one. The stamp is still a line prefix: a chunk that continues a line passes through untouched, which is what keeps a live UART mirror readable and stops a `\r` progress counter from collecting a stamp per redraw.
+
 ## 1.0.0-rc25 — symmetric write authorization / console and identity contracts
 
 **Write-authorization contract.** The stock slot map `mtd2..mtd5` is a *classifier*, not an allowlist. It answers "which family and which vendor slot revision is this", and that answer feeds backup selection and evidence only. Permanent-write authorization is assembled from facts that describe the actual write target: a live family match, `/proc/mtd == sysfs`, exact fixed stock partitions, byte-exact stock handoff targets `mtd0/mtd14/mtd15/mtd16`, erase size `0x20000`, a complete `mtd0..mtd16` backup revalidated from content, device-specific environment, and the pinned transition bundle. After the handoff into RAM, the board-specific installer independently re-derives the physical target — `all_flash=0x10000000`, `BL2=0x20000`, `UBI/IBU=0x0FFE0000`, erase `0x20000`, write `0x800` — before `ubiformat` is reachable at all.

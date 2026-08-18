@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc25 · **Date:** 17 August 2026
+**Version:** 1.0.0-rc26 · **Date:** 18 August 2026
 
 **OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
 **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
@@ -69,7 +69,7 @@ wrong, see [If an error occurs](#if-an-error-occurs).
 
 Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-Release profile for 1.0.0-rc25:
+Release profile for 1.0.0-rc26:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -92,12 +92,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc25.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc26.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc25.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc26.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root
@@ -264,11 +264,15 @@ cannot open it, run `sudo ./START.sh`.
 Select 1/2/3/4/5:
 ```
 
-Menus print without timestamps, and that is deliberate. The
-`[YYYY-MM-DD HH:MM:SS]` prefix exists so PC output can be lined up against UART
-events; on menu options it only makes the choices harder to read. The
-`[BLOCKED]`/`[SAFETY-LATCH]` decision lines and the `[NAV]` completion lines keep
-their timestamps.
+From RC26 **the screen carries no timestamps at all** — not in menus, not on
+operational lines. The `[YYYY-MM-DD HH:MM:SS]` prefix is now written only into
+`work/logs/`, to both `LATEST.log` and the session file. Its purpose was to line
+PC output up against UART events afterwards, and that is work you do on a file,
+not on the live console where the prefix took space from the message on every
+single line.
+
+To reconstruct the chronology, open `work/logs/LATEST.log`: every line is
+timestamped there, menu options and input prompts included.
 
 Submenu **1** contains stock-MD OpenWrt installation, installation from an existing backup, stock restore without UART, and BootROM/UART brick recovery for MD/MF.
 

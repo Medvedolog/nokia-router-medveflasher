@@ -1,3 +1,37 @@
+# 1.0.0-rc26 — the console loses the clock, the log keeps it
+
+RC25 was published and then rebuilt three times under the same tag. This release
+exists so that stops: content that changes behaviour gets its own version, and
+`v1.0.0-rc25` stays where it is. Firmware, transition and recovery payload bytes
+are unchanged from RC24.
+
+## 1.0.0-rc26 — 18 August 2026
+
+- **The console carries no timestamps at all.** RC23 added the absolute
+  `[YYYY-MM-DD HH:MM:SS]` prefix so PC output could be correlated with UART
+  events. That is a job for the file you read afterwards, not for the screen the
+  operator is working on, where the prefix competed with the message on every
+  line. Stamping moved into `_ConsoleTee`, so `work/logs/LATEST.log` and the
+  session log carry the clock on every line — menu options and input prompts
+  included — while the console shows exactly what the code printed.
+- `_write_session_only()` bypasses the tee and therefore stamps its own
+  diagnostics; `_log_prompt_newline()` also resets the log column, so the line
+  after a prompt is not mistaken for a continuation and does not lose its stamp.
+- The RC25 console-side machinery is gone: `menu_ui()`, `_MENU_RENDERING`,
+  `_stamp_stream()` and `_timestamp_text()` are removed along with all twenty
+  `with menu_ui():` blocks. The removal was verified by comparing the module's
+  AST before and after, so only the wrappers disappeared. The invariant that
+  replaces them is simpler and wider: the console is never stamped, the log
+  always is.
+- The stamp remains a line prefix. Live mirrors — the UART character feed, the
+  Telnet echo, the XMODEM counter — write partial chunks, and a chunk continuing
+  a line passes through untouched; a `\r` progress redraw does not collect one
+  stamp per refresh.
+- A `selftest-safety` case pins both halves of the split and was verified against
+  four deliberate regressions: the console stamping again, the log no longer
+  stamping, the suppression machinery returning, and per-chunk stamping of a live
+  mirror.
+
 # 1.0.0-rc25 — symmetric MD/MF install policy, clean menus, LAN1 advisory
 
 Released to this repository as a single `1.0.0-rc25`. The interim `rc25fix` and

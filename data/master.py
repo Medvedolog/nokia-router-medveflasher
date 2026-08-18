@@ -7628,6 +7628,50 @@ def _restore_probe_ssh(host: str, command: str, timeout: int = 120, quiet: bool 
     raise Error("restore SSH probe failed: " + " | ".join(errors)[-1600:])
 
 
+def _restore_environment_diagnostic(output: str, family: str, board_ok: bool,
+                                    recovery_markers: tuple[str, ...],
+                                    production_markers: tuple[str, ...]) -> str:
+    """Say what was actually seen when the restore gate refuses.
+
+    The probe already collected the board name and /proc/mtd, but the refusal
+    used to report none of it, so an operator holding a device that needs
+    restoring was told "does not match" and left to guess which half was wrong.
+    The gate stays exactly as strict; it just stops being silent about why.
+    """
+    low = output.lower()
+    board = "(пусто)"
+    match = re.search(r"(?im)^board=(.*)$", output)
+    if match:
+        board = match.group(1).strip() or "(пусто)"
+    root = "(не определён)"
+    match = re.search(r"(?im)^root=(.*)$", output)
+    if match:
+        root = match.group(1).strip() or "(не определён)"
+    observed = [line.strip() for line in output.splitlines()
+                if re.match(r"(?i)^\s*mtd\d+:", line.strip())][:4]
+
+    lines = [
+        f"  наблюдалось: BOARD={board}; ROOT={root}",
+        f"  ожидалось:   BOARD=nokia,xg-040g-{family}-ubi",
+    ]
+    if not board_ok:
+        lines.append("  -> имя платы не совпало: это не установленная этим комплектом all-in-UBI система и не её recovery.")
+    else:
+        missing_recovery = [m for m in recovery_markers if m not in low]
+        missing_production = [m for m in production_markers if m not in low]
+        closer = missing_recovery if len(missing_recovery) <= len(missing_production) else missing_production
+        label = "recovery" if closer is missing_recovery else "production"
+        lines.append(f"  -> имя платы совпало, но разметка не сошлась; ближе к {label}, не хватает:")
+        lines.extend(f"       {marker}" for marker in closer)
+    if observed:
+        lines.append("  фактический /proc/mtd (первые строки):")
+        lines.extend(f"       {line}" for line in observed)
+    lines.append("  Полный ответ устройства — в work/logs/session-*.log по метке [SSH-RAW].")
+    lines.append("  Этот путь ведёт только уже установленную этим комплектом систему: recovery или all-in-UBI production.")
+    lines.append("  Для transition-системы этапа 1 используйте пункт «продолжение установки», для стороннего снапшота — BootROM/UART.")
+    return "\n".join(lines)
+
+
 def inspect_restore_environment(host: str, expected_family: str | None = None, quiet: bool = False) -> tuple[str, str]:
     command = (
         "echo BOARD=$(cat /tmp/sysinfo/board_name 2>/dev/null || true); "
@@ -7673,8 +7717,10 @@ def inspect_restore_environment(host: str, expected_family: str | None = None, q
     if board_ok and all(marker in low for marker in production_markers):
         return "production", output
     raise Error(tr(
-        f"OpenWrt обнаружен, но board/MTD не соответствует Nokia XG-040G-{family.upper()} recovery или all-in-UBI production",
-        f"OpenWrt was detected, but its board/MTD layout does not match Nokia XG-040G-{family.upper()} recovery or all-in-UBI production",
+        f"OpenWrt обнаружен, но board/MTD не соответствует Nokia XG-040G-{family.upper()} recovery или all-in-UBI production.\n"
+        + _restore_environment_diagnostic(output, family, board_ok, recovery_markers, production_markers),
+        f"OpenWrt was detected, but its board/MTD layout does not match Nokia XG-040G-{family.upper()} recovery or all-in-UBI production.\n"
+        + _restore_environment_diagnostic(output, family, board_ok, recovery_markers, production_markers),
     ))
 
 def transition_preflight_for_restore(host: str, backup_ri_sha: str, expected_family: str, timeout: int = 180) -> str:
@@ -8825,6 +8871,42 @@ def _rc25a_recovery_reachability_selftest() -> None:
         raise Error("launcher selftest: only one slot alias is proven before the destructive stage")
     if 'if [ "$active_slot" != master ]' not in boot_path:
         raise Error("launcher selftest: the write-target check is no longer conditional on the active slot")
+
+
+def _rc26_restore_diagnostic_selftest() -> None:
+    """A fail-closed gate must say what it saw, not only that it refused."""
+    recovery = ('mtd0: 10000000 00020000 "all_flash"', 'mtd1: 00020000 00020000 "bl2"',
+                'mtd2: 0ffe0000 00020000 "ibu"')
+    production = ('mtd0: 10000000 00020000 "all_flash"', 'mtd1: 00020000 00020000 "bl2"',
+                  'mtd2: 0ffe0000 00020000 "ubi"')
+
+    # A third-party snapshot: the board name never matches, so the layout is not
+    # the interesting half and must not be blamed.
+    foreign = ('BOARD=nokia,xg-040g-md\nROOT=ubifs\n'
+               'mtd0: 10000000 00020000 "all_flash"\nmtd2: 0ffe0000 00020000 "ubi"\n')
+    text = _restore_environment_diagnostic(foreign, "md", False, recovery, production)
+    for token in ("nokia,xg-040g-md", "nokia,xg-040g-md-ubi", "ROOT=ubifs", "[SSH-RAW]"):
+        if token not in text:
+            raise Error(f"restore diagnostic selftest: refusal does not report {token}")
+    if "не хватает" in text:
+        raise Error("restore diagnostic selftest: a board-name mismatch was reported as a layout mismatch")
+
+    # Right board, wrong layout: name the markers that are missing.
+    staged = ('BOARD=nokia,xg-040g-md-ubi\nROOT=tmpfs\n'
+              'mtd0: 00080000 00020000 "bootloader"\nmtd2: 003af61f 00020000 "kernel"\n')
+    text = _restore_environment_diagnostic(staged, "md", True, recovery, production)
+    if 'mtd2: 0ffe0000 00020000 "ibu"' not in text:
+        raise Error("restore diagnostic selftest: the missing layout markers are not listed")
+    if '"bootloader"' not in text:
+        raise Error("restore diagnostic selftest: the observed /proc/mtd is not shown")
+
+    # The refusal itself must carry the diagnostic, not just build one.
+    source = Path(__file__).read_text(encoding="utf-8")
+    start = source.index("\ndef inspect_restore_environment(")
+    end = source.find("\ndef ", start + 1)
+    body = source[start:end if end != -1 else len(source)]
+    if body.count("_restore_environment_diagnostic(") < 2:
+        raise Error("restore diagnostic selftest: the refusal no longer includes what was observed")
 
 
 def _rc26_console_log_split_selftest() -> None:
@@ -11817,11 +11899,12 @@ def main(argv: list[str] | None = None) -> int:
             _stock_slot_tolerance_selftest()
             _readonly_flow_selftest()
             _rc26_console_log_split_selftest()
+            _rc26_restore_diagnostic_selftest()
             _rc25_readonly_by_fact_selftest()
             _rc25a_recovery_reachability_selftest()
             _rc25_release_identity_selftest()
             _rc25_lan1_advisory_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC26 console/log split + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

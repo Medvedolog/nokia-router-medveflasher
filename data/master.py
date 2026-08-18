@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc26"
-BUILD_TAG = "medveflasher-1.0.0-rc26"
+APP_VERSION = "1.0.0-rc27"
+BUILD_TAG = "medveflasher-1.0.0-rc27"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -7628,9 +7628,165 @@ def _restore_probe_ssh(host: str, command: str, timeout: int = 120, quiet: bool 
     raise Error("restore SSH probe failed: " + " | ".join(errors)[-1600:])
 
 
+# Board identity as the device reports it, kept apart from what the device is
+# currently running. Conflating the two is what made the restore gate answer
+# "does not match" to four different situations.
+MD_SOC_COMPATIBLE = "airoha,an7581"
+MF_SOC_COMPATIBLE = "airoha,an7583"
+
+
+def classify_restore_identity(output: str) -> dict[str, object]:
+    """Split what the board *is* from what it is currently *running*.
+
+    ``family`` comes from the board/SoC compatible strings and holds for any image
+    on that hardware. ``kit_built`` is true only for the ``-ubi`` board this kit
+    installs, because that suffix is this project's convention, not the vendor's
+    or upstream's. ``state`` names the system in flash from the MTD shape.
+    """
+    low = output.lower()
+    board = ""
+    match = re.search(r"(?im)^board=(.*)$", output)
+    if match:
+        board = match.group(1).strip().lower()
+    compat = ""
+    match = re.search(r"(?im)^compat=(.*)$", output)
+    if match:
+        compat = match.group(1).strip().lower()
+    identity = f"{board} {compat}"
+
+    family = "unknown"
+    if "xg-040g-mf" in identity or MF_SOC_COMPATIBLE in identity:
+        family = "mf"
+    elif "xg-040g-md" in identity or MD_SOC_COMPATIBLE in identity:
+        family = "md"
+    kit_built = board.endswith("-ubi")
+
+    shape = _all_in_ubi_shape(output)
+    if shape in ("recovery", "production"):
+        state = shape
+    elif 'mtd14: 02880000 00020000 "nsb_master"' in low or '"bootloader"' in low:
+        state = "stock-layout"
+    elif "ubi" in low or "all_flash" in low:
+        state = "foreign-ubi"
+    else:
+        state = "unknown"
+    return {"family": family, "kit_built": kit_built, "state": state,
+            "board": board or "(пусто)", "compat": compat or "(пусто)"}
+
+
+_PROC_MTD_LINE = re.compile(r'(?im)^\s*mtd(\d+):\s+([0-9a-f]+)\s+([0-9a-f]+)\s+"([^"]*)"')
+
+
+def parse_proc_mtd_shape(output: str) -> dict[int, tuple[int, int, str]]:
+    """Structured /proc/mtd from a probe transcript: number -> (size, erase, name)."""
+    shape: dict[int, tuple[int, int, str]] = {}
+    for number, size, erase, name in _PROC_MTD_LINE.findall(output):
+        shape[int(number)] = (int(size, 16), int(erase, 16), name.strip().lower())
+    return shape
+
+
+def _all_in_ubi_shape(output: str) -> str:
+    """Recognise the all-in-UBI layout without gating on the UBI partition size.
+
+    What is fixed by the hardware and by the boot contract is checked exactly: the
+    whole 256 MiB chip published as ``all_flash``, one ``0x20000`` boot block as
+    ``bl2``, and the ``0x20000`` erase size. The size of the ``ubi``/``ibu``
+    partition is not: a device observed in the field carries ``0x0FF00000`` where
+    this kit's own build publishes ``0x0FFE0000`` — seven eraseblocks left unused
+    at the end of the chip by a different build of the same board.
+
+    That number is recorded as evidence rather than enforced, because no step of
+    this operation depends on it. Restoring from a running system rewrites the
+    U-Boot environment, verifies it by read-back, reboots and TFTPs the recovery
+    image; the UBI partition is never touched. Authorization stays with the facts
+    that do describe the operation — the verified environment write, the
+    content-revalidated backup, and the geometry the recovery system pins itself.
+    """
+    shape = parse_proc_mtd_shape(output)
+    zero, one, two = shape.get(0), shape.get(1), shape.get(2)
+    if not zero or not one or not two:
+        return "incomplete"
+    if zero[0] != PHYSICAL_NAND_SIZE or zero[1] != UBOOT_ERASE_SIZE or zero[2] != "all_flash":
+        return "other"
+    if one[0] != UBOOT_ERASE_SIZE or one[1] != UBOOT_ERASE_SIZE or one[2] != "bl2":
+        return "other"
+    if two[1] != UBOOT_ERASE_SIZE:
+        return "other"
+    if two[2] == "ibu":
+        return "recovery"
+    if two[2] == "ubi":
+        return "production"
+    return "other"
+
+
+def _restore_environment_diagnostic(output: str, family: str, board_ok: bool,
+                                    recovery_markers: tuple[str, ...],
+                                    production_markers: tuple[str, ...]) -> str:
+    """Say what was actually seen when the restore gate refuses.
+
+    The probe already collected the board name and /proc/mtd, but the refusal
+    used to report none of it, so an operator holding a device that needs
+    restoring was told "does not match" and left to guess which half was wrong.
+    The gate stays exactly as strict; it just stops being silent about why.
+    """
+    low = output.lower()
+    board = "(пусто)"
+    match = re.search(r"(?im)^board=(.*)$", output)
+    if match:
+        board = match.group(1).strip() or "(пусто)"
+    root = "(не определён)"
+    match = re.search(r"(?im)^root=(.*)$", output)
+    if match:
+        root = match.group(1).strip() or "(не определён)"
+    observed = [line.strip() for line in output.splitlines()
+                if re.match(r"(?i)^\s*mtd\d+:", line.strip())][:4]
+
+    lines = [
+        f"  наблюдалось: BOARD={board}; ROOT={root}",
+        f"  ожидалось:   BOARD=nokia,xg-040g-{family}-ubi",
+    ]
+    if not board_ok:
+        lines.append("  -> имя платы не совпало: это не установленная этим комплектом all-in-UBI система и не её recovery.")
+    else:
+        missing_recovery = [m for m in recovery_markers if m not in low]
+        missing_production = [m for m in production_markers if m not in low]
+        closer = missing_recovery if len(missing_recovery) <= len(missing_production) else missing_production
+        label = "recovery" if closer is missing_recovery else "production"
+        lines.append(f"  -> имя платы совпало, но разметка не сошлась; ближе к {label}, не хватает:")
+        lines.extend(f"       {marker}" for marker in closer)
+    if observed:
+        lines.append("  фактический /proc/mtd (первые строки):")
+        lines.extend(f"       {line}" for line in observed)
+    identity = classify_restore_identity(output)
+    lines.append(f"  распознано: семейство={identity['family'].upper()}; собрано этим комплектом={'да' if identity['kit_built'] else 'нет'}; система={identity['state']}")
+    advice = {
+        "stock-layout": "  -> в NAND стоковая разметка: это transition-система этапа 1. Нужен пункт «подготовка / продолжение установки», а не откат.",
+        "foreign-ubi": "  -> UBI есть, но это не образ этого комплекта. Откат без UART опирается на env и разметку, которые ставит он сам, поэтому путь закрыт. Используйте BootROM/UART с полным backup.",
+        "recovery": None,
+        "production": None,
+        "unknown": "  -> определить систему по /proc/mtd не удалось; полный ответ смотрите в логе.",
+    }.get(str(identity["state"]))
+    if identity["state"] in ("recovery", "production") and not identity["kit_built"]:
+        # The flash is already in the all-in-UBI shape this path drives, but the
+        # board name says another builder produced it. That is a deliberate
+        # decision, not a detection bug: the no-UART restore rewrites the boot
+        # environment this kit installs, and a foreign builder may lay it out
+        # differently even when /proc/mtd looks identical.
+        advice = ("  -> разметка совпадает с all-in-UBI, но имя платы без суффикса -ubi: систему собрал не этот комплект.\n"
+                  "     Откат без UART правит boot environment, который ставит именно он, поэтому путь закрыт по решению, а не по ошибке.\n"
+                  "     Безопасный путь с полным backup — BootROM/UART.")
+    if advice:
+        lines.append(advice)
+    lines.append("  Полный ответ устройства — в work/logs/session-*.log по метке [SSH-RAW].")
+    return "\n".join(lines)
+
+
 def inspect_restore_environment(host: str, expected_family: str | None = None, quiet: bool = False) -> tuple[str, str]:
     command = (
         "echo BOARD=$(cat /tmp/sysinfo/board_name 2>/dev/null || true); "
+        # board_name is a derived label; the device-tree compatible list is the
+        # primary evidence and carries the SoC as well as the board.
+        "echo COMPAT=$(tr '\\0' ' ' < /proc/device-tree/compatible 2>/dev/null || true); "
         "echo STATE=$(cat /tmp/NOKIA_AUTOFLASH_STATE 2>/dev/null || true); "
         "echo ROOT=$(awk '$2==\"/\" {print $3; exit}' /proc/mounts); "
         "cat /proc/mtd; "
@@ -7661,20 +7817,26 @@ def inspect_restore_environment(host: str, expected_family: str | None = None, q
     recovery_markers = (
         'mtd0: 10000000 00020000 "all_flash"',
         'mtd1: 00020000 00020000 "bl2"',
-        'mtd2: 0ffe0000 00020000 "ibu"',
+        'mtd2 named "ibu"',
     )
     production_markers = (
         'mtd0: 10000000 00020000 "all_flash"',
         'mtd1: 00020000 00020000 "bl2"',
-        'mtd2: 0ffe0000 00020000 "ubi"',
+        'mtd2 named "ubi"',
     )
-    if board_ok and all(marker in low for marker in recovery_markers):
-        return "recovery", output
-    if board_ok and all(marker in low for marker in production_markers):
-        return "production", output
+    shape = _all_in_ubi_shape(output)
+    if board_ok and shape in ("recovery", "production"):
+        observed = parse_proc_mtd_shape(output).get(2)
+        if observed:
+            _write_session_only(
+                f"[RESTORE-SHAPE] {shape}: mtd2 name={observed[2]} size=0x{observed[0]:08X} "
+                f"erase=0x{observed[1]:X} (size is evidence, not a gate)")
+        return shape, output
     raise Error(tr(
-        f"OpenWrt обнаружен, но board/MTD не соответствует Nokia XG-040G-{family.upper()} recovery или all-in-UBI production",
-        f"OpenWrt was detected, but its board/MTD layout does not match Nokia XG-040G-{family.upper()} recovery or all-in-UBI production",
+        f"OpenWrt обнаружен, но board/MTD не соответствует Nokia XG-040G-{family.upper()} recovery или all-in-UBI production.\n"
+        + _restore_environment_diagnostic(output, family, board_ok, recovery_markers, production_markers),
+        f"OpenWrt was detected, but its board/MTD layout does not match Nokia XG-040G-{family.upper()} recovery or all-in-UBI production.\n"
+        + _restore_environment_diagnostic(output, family, board_ok, recovery_markers, production_markers),
     ))
 
 def transition_preflight_for_restore(host: str, backup_ri_sha: str, expected_family: str, timeout: int = 180) -> str:
@@ -8825,6 +8987,89 @@ def _rc25a_recovery_reachability_selftest() -> None:
         raise Error("launcher selftest: only one slot alias is proven before the destructive stage")
     if 'if [ "$active_slot" != master ]' not in boot_path:
         raise Error("launcher selftest: the write-target check is no longer conditional on the active slot")
+
+
+def _rc26_restore_diagnostic_selftest() -> None:
+    """A fail-closed gate must say what it saw, not only that it refused."""
+    recovery = ('mtd0: 10000000 00020000 "all_flash"', 'mtd1: 00020000 00020000 "bl2"',
+                'mtd2: 0ffe0000 00020000 "ibu"')
+    production = ('mtd0: 10000000 00020000 "all_flash"', 'mtd1: 00020000 00020000 "bl2"',
+                  'mtd2: 0ffe0000 00020000 "ubi"')
+
+    # A third-party snapshot: the board name never matches, so the layout is not
+    # the interesting half and must not be blamed.
+    foreign = ('BOARD=nokia,xg-040g-md\nROOT=ubifs\n'
+               'mtd0: 10000000 00020000 "all_flash"\nmtd2: 0ffe0000 00020000 "ubi"\n')
+    text = _restore_environment_diagnostic(foreign, "md", False, recovery, production)
+    for token in ("nokia,xg-040g-md", "nokia,xg-040g-md-ubi", "ROOT=ubifs", "[SSH-RAW]"):
+        if token not in text:
+            raise Error(f"restore diagnostic selftest: refusal does not report {token}")
+    if "не хватает" in text:
+        raise Error("restore diagnostic selftest: a board-name mismatch was reported as a layout mismatch")
+
+    # Right board, wrong layout: name the markers that are missing.
+    staged = ('BOARD=nokia,xg-040g-md-ubi\nROOT=tmpfs\n'
+              'mtd0: 00080000 00020000 "bootloader"\nmtd2: 003af61f 00020000 "kernel"\n')
+    text = _restore_environment_diagnostic(staged, "md", True, recovery, production)
+    if 'mtd2: 0ffe0000 00020000 "ibu"' not in text:
+        raise Error("restore diagnostic selftest: the missing layout markers are not listed")
+    if '"bootloader"' not in text:
+        raise Error("restore diagnostic selftest: the observed /proc/mtd is not shown")
+
+    # Board identity and running system are separate questions.
+    md_upstream = ('BOARD=nokia,xg-040g-md\nCOMPAT=nokia,xg-040g-md airoha,an7581\n'
+                   'mtd0: 10000000 00020000 "all_flash"\nmtd1: 00020000 00020000 "bl2"\n'
+                   'mtd2: 0ffe0000 00020000 "ubi"\n')
+    identity = classify_restore_identity(md_upstream)
+    if identity["family"] != "md":
+        raise Error("restore diagnostic selftest: an upstream MD board is no longer recognised as MD")
+    if identity["kit_built"]:
+        raise Error("restore diagnostic selftest: a board without the -ubi suffix was claimed as kit-built")
+    if identity["state"] != "production":
+        raise Error("restore diagnostic selftest: an all-in-UBI layout was not recognised as production")
+    text = _restore_environment_diagnostic(md_upstream, "md", False, recovery, production)
+    if "по решению, а не по ошибке" not in text:
+        raise Error("restore diagnostic selftest: a matching layout from another builder is reported as a detection failure")
+
+    soc_only = 'BOARD=\nCOMPAT=airoha,an7581\nmtd0: 10000000 00020000 "all_flash"\n'
+    if classify_restore_identity(soc_only)["family"] != "md":
+        raise Error("restore diagnostic selftest: the SoC alone no longer identifies the MD family")
+    staged_identity = classify_restore_identity(
+        'BOARD=nokia,xg-040g-md-ubi\nCOMPAT=nokia,xg-040g-md-ubi airoha,an7581\n'
+        'mtd14: 02880000 00020000 "nsb_master"\n')
+    if staged_identity["state"] != "stock-layout":
+        raise Error("restore diagnostic selftest: a stage-1 transition is not recognised by its stock layout")
+
+    # A field device published mtd2=0x0FF00000 where this kit's own build
+    # publishes 0x0FFE0000 — seven eraseblocks the other build leaves unused. The
+    # restore never touches that partition, so its size is evidence, not a gate.
+    field = ('BOARD=nokia,xg-040g-md-ubi\nCOMPAT=nokia,xg-040g-md-ubi airoha,an7581\n'
+             'mtd0: 10000000 00020000 "all_flash"\nmtd1: 00020000 00020000 "bl2"\n'
+             'mtd2: 0ff00000 00020000 "ubi"\n')
+    if _all_in_ubi_shape(field) != "production":
+        raise Error("restore shape selftest: a field all-in-UBI size is rejected again")
+    kit = field.replace("0ff00000", "0ffe0000")
+    if _all_in_ubi_shape(kit) != "production":
+        raise Error("restore shape selftest: the kit's own all-in-UBI size is rejected")
+    if _all_in_ubi_shape(field.replace('"ubi"', '"ibu"')) != "recovery":
+        raise Error("restore shape selftest: the recovery partition is no longer recognised")
+
+    # What the hardware and the boot contract fix stays exact.
+    for broken, why in (
+            (field.replace("mtd0: 10000000", "mtd0: 08000000"), "a chip that is not 256 MiB"),
+            (field.replace('mtd1: 00020000 00020000 "bl2"', 'mtd1: 00040000 00020000 "bl2"'), "a BL2 block that is not 0x20000"),
+            (field.replace('mtd2: 0ff00000 00020000', 'mtd2: 0ff00000 00040000'), "a foreign erase size"),
+            (field.replace('"ubi"', '"rootfs"'), "a partition that is neither ubi nor ibu")):
+        if _all_in_ubi_shape(broken) != "other":
+            raise Error(f"restore shape selftest: {why} is accepted as all-in-UBI")
+
+    # The refusal itself must carry the diagnostic, not just build one.
+    source = Path(__file__).read_text(encoding="utf-8")
+    start = source.index("\ndef inspect_restore_environment(")
+    end = source.find("\ndef ", start + 1)
+    body = source[start:end if end != -1 else len(source)]
+    if body.count("_restore_environment_diagnostic(") < 2:
+        raise Error("restore diagnostic selftest: the refusal no longer includes what was observed")
 
 
 def _rc26_console_log_split_selftest() -> None:
@@ -11817,11 +12062,12 @@ def main(argv: list[str] | None = None) -> int:
             _stock_slot_tolerance_selftest()
             _readonly_flow_selftest()
             _rc26_console_log_split_selftest()
+            _rc26_restore_diagnostic_selftest()
             _rc25_readonly_by_fact_selftest()
             _rc25a_recovery_reachability_selftest()
             _rc25_release_identity_selftest()
             _rc25_lan1_advisory_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC26 console/log split + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

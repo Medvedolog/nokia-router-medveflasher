@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Версия:** 1.0.0-rc26 · **Дата:** 18 августа 2026
+**Версия:** 1.0.0-rc27 · **Дата:** 18 августа 2026
 
 **Установка OpenWrt:** Nokia XG-040G-MD (AN7581) и Nokia XG-040G-MF (AN7583) — обе модели проходят полный цикл.
 **Brick recovery:** XG-040G-MD/AN7581 и XG-040G-MF/AN7583.
@@ -69,7 +69,7 @@ Python 3, около 1 ГБ свободного места и полтора ч
 
 Пункт `6 — проверить прошивочные capabilities (read-only)` заново доказывает stock Web, Telnet, `UID 0`, family/variant и `/proc/mtd == sysfs`, после чего пересекает эти live-факты с hardware-status релиза. Сам отчёт **не разрешает запись NAND** и не заменяет pre-write gates конкретной операции.
 
-Профиль релиза 1.0.0-rc26:
+Профиль релиза 1.0.0-rc27:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -92,12 +92,12 @@ CAP_UART_RECOVERY         RC18_SAFE_PENDING_HW   RC18_SAFE_PENDING_HW
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc26.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc27.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — из каталога с архивом
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc26.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc27.zip.sha256
 ```
 
 После распаковки контрольные суммы всех файлов комплекта можно проверить из

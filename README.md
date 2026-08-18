@@ -4,9 +4,9 @@
 
 **OpenWrt на Nokia XG-040G-MD / MF — без паяльника, без разборки корпуса и без UART**
 
-`1.0.0-rc27` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
+`1.0.0-rc28` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
 
-[![Release](https://img.shields.io/badge/release-1.0.0--rc27-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
+[![Release](https://img.shields.io/badge/release-1.0.0--rc28-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
 [![Targets](https://img.shields.io/badge/SoC-AN7581%20%7C%20AN7583-8250df?style=flat-square)](#поддерживаемое-железо)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-all--in--UBI%20+%20LuCI-00b5e2?style=flat-square&logo=openwrt&logoColor=white)](https://openwrt.org/)
 [![Python](https://img.shields.io/badge/Python%203-stdlib%20only-3776ab?style=flat-square&logo=python&logoColor=white)](#ноль-зависимостей--ну-почти)

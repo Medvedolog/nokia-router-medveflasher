@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0-rc26",
+  "version": "1.0.0-rc27",
   "product": "Nokia Router MedveFlasher",
   "supported_device": {
     "install_model": "Nokia XG-040G-MD / Nokia XG-040G-MF",
@@ -239,7 +239,7 @@
     ],
     "master": "data/master.py",
     "checksums": "data/SHA256SUMS",
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc26"
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc27"
   },
   "hardware_status": {
     "md_transition_install": "historical MD destructive architecture is hardware-confirmed, but RC17fix2 auto/manual transition bytes are newly rebased to Dark Linux 6.18.41/r0-486b4a4 and require hardware regression before exact-byte confirmation",
@@ -264,7 +264,7 @@
     "rc18_recovery_safe_fips": "STATIC PASS: BL31 byte-identical to pinned sources; BL33 default env has bootdelay=-1/inert bootcmd+preboot/SAFE marker; persistent UBI env volume names neutralized; master requires SAFE marker + nonce before NAND capability. HW regression pending.",
     "rc19_restore_transport": "STATIC_QA_PENDING_HW: pinned AArch64 clients + no-post-write-fallback state machine; exact RC19 recovery FIT bytes need hardware regression."
   },
-  "build_tag": "medveflasher-1.0.0-rc26",
+  "build_tag": "medveflasher-1.0.0-rc27",
   "operator_progress": {
     "telnet_console": "command echo and protocol markers suppressed; preflight runtime messages retained",
     "transition_stage": "content-identified transition state/step telemetry over HTTP/SSH/Telnet control channels; raw TCP port state is NET-DEBUG only and never proves transition or production identity",
@@ -300,9 +300,9 @@
     "ssh_control": "short readiness probe with deterministic passwordless minimal-auth path, one short BatchMode fallback, surfaced diagnostics, and reuse of the proven auth mode for upload/check/fullflash/monitoring"
   },
   "release": {
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc26",
-    "version": "1.0.0-rc26",
-    "build_tag": "medveflasher-1.0.0-rc26"
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc27",
+    "version": "1.0.0-rc27",
+    "build_tag": "medveflasher-1.0.0-rc27"
   },
   "bootrom_backup": {
     "menu_item": "Backup submenu -> read-only BootROM/UART backup",

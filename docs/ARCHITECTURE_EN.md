@@ -432,6 +432,18 @@ is CRLF, everything else is LF.
 
 Below is a traceability record: which release introduced which architectural contract, and why. This is not the user-facing change history — that lives in [CHANGELOG.md](CHANGELOG.md). Sections are grouped by release and do not form a strict chronological order.
 
+## 1.0.0-rc27 — identity, state and authorization in the restore path
+
+**Three questions that were one.** The no-UART restore asked a single one — does `board_name` equal the exact `-ubi` string this kit installs, and does `/proc/mtd` match three lines of text — and answered "does not match" to a stage-1 transition system, an all-in-UBI system built by another tool, a third-party image, and an unreadable probe alike. They are now separate:
+
+- *What the board is* comes from `/proc/device-tree/compatible`, primary evidence carrying both board and SoC, so MD is recognised from `airoha,an7581` even without a usable `board_name`. The `-ubi` suffix keeps a narrower meaning of its own — provenance, not hardware.
+- *What it is running* is classified from the MTD shape: `recovery`, `production`, `stock-layout`, `foreign-ubi`.
+- *What may proceed* is unchanged: only `recovery` and `production` built by this kit.
+
+**Geometry that describes the operation, and geometry that does not.** A field device published `mtd2=0x0FF00000` where this kit's build publishes `0x0FFE0000` — seven eraseblocks another build leaves unused — and was refused. But restoring from a running system rewrites the U-Boot environment, verifies it by read-back, reboots and TFTPs the recovery image into RAM; the `ubi` partition is never read, erased or written, and the recovery system pins the physical target itself before flashing. The size was an identity fingerprint wearing the clothes of a safety check. `/proc/mtd` is now parsed structurally: the 256 MiB `all_flash`, the `0x20000` `bl2`, the `0x20000` erase size and the `ubi`/`ibu` name stay exact, because those are fixed by the hardware and the boot contract; the partition size becomes `[RESTORE-SHAPE]` evidence in the session log. This is the RC25 rule applied one path further — authorize on the facts that describe the operation, and record the rest.
+
+**A fail-closed gate owes an explanation.** The probe had already collected the board name and `/proc/mtd`; the refusal reported neither, leaving an operator mid-incident to guess which half was wrong. Refusals now print what was observed against what was wanted, name the failing half, list the missing markers, and point at the path that does apply.
+
 ## 1.0.0-rc26 — console/log split
 
 **Console contract, restated.** RC23 put an absolute timestamp on operator lines so PC output could be correlated with UART events; RC25 scoped that away from menus. RC26 finishes the thought by asking where the correlation actually happens. It happens in a file, read after the fact — not on the screen the operator is working on, where a 21-character prefix competed with the message on every single line. So the console now shows exactly what the code printed, and `_ConsoleTee` stamps the copy going to `work/logs/`. Every log line carries the clock, menu options and input prompts included, which makes the log a better record than it was before.

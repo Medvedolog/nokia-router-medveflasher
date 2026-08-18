@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc26"
-BUILD_TAG = "medveflasher-1.0.0-rc26"
+APP_VERSION = "1.0.0-rc27"
+BUILD_TAG = "medveflasher-1.0.0-rc27"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"

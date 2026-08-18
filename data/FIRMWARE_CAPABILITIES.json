@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": "1.0.0-rc26",
+  "version": "1.0.0-rc27",
   "product": "Nokia Router MedveFlasher",
   "semantics": "RC25 keeps the pinned transition/recovery payload bytes from RC24 but changes PC/stock-launcher authorization: MD and MF vendor slot revisions identify the stock family only and are not permanent-write allowlists. Before destructive handoff, fixed stock target partitions and /proc/sysfs geometry remain exact; the selected full backup is revalidated from content; the RAM transition independently requires exact 256MiB NAND, 0x20000 BL2 and 0x0FFE0000 UBI target geometry.",
   "md": {

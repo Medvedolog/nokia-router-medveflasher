@@ -1,3 +1,44 @@
+# 1.0.0-rc27 — the restore gate stops guarding a partition it never touches
+
+Found on hardware: a device reporting the correct board name, a 256 MiB
+`all_flash`, a `0x20000` `bl2` and a `ubi` partition of `0x0FF00000` was refused
+by the no-UART stock restore. Payload bytes are unchanged from RC24.
+
+## 1.0.0-rc27 — 18 August 2026
+
+- **`/proc/mtd` is parsed structurally instead of matched as text.** The gate
+  compared whole lines, so `mtd2: 0ff00000` failed against the `0x0FFE0000` this
+  kit's own build publishes — seven eraseblocks another build of the same board
+  leaves unused at the end of the chip. Nothing in the operation depends on that
+  number: restoring from a running system rewrites the U-Boot environment,
+  verifies it by read-back, reboots and TFTPs the recovery image into RAM, while
+  the `ubi` partition is never read, erased or written, and the recovery system
+  pins the physical geometry itself before anything is flashed. The size was an
+  identity fingerprint dressed as a safety check — the same confusion between
+  recognition and authorization that RC25 removed from the install path.
+- What the hardware and the boot contract fix stays exact: the full 256 MiB
+  published as `all_flash`, one `0x20000` block named `bl2`, the `0x20000` erase
+  size, and `mtd2` named `ubi` or `ibu`. The observed partition size is written to
+  the session log as `[RESTORE-SHAPE]` evidence.
+- **Board identity is read apart from the running system.** The probe now also
+  reports `/proc/device-tree/compatible`, which is primary evidence and carries
+  the SoC, so the MD family is recognised from `airoha,an7581` even when
+  `board_name` is empty or lacks the `-ubi` suffix. That suffix keeps its own
+  narrower meaning: a system this kit built. The running system is classified
+  separately as `recovery`, `production`, `stock-layout` (a stage-1 transition) or
+  `foreign-ubi`.
+- **A refusal now says what it saw.** The gate used to answer "does not match" to
+  four unrelated situations while the observed board name and `/proc/mtd` sat
+  unused in the probe output. It now prints them, names which half failed, lists
+  the missing markers, and points at the path that does apply — stage 2 for a
+  transition system, BootROM/UART for anything this kit did not build. A layout
+  matching all-in-UBI under a board name without the suffix is stated as a
+  deliberate decision rather than implied to be a detection failure.
+- Selftests cover the field size, the kit's own size, the recovery partition,
+  upstream-named MD, SoC-only identification, a stage-1 layout, and four shapes
+  that must still be refused. Every one was verified against a deliberate
+  regression.
+
 # 1.0.0-rc26 — the console loses the clock, the log keeps it
 
 RC25 was published and then rebuilt three times under the same tag. This release

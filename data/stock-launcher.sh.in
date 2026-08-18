@@ -171,7 +171,7 @@ nokia_begin_output_mirror() {
 SCRIPT_DIR="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 PROFILE_FAMILY='md'
 PROFILE_LABEL='Nokia XG-040G-MD'
-RELEASE_VERSION='1.0.0-rc28'
+RELEASE_VERSION='1.0.0-rc29'
 BUNDLE_NAME='transition-bundle.bin'
 MANUAL_TRANSITION=0
 BUNDLE_SIZE=21626880

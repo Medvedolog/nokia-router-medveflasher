@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc28 · **Date:** 18 August 2026
+**Version:** 1.0.0-rc29 · **Date:** 18 August 2026
 
 **OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
 **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
@@ -69,7 +69,7 @@ wrong, see [If an error occurs](#if-an-error-occurs).
 
 Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-Release profile for 1.0.0-rc28:
+Release profile for 1.0.0-rc29:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -92,12 +92,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc28.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc29.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc28.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc29.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root
@@ -502,6 +502,15 @@ UART.
 3. Choose the running-OpenWrt option and point it at the full `mtd0..mtd16`
    backup.
 4. **Do not press Reset.**
+
+If root has a password on the installed OpenWrt, the wizard asks for it once, on
+first contact with the device. After that login it leaves a one-off key in
+`/etc/dropbear/authorized_keys` so the remaining checks run without questions;
+the stock restore overwrites that key along with the whole flash. When there is
+no console — the wizard was started from a script, or over a channel without a
+terminal — there is nowhere to ask: clear the password on the device with
+`passwd -d root`, add your own key to `/etc/dropbear/authorized_keys`, or restore
+through BootROM/UART.
 
 What happens next: the wizard checks the layout, brings up a TFTP server on the
 computer in advance, and writes a one-shot next-boot command into the bootloader.

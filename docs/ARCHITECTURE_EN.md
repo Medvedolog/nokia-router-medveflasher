@@ -432,6 +432,16 @@ is CRLF, everything else is LF.
 
 Below is a traceability record: which release introduced which architectural contract, and why. This is not the user-facing change history — that lives in [CHANGELOG.md](CHANGELOG.md). Sections are grouped by release and do not form a strict chronological order.
 
+## 1.0.0-rc28 — RAM worker autonomy, including its voice
+
+**The invariant, stated plainly.** `mtd3` is a view inside `mtd14`, so erasing the transition target takes the stock rootfs with it. After that first destructive operation, no executable, library, shell helper *or logging primitive* the worker still needs may come from stock NAND. The command closure already honoured this — everything went through the staged BusyBox and `mtd_debug` — but the reporting channel did not, in two ways at once.
+
+The worker was launched with its output redirected to `/dev/null`, and the `ramlog`/`usb_log` paths it was handed were assigned and never referenced. Every stage line and every `CRITICAL FAILURE` message went nowhere. A worker that erased `mtd14` and stopped left no record of why, which is precisely the observed incident: the erase completed, nothing was written, and there was nothing to read afterwards.
+
+Worse, the staged script started `nokia_begin_output_mirror` for `--ram-flash`. That mirror needs `tee` and `mkfifo`, both resolved through `PATH` from the rootfs about to be erased. The channel meant to report the erase was itself a casualty of it.
+
+**The fix is removal, not repair.** A tee and a FIFO are two more things that can die between the erase and the message explaining why the erase was the last thing that happened. The worker now starts no mirror at all: its stdout and stderr are a plain open file in tmpfs, so `rlog` is a shell `printf` into an already-open descriptor — no pipeline, no helper process, no external `nohup`, and `trap '' HUP` before `exec` already survives a dropped Telnet. Anything `mtd_debug` writes to stderr is captured for free. The bundle-directory log on stock NAND is gone along with the argument that carried it, so the launch, the dispatcher and the worker agree on a nine-argument contract.
+
 ## 1.0.0-rc27 — identity, state and authorization in the restore path
 
 **Three questions that were one.** The no-UART restore asked a single one — does `board_name` equal the exact `-ubi` string this kit installs, and does `/proc/mtd` match three lines of text — and answered "does not match" to a stage-1 transition system, an all-in-UBI system built by another tool, a third-party image, and an unreadable probe alike. They are now separate:

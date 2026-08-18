@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc27"
-BUILD_TAG = "medveflasher-1.0.0-rc27"
+APP_VERSION = "1.0.0-rc28"
+BUILD_TAG = "medveflasher-1.0.0-rc28"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -9072,6 +9072,58 @@ def _rc26_restore_diagnostic_selftest() -> None:
         raise Error("restore diagnostic selftest: the refusal no longer includes what was observed")
 
 
+def _ram_worker_autonomy_selftest() -> None:
+    """After the first destructive operation nothing may come from stock NAND.
+
+    mtd3 is a view inside mtd14, so erasing the transition target takes the stock
+    rootfs with it. Every executable, library, shell helper and logging primitive
+    the worker still needs after that point must already be in tmpfs — including
+    the channel that would carry the explanation if something goes wrong.
+    """
+    launcher = (Path(__file__).resolve().parent / "stock-launcher.sh.in").read_text(encoding="utf-8")
+    start = launcher.index("\nram_flash() {")
+    end = launcher.index("\nusage() {", start)
+    worker = launcher[start:end]
+
+    # The worker must not start a mirror: tee and mkfifo resolve through PATH
+    # from the rootfs that is about to disappear.
+    for token in ("mkfifo", "nokia_begin_output_mirror", "tee -a"):
+        if token in worker:
+            raise Error(f"RAM worker selftest: {token} runs inside the destructive path")
+    if 'if [ "${1:-}" != --ram-flash ]; then' not in launcher:
+        raise Error("RAM worker selftest: the output mirror is started for --ram-flash again")
+
+    # Its log must live in tmpfs, never under the bundle directory on stock NAND.
+    if "SCRIPT_DIR" in worker:
+        raise Error("RAM worker selftest: the worker references the stock-NAND bundle directory")
+    if '>> "$ramlog" 2>&1 < /dev/null &' not in launcher:
+        raise Error("RAM worker selftest: worker output no longer lands in the tmpfs log")
+    if "> /dev/null 2>&1 < /dev/null &" in launcher:
+        raise Error("RAM worker selftest: worker output is discarded again")
+    if ': > "$ramlog"' not in launcher:
+        raise Error("RAM worker selftest: the tmpfs log is not created before the worker starts")
+
+    # Every command after staging goes through the staged BusyBox/mtd_debug.
+    forbidden = []
+    for line in worker.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for bare in ("dd ", "sha256sum ", "sync", "sleep ", "reboot", "tr ", "wc "):
+            if stripped.startswith(bare):
+                forbidden.append(stripped[:60])
+    if forbidden:
+        raise Error("RAM worker selftest: bare stock-NAND commands in the worker: " + "; ".join(forbidden))
+
+    # The dispatcher and the launch must agree on the worker contract.
+    launches = re.findall(r"--ram-flash ([^\n]*)", launcher)
+    argument_counts = {len(entry.split()) for entry in launches if entry.strip().startswith('"$STAGE_RAM"')}
+    if argument_counts != {8}:
+        raise Error(f"RAM worker selftest: the launch passes {argument_counts} arguments, expected 8")
+    if '[ "$#" -eq 9 ] || exit 2' not in launcher:
+        raise Error("RAM worker selftest: the dispatcher no longer matches the launch arity")
+
+
 def _rc26_console_log_split_selftest() -> None:
     """The console shows what was printed; work/logs/*.log carries the clock."""
     source = Path(__file__).read_text(encoding="utf-8")
@@ -12061,13 +12113,14 @@ def main(argv: list[str] | None = None) -> int:
             _stage1_handoff_safety_selftest()
             _stock_slot_tolerance_selftest()
             _readonly_flow_selftest()
+            _ram_worker_autonomy_selftest()
             _rc26_console_log_split_selftest()
             _rc26_restore_diagnostic_selftest()
             _rc25_readonly_by_fact_selftest()
             _rc25a_recovery_reachability_selftest()
             _rc25_release_identity_selftest()
             _rc25_lan1_advisory_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RAM worker autonomy + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

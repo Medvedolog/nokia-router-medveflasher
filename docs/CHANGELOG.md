@@ -1,3 +1,34 @@
+# 1.0.0-rc28 — the RAM worker keeps its own voice
+
+The detached flash worker was RAM-autonomous in what it executed and silent in
+what it reported: its output went to `/dev/null` and it started a `tee`/FIFO pair
+from the rootfs it was about to erase. Payload bytes are unchanged from RC24.
+
+## 1.0.0-rc28 — 18 August 2026
+
+- **The worker's output goes to a plain file in tmpfs.** It was redirected to
+  `/dev/null`, and the `ramlog`/`usb_log` parameters it received were assigned and
+  never used, so every `[1/7]`..`[7/7]` line and every `CRITICAL FAILURE` message
+  was discarded. A worker that erased `mtd14` and stopped therefore left nothing
+  behind to say why — matching the incident where the erase completed and nothing
+  was written. stdout and stderr now land in `$STAGE_RAM/flash.log`, so anything
+  `mtd_debug` writes to stderr is preserved too.
+- **No mirror runs inside the destructive path.** The staged script started
+  `nokia_begin_output_mirror` for `--ram-flash`, which requires `tee` and `mkfifo`
+  — both resolved through `PATH` from the stock rootfs, which is `mtd3`, a view
+  inside the `mtd14` being erased. The channel died with the partition it was
+  meant to report on. The worker starts no mirror: its stdout is already an open
+  file, so no pipeline, no FIFO and no external `nohup` are involved.
+- **The worker no longer references the bundle directory.** `stock-flash-medveflasher.log`
+  under `$SCRIPT_DIR` sat on stock NAND and was never written; it is gone, and the
+  operator is pointed at the tmpfs log instead. The `--ram-flash` contract drops
+  that argument, so the launch, the dispatcher and the worker agree on nine.
+- A `selftest-safety` case pins the invariant — after the first destructive
+  operation, no executable, library, shell helper or logging primitive may come
+  from stock NAND — and was verified against four deliberate regressions:
+  discarding the output, restarting the mirror, a bare `sync` in the worker, and a
+  contract arity mismatch.
+
 # 1.0.0-rc27 — the restore gate stops guarding a partition it never touches
 
 Found on hardware: a device reporting the correct board name, a 256 MiB

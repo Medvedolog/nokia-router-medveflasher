@@ -171,7 +171,7 @@ nokia_begin_output_mirror() {
 SCRIPT_DIR="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 PROFILE_FAMILY='md'
 PROFILE_LABEL='Nokia XG-040G-MD'
-RELEASE_VERSION='1.0.0-rc27'
+RELEASE_VERSION='1.0.0-rc28'
 BUNDLE_NAME='transition-bundle.bin'
 MANUAL_TRANSITION=0
 BUNDLE_SIZE=21626880
@@ -203,10 +203,19 @@ esac
 case "${1:-}" in
     --preflight) NOKIA_INITIAL_LOG="$SCRIPT_DIR/stock-preflight.log"; NOKIA_EXTRA_LOG=''; NOKIA_LOG_LABEL='stock-preflight' ;;
     --flash) NOKIA_INITIAL_LOG="$SCRIPT_DIR/stock-launcher.log"; NOKIA_EXTRA_LOG=''; NOKIA_LOG_LABEL='stock-launcher' ;;
-    --ram-flash) NOKIA_INITIAL_LOG="${9:-/tmp/stock-flash.log}"; NOKIA_EXTRA_LOG="${10:-}"; NOKIA_LOG_LABEL='stock-ram-flash' ;;
+    --ram-flash) NOKIA_INITIAL_LOG=''; NOKIA_EXTRA_LOG=''; NOKIA_LOG_LABEL='stock-ram-flash' ;;
     *) NOKIA_INITIAL_LOG="/tmp/nokia-stock-to-ubi.$$.log"; NOKIA_EXTRA_LOG=''; NOKIA_LOG_LABEL='stock-launcher' ;;
 esac
-nokia_begin_output_mirror "$NOKIA_INITIAL_LOG" "$NOKIA_LOG_LABEL" "$NOKIA_EXTRA_LOG"
+# The detached RAM worker deliberately starts no mirror. Its stdout and stderr
+# are already an open file in tmpfs, so a tee process and a FIFO would only add
+# two dependencies resolved through PATH from the stock rootfs — and that rootfs
+# is mtd3, a view inside the mtd14 the worker is about to erase. The channel
+# would then die together with the partition, taking with it the explanation of
+# whatever went wrong. After the first destructive operation no executable,
+# library, shell helper or logging primitive may come from stock NAND.
+if [ "${1:-}" != --ram-flash ]; then
+    nokia_begin_output_mirror "$NOKIA_INITIAL_LOG" "$NOKIA_LOG_LABEL" "$NOKIA_EXTRA_LOG"
+fi
 
 log() { nokia_line "$*"; }
 die() { if [ "$NOKIA_LANG" = ru ]; then printf 'OShIBKA: ' >&2; nokia_ru_line "$*" >&2; else printf 'ERROR: %s\n' "$*" >&2; fi; exit 1; }
@@ -870,36 +879,40 @@ stage_ram_and_flash() {
     fi
     unset NOKIA_FORMAT_AND_FLASH_AUTH
 
-    logfile="$SCRIPT_DIR/stock-flash-medveflasher.log"
-    : > "$logfile" || die 'cannot create USB flash log'
-    sync
-
     installer_path="$STAGE_RAM/installer.itb"
     env_path="$STAGE_RAM/personal-env.bin"
     ramlog="$STAGE_RAM/flash.log"
-    usblog="$SCRIPT_DIR/stock-flash-medveflasher.log"
+    # The worker's log lives in tmpfs and nowhere else. A log under $SCRIPT_DIR
+    # would sit on stock NAND: mtd3 is a view inside mtd14, so the first erase
+    # takes it away, and writing there afterwards means touching the filesystem
+    # the worker just destroyed.
+    : > "$ramlog" || die 'cannot create RAM worker log'
     (
         # Ignore terminal hangup before exec. The ignored disposition survives
         # exec, so no external nohup binary or BusyBox nohup applet is needed.
         trap '' HUP
-        # The detached RAM worker must create its own FIFO/tee process. Do not
-        # inherit the outer Telnet/SSH mirror, whose terminal can disappear.
+        # Do not inherit the outer Telnet/SSH mirror, whose terminal can
+        # disappear. The worker starts no mirror of its own either: it writes
+        # directly into the tmpfs log opened by the redirection below.
         unset NOKIA_OUTPUT_MIRROR_ACTIVE
         if [ "$STAGE_BB_MODE" = dynamic ]; then
             exec "$STAGE_LOADER_RAM" --library-path "$STAGE_LIBPATH" "$STAGE_RAM/busybox" sh "$STAGE_RAM/flash.sh" \
-                --ram-flash "$STAGE_RAM" "$STAGE_LOADER_RAM" "$STAGE_LIBPATH" "$STAGE_BB_MODE" "$STAGE_MTD_MODE" "$installer_path" "$env_path" "$ramlog" "$usblog"
+                --ram-flash "$STAGE_RAM" "$STAGE_LOADER_RAM" "$STAGE_LIBPATH" "$STAGE_BB_MODE" "$STAGE_MTD_MODE" "$installer_path" "$env_path" "$ramlog"
         else
             exec "$STAGE_RAM/busybox" sh "$STAGE_RAM/flash.sh" \
-                --ram-flash "$STAGE_RAM" "$STAGE_LOADER_RAM" "$STAGE_LIBPATH" "$STAGE_BB_MODE" "$STAGE_MTD_MODE" "$installer_path" "$env_path" "$ramlog" "$usblog"
+                --ram-flash "$STAGE_RAM" "$STAGE_LOADER_RAM" "$STAGE_LIBPATH" "$STAGE_BB_MODE" "$STAGE_MTD_MODE" "$installer_path" "$env_path" "$ramlog"
         fi
-    ) > /dev/null 2>&1 < /dev/null &
+    # stdout and stderr go straight into the tmpfs log: a plain open file, no
+    # tee, no FIFO, no external nohup. Everything the worker prints after this
+    # point — including anything mtd_debug writes to stderr — lands in RAM.
+    ) >> "$ramlog" 2>&1 < /dev/null &
     worker_pid=$!
     sleep 2
     kill -0 "$worker_pid" 2>/dev/null || { cat "$ramlog" >&2 || true; die 'RAM worker failed to start'; }
     # Stable protocol marker for the PC master. Never localize or reword it.
     printf '__NOKIA_RAM_WORKER_STARTED__%s__\n' "$worker_pid"
     log2 "[OK] Avtonomnaya proshivka zapuschena." "[OK] Autonomous flashing started."
-    log2 "[LOG] $usblog" "[LOG] $usblog"
+    log2 "[LOG] $ramlog (tmpfs; zabirayte do perezagruzki)" "[LOG] $ramlog (tmpfs; collect it before the reboot)"
     log2 '[WAIT] Telnet mozhet otklyuchitsya. Ne vyklyuchayte pitanie.' '[WAIT] Telnet may disconnect. Do not power off.'
 }
 
@@ -912,7 +925,6 @@ ram_flash() {
     installer="$6"
     env_image="$7"
     ramlog="$8"
-    usb_log="$9"
     bb="$ram/busybox"
     mtd="$ram/mtd_debug"
 
@@ -930,6 +942,9 @@ ram_flash() {
             "$mtd" "$@"
         fi
     }
+    # printf into the already-open tmpfs log. No pipeline, no helper process:
+    # a tee or FIFO would be one more thing that can die between the erase and
+    # the message explaining why the erase was the last thing that happened.
     rlog() { nokia_line "$*"; }
     rlog2() { if [ "$NOKIA_LANG" = ru ]; then printf '%s\n' "$1"; else printf '%s\n' "$2"; fi; }
     save_log() { rbb sleep 1; rbb sync; }
@@ -1033,8 +1048,8 @@ case "${1:-}" in
         stage_ram_and_flash
         ;;
     --ram-flash)
-        [ "$#" -eq 10 ] || exit 2
-        ram_flash "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
+        [ "$#" -eq 9 ] || exit 2
+        ram_flash "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
         ;;
     *)
         usage

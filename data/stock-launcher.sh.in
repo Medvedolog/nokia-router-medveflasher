@@ -451,8 +451,9 @@ cmdline_value() {
     }' /proc/cmdline
 }
 
-verify_active_slot_alias() {
+verify_slot_alias() {
     slot="$1"
+    role="$2"
     case "$slot" in
         master)
             kernel_dev=/dev/mtd2ro
@@ -473,8 +474,8 @@ verify_active_slot_alias() {
     kernel_hash="$(dd if="$kernel_dev" bs=$ERASE_SIZE count=8 2>/dev/null | sha256sum | awk '{print $1}')"
     [ -n "$aggregate_hash" ] || die "cannot hash $aggregate_label prefix"
     [ -n "$kernel_hash" ] || die "cannot hash $kernel_label prefix"
-    [ "$aggregate_hash" = "$kernel_hash" ] || die "$aggregate_label does not match active $kernel_label prefix"
-    log2 "[OK] Aktivnyy $kernel_label fizicheski sootvetstvuet $aggregate_label (SHA256 pervykh 1 MiB=$aggregate_hash)." "[OK] Active $kernel_label is physically backed by $aggregate_label (1 MiB SHA256=$aggregate_hash)."
+    [ "$aggregate_hash" = "$kernel_hash" ] || die "$aggregate_label does not match $role $kernel_label prefix"
+    log2 "[OK] $role $kernel_label fizicheski sootvetstvuet $aggregate_label (SHA256 pervykh 1 MiB=$aggregate_hash)." "[OK] The $role $kernel_label is physically backed by $aggregate_label (1 MiB SHA256=$aggregate_hash)."
 }
 
 verify_stock_boot_path() {
@@ -497,7 +498,10 @@ verify_stock_boot_path() {
             ;;
     esac
 
-    verify_active_slot_alias "$active_slot"
+    verify_slot_alias "$active_slot" active
+    if [ "$active_slot" != master ]; then
+        verify_slot_alias master 'transition-target'
+    fi
 
     bootcmd="$(read_stock_bootcmd)"
     if [ -n "$bootcmd" ]; then

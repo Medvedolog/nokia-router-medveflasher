@@ -7661,20 +7661,62 @@ def classify_restore_identity(output: str) -> dict[str, object]:
         family = "md"
     kit_built = board.endswith("-ubi")
 
-    all_flash = 'mtd0: 10000000 00020000 "all_flash"' in low
-    bl2 = 'mtd1: 00020000 00020000 "bl2"' in low
-    if all_flash and bl2 and 'mtd2: 0ffe0000 00020000 "ibu"' in low:
-        state = "recovery"
-    elif all_flash and bl2 and 'mtd2: 0ffe0000 00020000 "ubi"' in low:
-        state = "production"
+    shape = _all_in_ubi_shape(output)
+    if shape in ("recovery", "production"):
+        state = shape
     elif 'mtd14: 02880000 00020000 "nsb_master"' in low or '"bootloader"' in low:
         state = "stock-layout"
-    elif all_flash or "ubi" in low:
+    elif "ubi" in low or "all_flash" in low:
         state = "foreign-ubi"
     else:
         state = "unknown"
     return {"family": family, "kit_built": kit_built, "state": state,
             "board": board or "(пусто)", "compat": compat or "(пусто)"}
+
+
+_PROC_MTD_LINE = re.compile(r'(?im)^\s*mtd(\d+):\s+([0-9a-f]+)\s+([0-9a-f]+)\s+"([^"]*)"')
+
+
+def parse_proc_mtd_shape(output: str) -> dict[int, tuple[int, int, str]]:
+    """Structured /proc/mtd from a probe transcript: number -> (size, erase, name)."""
+    shape: dict[int, tuple[int, int, str]] = {}
+    for number, size, erase, name in _PROC_MTD_LINE.findall(output):
+        shape[int(number)] = (int(size, 16), int(erase, 16), name.strip().lower())
+    return shape
+
+
+def _all_in_ubi_shape(output: str) -> str:
+    """Recognise the all-in-UBI layout without gating on the UBI partition size.
+
+    What is fixed by the hardware and by the boot contract is checked exactly: the
+    whole 256 MiB chip published as ``all_flash``, one ``0x20000`` boot block as
+    ``bl2``, and the ``0x20000`` erase size. The size of the ``ubi``/``ibu``
+    partition is not: a device observed in the field carries ``0x0FF00000`` where
+    this kit's own build publishes ``0x0FFE0000`` — seven eraseblocks left unused
+    at the end of the chip by a different build of the same board.
+
+    That number is recorded as evidence rather than enforced, because no step of
+    this operation depends on it. Restoring from a running system rewrites the
+    U-Boot environment, verifies it by read-back, reboots and TFTPs the recovery
+    image; the UBI partition is never touched. Authorization stays with the facts
+    that do describe the operation — the verified environment write, the
+    content-revalidated backup, and the geometry the recovery system pins itself.
+    """
+    shape = parse_proc_mtd_shape(output)
+    zero, one, two = shape.get(0), shape.get(1), shape.get(2)
+    if not zero or not one or not two:
+        return "incomplete"
+    if zero[0] != PHYSICAL_NAND_SIZE or zero[1] != UBOOT_ERASE_SIZE or zero[2] != "all_flash":
+        return "other"
+    if one[0] != UBOOT_ERASE_SIZE or one[1] != UBOOT_ERASE_SIZE or one[2] != "bl2":
+        return "other"
+    if two[1] != UBOOT_ERASE_SIZE:
+        return "other"
+    if two[2] == "ibu":
+        return "recovery"
+    if two[2] == "ubi":
+        return "production"
+    return "other"
 
 
 def _restore_environment_diagnostic(output: str, family: str, board_ok: bool,
@@ -7775,17 +7817,21 @@ def inspect_restore_environment(host: str, expected_family: str | None = None, q
     recovery_markers = (
         'mtd0: 10000000 00020000 "all_flash"',
         'mtd1: 00020000 00020000 "bl2"',
-        'mtd2: 0ffe0000 00020000 "ibu"',
+        'mtd2 named "ibu"',
     )
     production_markers = (
         'mtd0: 10000000 00020000 "all_flash"',
         'mtd1: 00020000 00020000 "bl2"',
-        'mtd2: 0ffe0000 00020000 "ubi"',
+        'mtd2 named "ubi"',
     )
-    if board_ok and all(marker in low for marker in recovery_markers):
-        return "recovery", output
-    if board_ok and all(marker in low for marker in production_markers):
-        return "production", output
+    shape = _all_in_ubi_shape(output)
+    if board_ok and shape in ("recovery", "production"):
+        observed = parse_proc_mtd_shape(output).get(2)
+        if observed:
+            _write_session_only(
+                f"[RESTORE-SHAPE] {shape}: mtd2 name={observed[2]} size=0x{observed[0]:08X} "
+                f"erase=0x{observed[1]:X} (size is evidence, not a gate)")
+        return shape, output
     raise Error(tr(
         f"OpenWrt обнаружен, но board/MTD не соответствует Nokia XG-040G-{family.upper()} recovery или all-in-UBI production.\n"
         + _restore_environment_diagnostic(output, family, board_ok, recovery_markers, production_markers),
@@ -8993,6 +9039,29 @@ def _rc26_restore_diagnostic_selftest() -> None:
         'mtd14: 02880000 00020000 "nsb_master"\n')
     if staged_identity["state"] != "stock-layout":
         raise Error("restore diagnostic selftest: a stage-1 transition is not recognised by its stock layout")
+
+    # A field device published mtd2=0x0FF00000 where this kit's own build
+    # publishes 0x0FFE0000 — seven eraseblocks the other build leaves unused. The
+    # restore never touches that partition, so its size is evidence, not a gate.
+    field = ('BOARD=nokia,xg-040g-md-ubi\nCOMPAT=nokia,xg-040g-md-ubi airoha,an7581\n'
+             'mtd0: 10000000 00020000 "all_flash"\nmtd1: 00020000 00020000 "bl2"\n'
+             'mtd2: 0ff00000 00020000 "ubi"\n')
+    if _all_in_ubi_shape(field) != "production":
+        raise Error("restore shape selftest: a field all-in-UBI size is rejected again")
+    kit = field.replace("0ff00000", "0ffe0000")
+    if _all_in_ubi_shape(kit) != "production":
+        raise Error("restore shape selftest: the kit's own all-in-UBI size is rejected")
+    if _all_in_ubi_shape(field.replace('"ubi"', '"ibu"')) != "recovery":
+        raise Error("restore shape selftest: the recovery partition is no longer recognised")
+
+    # What the hardware and the boot contract fix stays exact.
+    for broken, why in (
+            (field.replace("mtd0: 10000000", "mtd0: 08000000"), "a chip that is not 256 MiB"),
+            (field.replace('mtd1: 00020000 00020000 "bl2"', 'mtd1: 00040000 00020000 "bl2"'), "a BL2 block that is not 0x20000"),
+            (field.replace('mtd2: 0ff00000 00020000', 'mtd2: 0ff00000 00040000'), "a foreign erase size"),
+            (field.replace('"ubi"', '"rootfs"'), "a partition that is neither ubi nor ibu")):
+        if _all_in_ubi_shape(broken) != "other":
+            raise Error(f"restore shape selftest: {why} is accepted as all-in-UBI")
 
     # The refusal itself must carry the diagnostic, not just build one.
     source = Path(__file__).read_text(encoding="utf-8")

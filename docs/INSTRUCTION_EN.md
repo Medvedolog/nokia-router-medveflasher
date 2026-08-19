@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc29 · **Date:** 18 August 2026
+**Version:** 1.0.0-rc30 · **Date:** 18 August 2026
 
 **OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
 **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
@@ -69,7 +69,7 @@ wrong, see [If an error occurs](#if-an-error-occurs).
 
 Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-Release profile for 1.0.0-rc29:
+Release profile for 1.0.0-rc30:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -92,12 +92,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc29.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc30.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc29.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc30.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root
@@ -488,6 +488,34 @@ cat /tmp/NOKIA_MANUAL_FLASH_FAILED 2>/dev/null
 ```
 
 Do not blindly rerun `fullflash`, `ubiformat`, or a BL2 write.
+
+---
+
+## If the installation stops at "starting production OpenWrt"
+
+From 1.0.0-rc30 the wizard keeps a rescue TFTP server up for the whole wait, so
+an interruption here normally repairs itself: unable to boot, U-Boot asks for
+the recovery image once a second, the wizard serves it, and the board comes up.
+A `[RESCUE]` line in the wizard window reports this.
+
+If the wizard was already closed, or the server could not start (UDP/69 taken,
+insufficient rights):
+
+1. Set the PC to a static **192.168.1.254/24**; turn Wi-Fi and VPN off.
+2. Cable into **LAN2/LAN3/LAN4** — U-Boot brings up only the switch port, not LAN1/2.5G.
+3. Power the router off.
+4. As Administrator: `python data\tftp-rescue.py`
+5. Power the router on.
+
+The script waits for the request, serves the image and reports `[OK] delivered`.
+About a minute later the board answers SSH at 192.168.1.1.
+
+> [!IMPORTANT]
+> While production OpenWrt is being written, the `fit` volume has been deleted
+> and is being rewritten — there is no bootable image on the board at that
+> moment. Do not cut power without the rescue TFTP server running: a timeout on
+> its own fixes nothing, and an interruption inside that write has to be
+> repaired over the same TFTP path anyway.
 
 ---
 

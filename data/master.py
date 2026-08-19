@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc29"
-BUILD_TAG = "medveflasher-1.0.0-rc29"
+APP_VERSION = "1.0.0-rc30"
+BUILD_TAG = "medveflasher-1.0.0-rc30"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -5823,7 +5823,195 @@ def _auto_transition_probe(host: str, probe_cmd: str, port22: bool, port23: bool
             errors.append("telnet: " + str(exc)[-500:])
     return "TRANSITION_PROBE_ERROR=" + " | ".join(errors)[-1400:], ""
 
-def run_stage2(host: str, manual_mode: bool = False, expected_board: str = "nokia,xg-040g-md-ubi", initial_handoff_unknown: bool = False) -> str:
+
+class _RescueTftpServer:
+    """Answer the TFTP request the board makes when production will not boot.
+
+    The installed OpenWrt U-Boot does not give up on a bad image. Its default
+    environment ends every failed production boot in
+
+        boot_ubi          = run boot_production ; run boot_tftp_forever
+        boot_tftp_forever = led $bootled_status on ; while true ; do run boot_tftp ; sleep 1 ; done
+
+    so the board asks $serverip for $bootfile once a second, indefinitely. The
+    production sysupgrade removes the fit volume before recreating it
+    (nand_upgrade_prepare_ubi -> ubirmvol -N fit), so anything that stops that
+    write leaves exactly this state -- and it is fully recoverable, provided
+    somebody answers. Nothing used to.
+
+    Keeping this up for the whole wait turns the worst failure of the install
+    into a self-healing one: the board pulls the recovery image and boots it
+    without the operator doing anything. It is deliberately advisory -- a PC
+    that cannot bind UDP/69 still runs the install, it just loses the net.
+    """
+
+    def __init__(self, image: Path, expected_name: str, allowed_host: str,
+                 bind_ip: str = "0.0.0.0") -> None:
+        self.image = image
+        self.expected_name = expected_name
+        self.allowed_host = allowed_host
+        self.bind_ip = bind_ip
+        self.transfers = 0
+        self.bind_error = ""
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        # Resolved on the calling thread. tr() can ask the operator which
+        # language to use, and a background thread has no console to ask from:
+        # a live test showed that call raising EOFError and taking the rescue
+        # loop down with it -- silently destroying the net at the one moment it
+        # exists to be used.
+        self._served_notice = ""
+
+    def _resolve_text(self) -> None:
+        # Even here tr() must not be load-bearing: start() may run before a
+        # language has been chosen, and the rescue net may not depend on an
+        # answer nobody is there to give.
+        self._served_notice = (
+            "[RESCUE] The board collected the recovery image over TFTP ({count} bytes); "
+            "production did not boot, but the board is alive and is starting recovery."
+        )
+        try:
+            self._served_notice = tr(
+                "[RESCUE] Роутер запросил recovery-образ по TFTP и получил его "
+                "({count} байт). Это значит, что production не загрузился, "
+                "а плата жива и сейчас поднимет recovery. Питание не трогайте.",
+                "[RESCUE] The board asked for the recovery image over TFTP and received it "
+                "({count} bytes). Production did not boot, but the board is "
+                "alive and is starting the recovery image now. Leave power alone.",
+            )
+        except Exception:
+            pass
+
+    def _loop(self) -> None:
+        first = True
+        while not self._stop.is_set():
+            # Reporting must never be able to kill the net it reports on.
+            ready = threading.Event()
+            result = TftpResult()
+            worker = threading.Thread(
+                target=serve_tftp_get,
+                args=(self.bind_ip, 69, self.image, self.expected_name,
+                      self.allowed_host, ready, result),
+                kwargs={"timeout": 25, "maximum_block_size": 1468},
+                daemon=True,
+            )
+            worker.start()
+            if not ready.wait(10):
+                if first:
+                    self.bind_error = "UDP/69 could not be opened"
+                return
+            first = False
+            worker.join()
+            if result.bytes_transferred > 0:
+                self.transfers += 1
+                try:
+                    print(self._served_notice.format(count=result.bytes_transferred))
+                except Exception:
+                    pass
+
+    def start(self) -> bool:
+        if not self.image.is_file():
+            self.bind_error = f"recovery image missing: {self.image}"
+            return False
+        self._resolve_text()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        # Give the first bind a chance to fail loudly rather than silently.
+        time.sleep(1.0)
+        return not self.bind_error
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+def _rescue_tftp_for_board(expected_board: str) -> tuple[Path, str]:
+    """The recovery image and the exact filename that board's U-Boot requests."""
+    if "mf" in expected_board.lower():
+        return MF_STOCK_RECOVERY_INITRAMFS, UBOOT_DEFAULT_RECOVERY_FILENAME.replace(
+            "an7581", "an7583").replace("xg-040g-md", "xg-040g-mf")
+    return RECOVERY_INITRAMFS, UBOOT_DEFAULT_RECOVERY_FILENAME
+
+
+
+# What to ask the transition system for while it can still answer. All of it is
+# read-only, and every entry is something the log could not tell us after the
+# fact when a field install stopped inside the production sysupgrade.
+_TRANSITION_EVIDENCE_CMD = (
+    "echo NOKIA_EVIDENCE_BEGIN; "
+    "echo -- meminfo; head -3 /proc/meminfo 2>/dev/null; "
+    "echo -- tmpfs; df -k /tmp 2>/dev/null; "
+    "echo -- mtd; cat /proc/mtd 2>/dev/null; "
+    "echo -- ubi; ubinfo -a 2>/dev/null; "
+    "echo -- badblocks; cat /sys/class/mtd/mtd2/bad_blocks 2>/dev/null; "
+    "echo -- dmesg; dmesg 2>/dev/null | grep -iE 'ubi|ecc|bad ?block|nand' | tail -40; "
+    "echo NOKIA_EVIDENCE_END"
+)
+
+
+def _capture_transition_evidence(host: str, label: str, port22: bool, port23: bool) -> bool:
+    """Snapshot RAM, MTD and UBI state while the transition system still talks.
+
+    A field install completed its migration, entered the production sysupgrade
+    and was never heard from again. From ``ubus call system sysupgrade`` onward
+    the work belongs to procd, our log channel is gone, and the fit volume is
+    deleted before it is rewritten -- so an interruption there is both invisible
+    and fatal to booting. Nothing in the session log said how much memory was
+    left or whether the NAND had grown bad blocks, which is exactly what would
+    have separated the plausible causes.
+
+    This is strictly observational: read-only commands, failures swallowed, and
+    the result goes to the session log rather than the console. It must never
+    be able to delay or disturb an install that is going fine.
+    """
+    if not port22 and not port23:
+        _write_session_only(f"[EVIDENCE] {label}: no channel to the transition system")
+        return False
+    try:
+        out, transport = _auto_transition_probe(host, _TRANSITION_EVIDENCE_CMD, port22, port23)
+    except Exception as exc:  # observational only; never propagate
+        _write_session_only(f"[EVIDENCE] {label}: probe failed: {exc}")
+        return False
+    if "NOKIA_EVIDENCE_BEGIN" not in out:
+        _write_session_only(f"[EVIDENCE] {label}: no answer ({out[-400:]})")
+        return False
+    _write_session_only(f"[EVIDENCE] {label} via {transport or 'unknown'}\n{out}")
+    return True
+
+
+def run_stage2(host: str, manual_mode: bool = False, expected_board: str = "nokia,xg-040g-md-ubi",
+               initial_handoff_unknown: bool = False) -> str:
+    """Watch the install through to production, with a rescue net underneath it.
+
+    The server is started before the watch and released on every exit path,
+    including exceptions and Ctrl-C: it holds UDP/69, which the stock restore
+    path needs later in the same session.
+    """
+    rescue_image, rescue_name = _rescue_tftp_for_board(expected_board)
+    rescue = _RescueTftpServer(rescue_image, rescue_name, host)
+    if rescue.start():
+        print(tr(
+            f"[RESCUE] Аварийный TFTP-сервер поднят на UDP/69 ({rescue_image.name}). "
+            "Если установка прервётся, роутер сам заберёт recovery-образ и загрузится.",
+            f"[RESCUE] Rescue TFTP server is up on UDP/69 ({rescue_image.name}). "
+            "If the installation is interrupted, the board collects the recovery image and boots on its own.",
+        ))
+    else:
+        print(tr(
+            f"[ПРЕДУПРЕЖДЕНИЕ] Аварийный TFTP-сервер не поднялся ({rescue.bind_error}). "
+            "Установка продолжится, но автоматической страховки при обрыве не будет; "
+            "в этом случае поможет data/tftp-rescue.py.",
+            f"[WARNING] The rescue TFTP server did not start ({rescue.bind_error}). "
+            "The installation continues, but an interruption will not self-heal; "
+            "data/tftp-rescue.py covers that case.",
+        ))
+    try:
+        return _run_stage2_watch(host, manual_mode, expected_board, initial_handoff_unknown, rescue)
+    finally:
+        rescue.stop()
+
+
+def _run_stage2_watch(host: str, manual_mode: bool, expected_board: str,
+                      initial_handoff_unknown: bool, rescue: "_RescueTftpServer") -> str:
     if not manual_mode:
         stage_header("6", "Ожидание OpenWrt", "Waiting for OpenWrt")
     if initial_handoff_unknown:
@@ -5860,7 +6048,10 @@ def run_stage2(host: str, manual_mode: bool = False, expected_board: str = "noki
     safe_retry_prompted = False
     last_probe_error = ""
     post_sysupgrade_reboot_prompted = False
+    post_sysupgrade_slow_noted = False
     handoff_started_at: float | None = None
+    evidence_baseline_taken = False
+    evidence_prehandoff_taken = False
 
     while True:
         now = time.time()
@@ -6019,6 +6210,11 @@ def run_stage2(host: str, manual_mode: bool = False, expected_board: str = "noki
                 new_tail = raw_log[len(last_raw_log):] if raw_log.startswith(last_raw_log) else raw_log
                 _write_session_only("[TRANSITION-RAW]\n" + new_tail)
                 last_raw_log = raw_log
+            if not evidence_baseline_taken:
+                # Calm baseline, taken before the destructive steps can distort it.
+                evidence_baseline_taken = True
+                _capture_transition_evidence(host, "transition baseline", port22, port23)
+
             for message, phase, event_key in _new_autoflash_events(output, seen_autoflash_lines):
                 current_phase = phase
                 step_match = re.fullmatch(r"step:([1-8])", event_key)
@@ -6030,6 +6226,11 @@ def run_stage2(host: str, manual_mode: bool = False, expected_board: str = "noki
                     if handoff_started_at is None:
                         handoff_started_at = now
                 print(message)
+                # Last chance: once sysupgrade hands off to procd there is no
+                # channel left to ask. Losing this race costs nothing.
+                if event_key == "sysupgrade-starting" and not evidence_prehandoff_taken:
+                    evidence_prehandoff_taken = True
+                    _capture_transition_evidence(host, "pre-handoff", port22, port23)
 
             if handoff_outage_seen and not handoff_explicit:
                 # A brief service outage can happen while transition is
@@ -6076,18 +6277,61 @@ def run_stage2(host: str, manual_mode: bool = False, expected_board: str = "noki
                 ))
                 return "production-web"
 
+        # Writing roughly 13 MiB into UBI takes well under a minute. Saying so at
+        # 90 seconds tells the operator the truth early, without proposing an
+        # action while the fit volume may be half-written.
+        if (not post_sysupgrade_slow_noted and handoff_announced
+                and handoff_started_at is not None and now - handoff_started_at >= 90
+                and detected_mode != "production"):
+            post_sysupgrade_slow_noted = True
+            print(tr(
+                "[REBOOT-CHECK] Запись основной OpenWrt идёт дольше ожидаемого: образ ~13 МиБ, штатно это меньше минуты.",
+                "[REBOOT-CHECK] The production write is taking longer than expected: the image is ~13 MiB, which normally takes under a minute.",
+            ))
+            print(tr(
+                "[REBOOT-CHECK] Питание не трогайте. Мастер продолжает наблюдение.",
+                "[REBOOT-CHECK] Leave power alone. Monitoring continues.",
+            ))
+
         if (not post_sysupgrade_reboot_prompted and handoff_announced and handoff_outage_seen
                 and handoff_started_at is not None and now - handoff_started_at >= 240
                 and detected_mode != "production"):
             post_sysupgrade_reboot_prompted = True
             print(tr(
-                "[REBOOT-CHECK] Перезагрузка production не подтверждена более 4 минут. Сам по себе тайм-аут НЕ разрешает отключать питание.",
-                "[REBOOT-CHECK] Production reboot has not been verified for more than 4 minutes. Timeout alone does NOT authorize a power cycle.",
+                "[REBOOT-CHECK] Основная OpenWrt не подтверждена более 4 минут.",
+                "[REBOOT-CHECK] Production OpenWrt has not been confirmed for more than 4 minutes.",
             ))
             print(tr(
-                "[SAFE-REBOOT OPTION] Если подключён UART и на нём уже есть точная строка 'sysupgrade successful', а после неё несколько минут нет reboot, разрешён один ручной power-cycle: питание OFF 5 секунд → ON, Reset не нажимать. Если этой строки нет — питание НЕ трогать.",
-                "[SAFE-REBOOT OPTION] If UART is connected and already shows the exact line 'sysupgrade successful', followed by several minutes without reboot, one manual power cycle is allowed: power OFF for 5 seconds → ON, do not press Reset. If that exact line is absent, do NOT touch power.",
+                "[REBOOT-CHECK] Что сейчас происходит внутри: sysupgrade передал работу procd, "
+                "а тот сначала удаляет том fit и только потом записывает его заново. "
+                "Пока запись не завершена, загрузочного образа на плате нет.",
+                "[REBOOT-CHECK] What is happening inside: sysupgrade handed the work to procd, "
+                "which deletes the fit volume before writing it again. "
+                "Until that write finishes there is no bootable image on the board.",
             ))
+            if rescue.transfers:
+                print(tr(
+                    "[SAFE-REBOOT] Роутер уже забрал recovery-образ по TFTP — значит он жив и грузит recovery. Ждите его по SSH.",
+                    "[SAFE-REBOOT] The board already collected the recovery image over TFTP, so it is alive and booting recovery. Expect it over SSH.",
+                ))
+            elif rescue.bind_error:
+                print(tr(
+                    "[SAFE-REBOOT] Аварийный TFTP-сервер НЕ поднят, автоматической страховки нет. "
+                    "Питание НЕ трогайте: обрыв внутри записи оставит плату без загрузочного образа. "
+                    "Отдельно запустите data/tftp-rescue.py — и только потом решайте про питание.",
+                    "[SAFE-REBOOT] The rescue TFTP server is NOT running, so there is no automatic net. "
+                    "Do NOT touch power: an interruption inside the write leaves the board with no bootable image. "
+                    "Start data/tftp-rescue.py separately first, and only then consider power.",
+                ))
+            else:
+                print(tr(
+                    "[SAFE-REBOOT] Аварийный TFTP-сервер поднят, поэтому обрыв больше не фатален: "
+                    "не сумев загрузиться, U-Boot сам запросит recovery-образ, и мастер его отдаст. "
+                    "Если решите снять питание — OFF 5 секунд, затем ON, Reset не нажимать, это окно не закрывать.",
+                    "[SAFE-REBOOT] The rescue TFTP server is running, so an interruption is no longer fatal: "
+                    "when it cannot boot, U-Boot asks for the recovery image and the wizard serves it. "
+                    "If you decide to cut power — OFF for 5 seconds, then ON, do not press Reset, and leave this window open.",
+                ))
             print(tr(
                 "[INFO] Мастер продолжает мониторинг; после ручного power-cycle ничего вводить не нужно.",
                 "[INFO] Monitoring continues; no input is required after the manual power cycle.",
@@ -9524,6 +9768,122 @@ def _rc29_restore_ssh_auth_selftest() -> None:
         raise Error("restore SSH auth selftest: later calls no longer offer the session key")
 
 
+def _rc30_install_rescue_selftest() -> None:
+    """The install must carry its own net, its own evidence, and honest advice.
+
+    A field install finished the migration, entered the production sysupgrade and
+    went silent. Everything after ``ubus call system sysupgrade`` belongs to
+    procd: it deletes the fit volume before rewriting it, so an interruption
+    there leaves no bootable image -- and U-Boot then loops on TFTP forever,
+    which nothing on the PC was answering.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+
+    def _body(name: str) -> str:
+        """The source of one top-level class or function, by name."""
+        start = -1
+        for marker in (f"\nclass {name}:", f"\nclass {name}(", f"\ndef {name}("):
+            start = source.find(marker)
+            if start != -1:
+                break
+        if start == -1:
+            raise Error(f"rescue selftest: cannot locate {name} in the source")
+        ends = [source.find(marker, start + 1) for marker in ("\ndef ", "\nclass ")]
+        ends = [e for e in ends if e != -1]
+        return source[start:min(ends) if ends else len(source)]
+
+    # The rescue image and the name U-Boot asks for must match the board.
+    md_image, md_name = _rescue_tftp_for_board("nokia,xg-040g-md-ubi")
+    mf_image, mf_name = _rescue_tftp_for_board("nokia,xg-040g-mf-ubi")
+    if md_image == mf_image or md_name == mf_name:
+        raise Error("rescue selftest: both families would be served the same recovery image")
+    if not md_name.endswith(".itb") or "an7581" not in md_name or "xg-040g-md" not in md_name:
+        raise Error(f"rescue selftest: the MD bootfile name is wrong: {md_name}")
+    if "an7583" not in mf_name or "xg-040g-mf" not in mf_name:
+        raise Error(f"rescue selftest: the MF bootfile name is wrong: {mf_name}")
+    if not md_image.is_file():
+        raise Error(f"rescue selftest: the MD recovery image is missing: {md_image}")
+
+    # It must be a flattened image whose default configuration is what
+    # bootconf names, or the board fetches it and then refuses to boot it.
+    head = md_image.read_bytes()[:8]
+    if int.from_bytes(head[:4], "big") != 0xD00DFEED:
+        raise Error("rescue selftest: the MD recovery image is not a flattened image")
+
+    # Started before the watch, released on every exit path -- it holds UDP/69,
+    # which the stock restore needs later in the same session.
+    wrapper = _body("run_stage2")
+    if "rescue = _RescueTftpServer(rescue_image, rescue_name, host)" not in wrapper:
+        raise Error("rescue selftest: the install no longer stands up a rescue server")
+    if "if rescue.start():" not in wrapper:
+        raise Error("rescue selftest: the rescue server is constructed but never started")
+    if "finally:" not in wrapper or "rescue.stop()" not in wrapper:
+        raise Error("rescue selftest: the rescue server is not released on every exit path")
+    if "_run_stage2_watch(" not in wrapper:
+        raise Error("rescue selftest: the watch is no longer wrapped by the rescue server")
+
+    # The serving thread must never call anything that can ask the operator a
+    # question. tr() resolves the language on first use, and a background thread
+    # has no console to answer from: a live transfer test showed that raising
+    # EOFError and taking the whole rescue loop down with it.
+    server = _body("_RescueTftpServer")
+    loop_start = server.index("def _loop(")
+    loop_end = server.index("def start(", loop_start)
+    loop = server[loop_start:loop_end]
+    if "tr(" in loop:
+        raise Error("rescue selftest: the serving thread resolves text that can prompt for a language")
+    if "self._served_notice" not in loop:
+        raise Error("rescue selftest: the serving thread no longer uses pre-resolved text")
+    if "_resolve_text()" not in server[server.index("def start("):]:
+        raise Error("rescue selftest: the notice is not resolved on the calling thread")
+
+    # Advisory, never a gate: a PC that cannot bind UDP/69 still installs.
+    starter = _body("run_stage2")
+    if "raise" in starter.split("rescue.start()")[-1].split("try:")[0]:
+        raise Error("rescue selftest: a failed rescue bind now blocks the install")
+
+    watch = _body("_run_stage2_watch")
+    for label, token in (
+            ("baseline", '_capture_transition_evidence(host, "transition baseline"'),
+            ("pre-handoff", '_capture_transition_evidence(host, "pre-handoff"')):
+        if token not in watch:
+            raise Error(f"rescue selftest: the {label} evidence snapshot is gone")
+
+    # Everything asked of the device stays read-only.
+    for forbidden in ("rm -", "mtd write", "mtd erase", "ubiupdatevol", "ubirmvol",
+                      "ubimkvol", "ubiformat", "sysupgrade", "reboot", "fw_setenv"):
+        if forbidden in _TRANSITION_EVIDENCE_CMD:
+            raise Error(f"rescue selftest: the evidence probe is no longer read-only ({forbidden})")
+    # Discarding output is fine; creating or truncating a file on the device is not.
+    if ">" in _TRANSITION_EVIDENCE_CMD.replace("2>/dev/null", "").replace(">/dev/null", ""):
+        raise Error("rescue selftest: the evidence probe writes to a file on the device")
+    for needed in ("meminfo", "df -k /tmp", "/proc/mtd", "ubinfo -a", "dmesg"):
+        if needed not in _TRANSITION_EVIDENCE_CMD:
+            raise Error(f"rescue selftest: the evidence probe stopped collecting {needed}")
+    capture = _body("_capture_transition_evidence")
+    delivered = [line for line in capture.splitlines()
+                 if "_write_session_only(" in line and "{out}" in line]
+    if not delivered:
+        raise Error("rescue selftest: the captured evidence itself no longer reaches the session log")
+    if "print(" in capture:
+        raise Error("rescue selftest: the evidence probe now writes to the console")
+
+    # The advice must not invite a bare power cycle into a possible mid-write
+    # window, and must say which way the net is pointing.
+    stale = "sysupgrade success" + "ful"
+    if stale in watch:
+        raise Error("rescue selftest: the advice again requires a UART line most operators cannot see")
+    if "rescue.bind_error" not in watch or "rescue.transfers" not in watch:
+        raise Error("rescue selftest: the reboot advice ignores whether the rescue net is up")
+    if "post_sysupgrade_slow_noted = True" not in watch:
+        raise Error("rescue selftest: the early slow notice never marks itself as delivered")
+    # Anchored to end of line: ">= 900" contains ">= 90".
+    if "now - handoff_started_at >= 90\n" not in watch:
+        raise Error("rescue selftest: the early slow notice lost its 90-second threshold")
+    if "~13 МиБ" not in watch:
+        raise Error("rescue selftest: the early notice no longer states the expected duration")
+
+
 def _rc25_lan1_advisory_selftest() -> None:
     """LAN1 detection must classify correctly and must stay advisory."""
     if _lan1_verdict_from_speed(2500) != "lan1":
@@ -12415,7 +12775,8 @@ def main(argv: list[str] | None = None) -> int:
             _rc25_release_identity_selftest()
             _rc25_lan1_advisory_selftest()
             _rc29_restore_ssh_auth_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RAM worker autonomy + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory + restore SSH auth safety selftest: OK")
+            _rc30_install_rescue_selftest()
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RAM worker autonomy + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory + restore SSH auth + install rescue safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

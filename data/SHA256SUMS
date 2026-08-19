@@ -55,6 +55,7 @@ d5617320c95e713f01ab1a0f6dabb9e458f170eb1517a9f2cba9bf41d3e88c31  ./data/recover
 ff317a7172de6c53d33301f480a792a7a2d8fe19fabf9c5fb061a771e902f53c  ./data/recovery/transition-network-source/shipped-mf-02_network.sh
 d15336fa12f195d77454541604b300953bfb7681cd7123ecea14ef060aa002bb  ./data/stock-launcher.sh.in
 7e9c5f420542d5ce0ffce4700653b8082dab57aa9a809fd8e02c3b6cea6324ec  ./data/stock_web.py
+ec2b3ecda4366339dc98b6c78d2282b86b0508b6dd5b56afb7562e314471de0f  ./data/tftp-rescue.py
 bb421ef151a5ea118f10780042461f594b84925cdc92381dcc4de19f8ac35fb1  ./data/transition-bundle.bin
 394461e5cb65eddef7615967603c08b14811c07168293bdc93a630f823aaf85f  ./data/transition-manual-bundle.bin
 9913098290466ee677c7a76c0947fe44e05abb1150685e2cbfdb14d25e676abf  ./data/vendor/README.txt

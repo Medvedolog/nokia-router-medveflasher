@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc30"
-BUILD_TAG = "medveflasher-1.0.0-rc30"
+APP_VERSION = "1.0.0-rc31"
+BUILD_TAG = "medveflasher-1.0.0-rc31"
 BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
@@ -5867,17 +5867,19 @@ class _RescueTftpServer:
         # language has been chosen, and the rescue net may not depend on an
         # answer nobody is there to give.
         self._served_notice = (
-            "[RESCUE] The board collected the recovery image over TFTP ({count} bytes); "
-            "production did not boot, but the board is alive and is starting recovery."
+            "[RESCUE] The board collected an image over TFTP ({count} bytes); production did "
+            "not boot, but the board is alive and is starting the transition system."
         )
         try:
             self._served_notice = tr(
-                "[RESCUE] Роутер запросил recovery-образ по TFTP и получил его "
-                "({count} байт). Это значит, что production не загрузился, "
-                "а плата жива и сейчас поднимет recovery. Питание не трогайте.",
-                "[RESCUE] The board asked for the recovery image over TFTP and received it "
-                "({count} bytes). Production did not boot, but the board is "
-                "alive and is starting the recovery image now. Leave power alone.",
+                "[RESCUE] Роутер запросил образ по TFTP и получил его "
+                "({count} байт). Значит production не загрузился, но плата жива и сейчас "
+                "поднимет transition-систему. Питание не трогайте; когда появится SSH, "
+                "выберите «продолжение установки» — миграция повторяться не будет.",
+                "[RESCUE] The board asked for an image over TFTP and received it "
+                "({count} bytes). Production did not boot, but the board is alive and is "
+                "starting the transition system. Leave power alone; once SSH answers, pick "
+                "the installation-continuation entry -- the migration will not be repeated.",
             )
         except Exception:
             pass
@@ -5924,12 +5926,54 @@ class _RescueTftpServer:
         self._stop.set()
 
 
-def _rescue_tftp_for_board(expected_board: str) -> tuple[Path, str]:
-    """The recovery image and the exact filename that board's U-Boot requests."""
+def _fit_only(image: Path) -> Path:
+    """Serve exactly the flattened image, never the bytes appended after it.
+
+    ``transition-bundle.bin`` is a FIT with the production sysupgrade appended,
+    so the file on disk is far larger than the image U-Boot should receive.
+    """
+    head = image.read_bytes()[:8]
+    if len(head) < 8 or int.from_bytes(head[:4], "big") != 0xD00DFEED:
+        return image
+    total = int.from_bytes(head[4:8], "big")
+    if total >= image.stat().st_size:
+        return image
+    trimmed = Path(tempfile.gettempdir()) / f"medveflasher-fit-{image.stem}.itb"
+    if not trimmed.is_file() or trimmed.stat().st_size != total:
+        trimmed.write_bytes(image.read_bytes()[:total])
+    return trimmed
+
+
+def _rescue_bootfile_name(expected_board: str) -> str:
+    """The exact filename that board's U-Boot asks for."""
     if "mf" in expected_board.lower():
-        return MF_STOCK_RECOVERY_INITRAMFS, UBOOT_DEFAULT_RECOVERY_FILENAME.replace(
+        return UBOOT_DEFAULT_RECOVERY_FILENAME.replace(
             "an7581", "an7583").replace("xg-040g-md", "xg-040g-mf")
-    return RECOVERY_INITRAMFS, UBOOT_DEFAULT_RECOVERY_FILENAME
+    return UBOOT_DEFAULT_RECOVERY_FILENAME
+
+
+def _rescue_tftp_for_board(expected_board: str, stock_recovery: bool = False) -> tuple[Path, str]:
+    """What to hand a board that is asking U-Boot's TFTP loop for an image.
+
+    A board only reaches that loop when BL2 and the FIP are already in place and
+    the production boot failed -- which means the migration ran. The useful
+    answer there is the transition system, because it is the only image in the
+    kit carrying ``nokia-ubi-installer`` and ``nokia-ubi-finish``: its installer
+    detects existing UBI headers, refuses to format again, takes the
+    non-destructive ``attach_existing`` path and lets the wizard finish the
+    production write. The kit already relies on this -- the same FIT is what it
+    writes into the ``fit`` volume as the post-migration fallback.
+
+    The stock recovery initramfs boots the same board and is the right vehicle
+    for going back to stock, but it is not the one that can complete an install,
+    so it is offered rather than assumed.
+    """
+    name = _rescue_bootfile_name(expected_board)
+    if "mf" in expected_board.lower():
+        image = MF_STOCK_RECOVERY_INITRAMFS if stock_recovery else MF_TRANSITION_BUNDLE
+    else:
+        image = RECOVERY_INITRAMFS if stock_recovery else BUNDLE
+    return _fit_only(image), name
 
 
 
@@ -9792,23 +9836,45 @@ def _rc30_install_rescue_selftest() -> None:
         ends = [e for e in ends if e != -1]
         return source[start:min(ends) if ends else len(source)]
 
-    # The rescue image and the name U-Boot asks for must match the board.
+    # The image and the name U-Boot asks for must match the board.
     md_image, md_name = _rescue_tftp_for_board("nokia,xg-040g-md-ubi")
     mf_image, mf_name = _rescue_tftp_for_board("nokia,xg-040g-mf-ubi")
     if md_image == mf_image or md_name == mf_name:
-        raise Error("rescue selftest: both families would be served the same recovery image")
+        raise Error("rescue selftest: both families would be served the same image")
     if not md_name.endswith(".itb") or "an7581" not in md_name or "xg-040g-md" not in md_name:
         raise Error(f"rescue selftest: the MD bootfile name is wrong: {md_name}")
     if "an7583" not in mf_name or "xg-040g-mf" not in mf_name:
         raise Error(f"rescue selftest: the MF bootfile name is wrong: {mf_name}")
-    if not md_image.is_file():
-        raise Error(f"rescue selftest: the MD recovery image is missing: {md_image}")
 
-    # It must be a flattened image whose default configuration is what
-    # bootconf names, or the board fetches it and then refuses to boot it.
-    head = md_image.read_bytes()[:8]
-    if int.from_bytes(head[:4], "big") != 0xD00DFEED:
-        raise Error("rescue selftest: the MD recovery image is not a flattened image")
+    # A board reaches U-Boot's TFTP loop only with BL2 and the FIP already in
+    # place, so the migration ran. The default answer must therefore be the
+    # transition system -- the only image carrying nokia-ubi-finish, whose
+    # installer takes the non-destructive attach path on existing UBI. Serving
+    # the stock rollback image by default would strand a recoverable board in a
+    # system that cannot finish the install.
+    for family, board, default_source, stock_source in (
+            ("MD", "nokia,xg-040g-md-ubi", BUNDLE, RECOVERY_INITRAMFS),
+            ("MF", "nokia,xg-040g-mf-ubi", MF_TRANSITION_BUNDLE, MF_STOCK_RECOVERY_INITRAMFS)):
+        served, _ = _rescue_tftp_for_board(board)
+        if served.stem not in (default_source.stem, f"medveflasher-fit-{default_source.stem}"):
+            raise Error(f"rescue selftest: {family} no longer defaults to the transition image")
+        rollback, _ = _rescue_tftp_for_board(board, stock_recovery=True)
+        if rollback != stock_source:
+            raise Error(f"rescue selftest: {family} stock_recovery=True is not the rollback image")
+        if not served.is_file() or not rollback.is_file():
+            raise Error(f"rescue selftest: a {family} rescue image is missing")
+        for image in (served, rollback):
+            if int.from_bytes(image.read_bytes()[:4], "big") != 0xD00DFEED:
+                raise Error(f"rescue selftest: {image.name} is not a flattened image")
+
+    # transition-bundle.bin carries the production sysupgrade after its FIT; the
+    # board must receive the image and nothing else.
+    trimmed, _ = _rescue_tftp_for_board("nokia,xg-040g-md-ubi")
+    declared = int.from_bytes(trimmed.read_bytes()[4:8], "big")
+    if trimmed.stat().st_size != declared:
+        raise Error("rescue selftest: the served file is not trimmed to its flattened image")
+    if BUNDLE.stat().st_size <= declared and BUNDLE.is_file():
+        raise Error("rescue selftest: the bundle no longer carries an appended payload to trim")
 
     # Started before the watch, released on every exit path -- it holds UDP/69,
     # which the stock restore needs later in the same session.

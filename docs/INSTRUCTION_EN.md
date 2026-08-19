@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc30 · **Date:** 18 August 2026
+**Version:** 1.0.0-rc31 · **Date:** 18 August 2026
 
 **OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
 **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
@@ -69,7 +69,7 @@ wrong, see [If an error occurs](#if-an-error-occurs).
 
 Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-Release profile for 1.0.0-rc30:
+Release profile for 1.0.0-rc31:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -92,12 +92,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc30.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc31.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc30.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc31.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root
@@ -493,7 +493,7 @@ Do not blindly rerun `fullflash`, `ubiformat`, or a BL2 write.
 
 ## If the installation stops at "starting production OpenWrt"
 
-From 1.0.0-rc30 the wizard keeps a rescue TFTP server up for the whole wait, so
+From 1.0.0-rc31 the wizard keeps a rescue TFTP server up for the whole wait, so
 an interruption here normally repairs itself: unable to boot, U-Boot asks for
 the recovery image once a second, the wizard serves it, and the board comes up.
 A `[RESCUE]` line in the wizard window reports this.
@@ -509,6 +509,14 @@ insufficient rights):
 
 The script waits for the request, serves the image and reports `[OK] delivered`.
 About a minute later the board answers SSH at 192.168.1.1.
+
+By default it serves the **transition system** — the only image in the kit that
+can finish an install. Once it is up, pick the wizard's installation-continuation
+entry: the installer sees the existing UBI, refuses to format again and writes
+only the production image. The migration is not repeated.
+
+`--stock-recovery` serves the rollback image instead, for going back to stock
+rather than completing OpenWrt.
 
 > [!IMPORTANT]
 > While production OpenWrt is being written, the `fit` volume has been deleted

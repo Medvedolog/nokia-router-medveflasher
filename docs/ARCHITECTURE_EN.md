@@ -432,6 +432,14 @@ is CRLF, everything else is LF.
 
 Below is a traceability record: which release introduced which architectural contract, and why. This is not the user-facing change history — that lives in [CHANGELOG.md](CHANGELOG.md). Sections are grouped by release and do not form a strict chronological order.
 
+## 1.0.0-rc31 — a rescue path is defined by where it puts you, not by whether it answers
+
+**Answering is half the contract.** RC30 established that the board asking U-Boot's TFTP loop must be answered, and that was the hard half. It then answered with the stock rollback initramfs — an image that boots the same board correctly and cannot do the one thing the situation calls for. The board was alive, reachable, and in a system with no path forward. A recovery mechanism has to be judged by the state it leaves the operator in, not by whether the transfer succeeded.
+
+**The situation already names the right image.** A board only reaches that loop with BL2 and the FIP in place, which means the migration ran and the only unfinished work is the production write. Exactly one image in the kit can do that work, and the kit already knew it: the same transition FIT is what the installer writes into the `fit` volume as the post-migration fallback, and the installer carries an explicit non-destructive branch for a device whose UBI headers already exist. The answer was in the codebase, in the failure path's own design, and the new code served something else — the same shape of mistake as the readiness loop in RC29, where a fact had already been reasoned about correctly in one place and not carried to its other reader.
+
+**Offer the destructive alternative, never assume it.** Going back to stock and going forward to OpenWrt are opposite intents that share a transport. Making the forward path the default and the rollback an explicit flag matches which one an interrupted install actually needs, and keeps the operator from being quietly moved onto the wrong one.
+
 ## 1.0.0-rc30 — an operation that deletes its only fallback must be covered before it starts
 
 **The dangerous window belongs to someone else's code.** The install's own steps are ordered so that BL2 goes last and every earlier failure is retryable. Then the production sysupgrade begins, `ubus call system sysupgrade` hands the work to procd, and OpenWrt's `nand_upgrade_prepare_ubi` removes the `fit` volume before recreating it. For the duration of that write the board holds no bootable image — and none of it is our code, our log, or our timing. Auditing our own sequence for a point of no return was not enough: the real one lived in the code we hand off to, and we neither instrumented it nor covered it.

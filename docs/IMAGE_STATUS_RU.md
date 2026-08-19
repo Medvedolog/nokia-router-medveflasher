@@ -1,4 +1,4 @@
-# Статус образов Nokia Router MedveFlasher 1.0.0-rc30
+# Статус образов Nokia Router MedveFlasher 1.0.0-rc31
 
 Этот файл отвечает на один вопрос: **что именно поставляется в релизе и что из этого подтверждено живым железом.** Хронология изменений по версиям — в [CHANGELOG_RU.md](CHANGELOG_RU.md).
 
@@ -13,7 +13,7 @@
 | UART/BootROM полный stock restore | ✅ **HW CONFIRMED** на RC16-паре preloader/FIP |
 | UART stock restore на NAND с bad blocks (RC22 mapper) | ⚠️ **NOT FULL PASS** — см. ниже |
 | RC18 `RECOVERY_SAFE` SAFE FIP, точные байты | `RC18_SAFE_PENDING_HW` — сам путь подтверждён, точные байты ждут regression |
-| PC-side изменения RC21–RC30 | STATIC_QA_PASS, HW regression pending |
+| PC-side изменения RC21–RC31 | STATIC_QA_PASS, HW regression pending |
 
 ### ⚠️ RC22 bad-block restore — почему это не PASS
 
@@ -23,7 +23,7 @@
 
 ### Неизменность payload
 
-Firmware/transition/recovery payloads **не менялись с RC19**. RC20–RC30 меняют только PC-side orchestration, metadata и документацию, поэтому аппаратные подтверждения install-путей переносятся между этими релизами без пересборки образов.
+Firmware/transition/recovery payloads **не менялись с RC19**. RC20–RC31 меняют только PC-side orchestration, metadata и документацию, поэтому аппаратные подтверждения install-путей переносятся между этими релизами без пересборки образов.
 
 ### RC25: вариант слота и аппаратные свидетельства
 

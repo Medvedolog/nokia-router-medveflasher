@@ -1,3 +1,57 @@
+# 1.0.0-rc30 — the install carries its own rescue net
+
+A field install completed its migration cleanly — `[1/8]`..`[8/8]`, BL2 written,
+the fallback installer FIT verified in the `fit` volume — then entered the
+production sysupgrade and was never heard from again. The wizard probed HTTP
+80/443 for eighteen minutes and reported nothing. The board looked bricked.
+
+It was not. Payload bytes are unchanged from RC24.
+
+## 1.0.0-rc30 — 19 August 2026
+
+- **A rescue TFTP server now stands for the whole wait.** OpenWrt's own
+  sysupgrade removes the `fit` volume before recreating it
+  (`nand_upgrade_prepare_ubi` → `ubirmvol -N fit` → `ubimkvol` → `ubiupdatevol`),
+  so between those calls the device has no bootable image at all. Interrupted
+  there, U-Boot's default environment does exactly what it is written to do:
+  `boot_ubi = run boot_production ; run boot_tftp_forever`, and the board asks
+  `serverip` for `$bootfile` once a second, forever, with the power LED lit.
+  Nothing on the PC was answering. It answers now, so the worst failure of the
+  install self-heals with no operator action. The server is started before the
+  watch and released on every exit path including Ctrl-C, because it holds
+  UDP/69 which the stock restore needs later in the same session. A PC that
+  cannot bind the port still installs — this is a net, not a gate.
+
+- **`data/tftp-rescue.py`** serves the same image standalone, for a board that
+  is already looping. Files carrying data after the flattened image —
+  `transition-bundle.bin` holds the production sysupgrade appended to its FIT —
+  are trimmed to the FIT so the board receives the image and nothing else.
+
+- **Evidence is captured while the device can still answer.** Everything after
+  `ubus call system sysupgrade` belongs to procd; the log channel is gone and
+  the failure is invisible. Two read-only snapshots now reach the session log
+  under `[EVIDENCE]` — a calm baseline when the transition system first
+  answers, and a best-effort one as the production sysupgrade starts — carrying
+  `/proc/meminfo`, `df -k /tmp`, `/proc/mtd`, `ubinfo -a` and the UBI/ECC/bad-block
+  lines from `dmesg`. That is exactly what would have separated RAM exhaustion
+  from a NAND-level write failure, and the log had none of it.
+
+- **The reboot advice stopped asking for something most operators cannot see.**
+  It required an exact `sysupgrade successful` line on UART — in a tool whose
+  whole premise is that there is no UART — and then offered a power cycle at
+  four minutes, which is squarely inside the window where the `fit` volume may
+  be half-written. Now a note at 90 seconds states the expected duration (~13
+  MiB, normally under a minute) and proposes nothing; at four minutes the
+  wizard explains what procd is doing and tailors the advice to whether the
+  rescue net is actually up.
+
+- **`_rc30_install_rescue_selftest`** pins all of it: the server is constructed,
+  started and released; both snapshots fire; the probe stays read-only and
+  writes no file on the device; the captured output itself reaches the session
+  log and never the console; the advice reads the rescue state; the early notice
+  keeps its threshold. Verified against eighteen deliberate regressions — three
+  of which exposed decorative checks in the selftest itself, since rewritten.
+
 # 1.0.0-rc29 — the stock restore can be asked for a password, and stops timing out
 
 Restoring stock over SSH from a running OpenWrt failed on real hardware with

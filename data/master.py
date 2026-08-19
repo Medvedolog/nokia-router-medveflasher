@@ -5855,10 +5855,37 @@ class _RescueTftpServer:
         self.bind_error = ""
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Resolved on the calling thread. tr() can ask the operator which
+        # language to use, and a background thread has no console to ask from:
+        # a live test showed that call raising EOFError and taking the rescue
+        # loop down with it -- silently destroying the net at the one moment it
+        # exists to be used.
+        self._served_notice = ""
+
+    def _resolve_text(self) -> None:
+        # Even here tr() must not be load-bearing: start() may run before a
+        # language has been chosen, and the rescue net may not depend on an
+        # answer nobody is there to give.
+        self._served_notice = (
+            "[RESCUE] The board collected the recovery image over TFTP ({count} bytes); "
+            "production did not boot, but the board is alive and is starting recovery."
+        )
+        try:
+            self._served_notice = tr(
+                "[RESCUE] Роутер запросил recovery-образ по TFTP и получил его "
+                "({count} байт). Это значит, что production не загрузился, "
+                "а плата жива и сейчас поднимет recovery. Питание не трогайте.",
+                "[RESCUE] The board asked for the recovery image over TFTP and received it "
+                "({count} bytes). Production did not boot, but the board is "
+                "alive and is starting the recovery image now. Leave power alone.",
+            )
+        except Exception:
+            pass
 
     def _loop(self) -> None:
         first = True
         while not self._stop.is_set():
+            # Reporting must never be able to kill the net it reports on.
             ready = threading.Event()
             result = TftpResult()
             worker = threading.Thread(
@@ -5877,19 +5904,16 @@ class _RescueTftpServer:
             worker.join()
             if result.bytes_transferred > 0:
                 self.transfers += 1
-                print(tr(
-                    f"[RESCUE] Роутер запросил recovery-образ по TFTP и получил его "
-                    f"({result.bytes_transferred} байт). Это значит, что production не загрузился, "
-                    f"а плата жива и сейчас поднимет recovery. Питание не трогайте.",
-                    f"[RESCUE] The board asked for the recovery image over TFTP and received it "
-                    f"({result.bytes_transferred} bytes). Production did not boot, but the board is "
-                    f"alive and is starting the recovery image now. Leave power alone.",
-                ))
+                try:
+                    print(self._served_notice.format(count=result.bytes_transferred))
+                except Exception:
+                    pass
 
     def start(self) -> bool:
         if not self.image.is_file():
             self.bind_error = f"recovery image missing: {self.image}"
             return False
+        self._resolve_text()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         # Give the first bind a chance to fail loudly rather than silently.
@@ -9756,9 +9780,17 @@ def _rc30_install_rescue_selftest() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
 
     def _body(name: str) -> str:
-        start = source.index(f"\ndef {name}(")
-        end = source.find("\ndef ", start + 1)
-        return source[start:end if end != -1 else len(source)]
+        """The source of one top-level class or function, by name."""
+        start = -1
+        for marker in (f"\nclass {name}:", f"\nclass {name}(", f"\ndef {name}("):
+            start = source.find(marker)
+            if start != -1:
+                break
+        if start == -1:
+            raise Error(f"rescue selftest: cannot locate {name} in the source")
+        ends = [source.find(marker, start + 1) for marker in ("\ndef ", "\nclass ")]
+        ends = [e for e in ends if e != -1]
+        return source[start:min(ends) if ends else len(source)]
 
     # The rescue image and the name U-Boot asks for must match the board.
     md_image, md_name = _rescue_tftp_for_board("nokia,xg-040g-md-ubi")
@@ -9789,6 +9821,21 @@ def _rc30_install_rescue_selftest() -> None:
         raise Error("rescue selftest: the rescue server is not released on every exit path")
     if "_run_stage2_watch(" not in wrapper:
         raise Error("rescue selftest: the watch is no longer wrapped by the rescue server")
+
+    # The serving thread must never call anything that can ask the operator a
+    # question. tr() resolves the language on first use, and a background thread
+    # has no console to answer from: a live transfer test showed that raising
+    # EOFError and taking the whole rescue loop down with it.
+    server = _body("_RescueTftpServer")
+    loop_start = server.index("def _loop(")
+    loop_end = server.index("def start(", loop_start)
+    loop = server[loop_start:loop_end]
+    if "tr(" in loop:
+        raise Error("rescue selftest: the serving thread resolves text that can prompt for a language")
+    if "self._served_notice" not in loop:
+        raise Error("rescue selftest: the serving thread no longer uses pre-resolved text")
+    if "_resolve_text()" not in server[server.index("def start("):]:
+        raise Error("rescue selftest: the notice is not resolved on the calling thread")
 
     # Advisory, never a gate: a PC that cannot bind UDP/69 still installs.
     starter = _body("run_stage2")

@@ -45,6 +45,14 @@ It was not. Payload bytes are unchanged from RC24.
   wizard explains what procd is doing and tailors the advice to whether the
   rescue net is actually up.
 
+- **The serving thread cannot be killed by its own reporting.** A live transfer
+  test — not the selftest — caught the rescue thread calling `tr()`, which
+  resolves the interface language on first use and asks the operator when it is
+  unset. A background thread has no console to answer from, so that call raised
+  `EOFError` and took the whole rescue loop down at the one moment it exists to
+  be used. The notice is now resolved on the calling thread, tolerates failing
+  to resolve at all, and the thread prints pre-formatted text.
+
 - **`_rc30_install_rescue_selftest`** pins all of it: the server is constructed,
   started and released; both snapshots fire; the probe stays read-only and
   writes no file on the device; the captured output itself reaches the session

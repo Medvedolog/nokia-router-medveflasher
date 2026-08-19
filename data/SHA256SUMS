@@ -11,7 +11,7 @@ d1d558f5abfc1f4e58f46c661c1553b7b5d35d87e15fce6cb4da3ee03640f0f4  ./data/backup-
 002c8bd69698f32ee64134f5a2749b0ce3c6f80f5bcbc85bbd857cb7ed3ed27f  ./data/diagnostics/mf-stock-audit.sh
 0d07923b2fd4a96b9e2620744f40144f3844e19954ffe1e0c9dad16db4664db6  ./data/diagnostics/mf_audit_parse.py
 2e3df8cde4d1bd13a926f596c37cd945f589df12b336d27f9e50c9cce882832f  ./data/env_patcher.py
-74cb9534fc2af24a928d08f6caed97af0873db040b97c8befd5c7bab543c18a0  ./data/master.py
+b588790143f246c7b9f7571d34347f35f120346c759d9730764143c11da4ff62  ./data/master.py
 9ec21e8f7454011e91f251a0784c0c57b815c39e4defe74cc031eb270e6a9aa3  ./data/mf-transition-bundle.bin
 120488c7b2c26cc3a036a12de1572e207d506e54ea98a4fd94de96f08301a733  ./data/mf-transition-manual-bundle.bin
 7ba1dafaa1a74350b1dec8db6fe941c300be5caf792e4020ff30f0847a1f46de  ./data/nokia-stock-tftp-backup-safe.sh
@@ -164,8 +164,8 @@ d318132e8cdf69b79b62d709b43742e50917e4855411abe2a83509261e185459  ./data/vendor/
 ff4ed53064ec3af7e68b14423699052877f9462dc8ad2570a9447680a16eeadf  ./data/verify_release_assets.py
 18e0bae50498aeaaf617e7743e02062c6939cff5e9fdfd7365f039810fefa215  ./docs/ARCHITECTURE_EN.md
 9fd7d16e84ace9a76cf23a5e17b4d05fa54ee6b79221fc6dcd6127b0484c0f05  ./docs/ARCHITECTURE_RU.md
-6b8db69b61371bc486506803151a0298a01fa3eb09683bab0aebf6ac7c619525  ./docs/CHANGELOG.md
-7e19964db12e814b4a32bdb1b6ee57ac18df9d14bfe5eb164f82d3a977e582d0  ./docs/CHANGELOG_RU.md
+eb8e178c183865f7c6481cc3638760bb43d3d138ececb7b6f268e81c9b5b0ce6  ./docs/CHANGELOG.md
+212f9435a752c50641b25a977f0a1c83699eda0b87bb003576fb5282e192ccba  ./docs/CHANGELOG_RU.md
 7b8f4798c20680ed9ceb6a6cc0c512cc908ef24c2a97e1d0e7e4e52bbe19e6b9  ./docs/IMAGE_STATUS_EN.md
 44c1d230e59c0a6a851033ece414bcd4312d0188745903522905c8d78e05663b  ./docs/IMAGE_STATUS_RU.md
 fe561f72ff94216544a01e669ab1d843ee05fe66f36e4b9a985ec708410d780f  ./docs/INSTRUCTION_EN.md

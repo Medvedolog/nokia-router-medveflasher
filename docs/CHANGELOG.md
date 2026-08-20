@@ -1,3 +1,41 @@
+# 1.0.0-rc31 — the rescue net hands back the system that can finish the job
+
+RC30 answered U-Boot's TFTP loop, which was the hard part. It answered with the
+wrong image. Payload bytes are unchanged from RC24.
+
+## 1.0.0-rc31 — 19 August 2026
+
+- **The default rescue image is now the transition system, not the stock
+  rollback initramfs.** A board only reaches `boot_tftp_forever` when BL2 and
+  the FIP are already written, which means the migration ran. The useful answer
+  there is the only image in the kit carrying `nokia-ubi-installer` and
+  `nokia-ubi-finish`: its installer sees the existing UBI headers, logs
+  *"refusing to format again automatically"*, takes the non-destructive
+  `attach_existing` path and lets the wizard complete the production write with
+  no second migration. The kit already depended on exactly this image in this
+  exact situation — it is what gets written into the `fit` volume as the
+  post-migration fallback. RC30 served the stock rollback initramfs instead,
+  which boots the same board but cannot finish an install, so a recoverable
+  device was landed in the wrong system.
+
+- **`--stock-recovery` selects the rollback vehicle explicitly**, for going back
+  to stock rather than forward to OpenWrt. Both families resolve correctly.
+
+- **The served file is trimmed to its flattened image.** `transition-bundle.bin`
+  is a 21,626,880-byte file whose FIT is 7,673,752 bytes, with the production
+  sysupgrade appended; the board now receives the image and nothing after it.
+  The trimming helper is shared between the wizard and `data/tftp-rescue.py`
+  instead of being implemented twice.
+
+- **The messages say what to do next.** Both the startup line and the
+  transfer-completed line now name the continuation path, because getting the
+  board alive was never the goal on its own.
+
+- **The selftest pins the default per family**, that `--stock-recovery` still
+  yields the rollback image, that the two families never share one image, and
+  that the served file equals its declared flattened size. Verified against five
+  deliberate regressions.
+
 # 1.0.0-rc30 — the install carries its own rescue net
 
 A field install completed its migration cleanly — `[1/8]`..`[8/8]`, BL2 written,

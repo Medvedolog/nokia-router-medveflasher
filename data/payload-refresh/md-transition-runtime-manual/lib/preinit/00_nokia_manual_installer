@@ -1,0 +1,2 @@
+#!/bin/ash
+printf '%s\n' 'NOKIA-MANUAL: automatic stage 2 disabled; continuing normal OpenWrt preinit for LAN setup.' | dd of=/dev/kmsg bs=4096 count=1 2>/dev/null || true

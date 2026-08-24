@@ -31,9 +31,11 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc31"
-BUILD_TAG = "medveflasher-1.0.0-rc31"
-BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
+APP_VERSION = "1.0.0-rc33"
+BUILD_TAG = "medveflasher-1.0.0-rc33"
+MD_BOOTCMD = "flash read 0xc0000 0x900000 0x92000000; bootm 0x92000000"
+MF_BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
+BOOTCMD = MD_BOOTCMD  # compatibility alias; profile-specific writes use transition_bootcmd()
 KIT = Path(__file__).resolve().parent.parent
 DATA = KIT / "data"
 VENDOR = DATA / "vendor"
@@ -42,44 +44,50 @@ if str(VENDOR) not in sys.path:
 from rich.console import Console as RichConsole
 from rich.text import Text as RichText
 WORK = KIT / "work"
-BUNDLE = DATA / "transition-bundle.bin"
-MANUAL_BUNDLE = DATA / "transition-manual-bundle.bin"
-MF_TRANSITION_BUNDLE = DATA / "mf-transition-bundle.bin"
-MF_MANUAL_TRANSITION_BUNDLE = DATA / "mf-transition-manual-bundle.bin"
+PAYLOADS = DATA / "payloads"
+BUNDLE = PAYLOADS / "nokia-xg-040g-md-an7581-transition-auto.bin"
+MANUAL_BUNDLE = PAYLOADS / "nokia-xg-040g-md-an7581-transition-manual.bin"
+MF_TRANSITION_BUNDLE = PAYLOADS / "nokia-xg-040g-mf-an7583-transition-auto.bin"
+MF_MANUAL_TRANSITION_BUNDLE = PAYLOADS / "nokia-xg-040g-mf-an7583-transition-manual.bin"
+MD_PRODUCTION_SYSUPGRADE = PAYLOADS / "nokia-xg-040g-md-an7581-production-sysupgrade.itb"
+MD_PRODUCTION_FIP = PAYLOADS / "nokia-xg-040g-md-an7581-production-bl31-uboot.fip"
+MF_PRODUCTION_SYSUPGRADE = PAYLOADS / "nokia-xg-040g-mf-an7583-production-sysupgrade.itb"
+MF_PRODUCTION_PRELOADER = PAYLOADS / "nokia-xg-040g-mf-an7583-production-preloader.bin"
+MF_PRODUCTION_FIP = PAYLOADS / "nokia-xg-040g-mf-an7583-production-bl31-uboot.fip"
+MD_UPSTREAM_INITRAMFS = PAYLOADS / "nokia-xg-040g-md-an7581-upstream-initramfs-recovery.itb"
 LAUNCHER_TEMPLATE = DATA / "stock-launcher.sh.in"
 BACKUP_AGENT = DATA / "backup-agent.sh"
 STOCK_WEB = DATA / "stock_web.py"
 RECOVERY_DIR = DATA / "recovery"
-RECOVERY_PRELOADER = RECOVERY_DIR / "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin"
-RECOVERY_FIP = RECOVERY_DIR / "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot-ethfix.fip"
-RECOVERY_INITRAMFS = RECOVERY_DIR / "nokia-xg040gmd-stock-recovery-initramfs.itb"
+RECOVERY_PRELOADER = PAYLOADS / "nokia-xg-040g-md-an7581-preloader.bin"
+RECOVERY_FIP = PAYLOADS / "nokia-xg-040g-md-an7581-uart-recovery-safe-bl31-uboot.fip"
+RECOVERY_INITRAMFS = PAYLOADS / "nokia-xg-040g-md-an7581-stock-recovery-initramfs.itb"
 UBOOT_DEFAULT_RECOVERY_FILENAME = "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-initramfs-recovery.itb"
-RECOVERY_PRELOADER_SHA = "6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808"
-RECOVERY_FIP_SHA = "2ebcbf3981e3e56b6389521fc2caa3320cf259c08f173b660b29366b9290bcc1"
-RECOVERY_FIP_SIZE = 308154
-RECOVERY_FIP_SOURCE_SHA = "9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b"
-RECOVERY_INITRAMFS_SHA = "c40c87354566eb44fc933c1ce6c0cd9c81227b525243c67c9932b80a656d01c6"
-RECOVERY_INITRAMFS_SIZE = 11_285_480
+RECOVERY_PRELOADER_SHA = "ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30"
+RECOVERY_FIP_SHA = "4a94aa502e830b862d09def0c2a021a3d4aad85488fd814e79d01e3ef8fab33a"
+RECOVERY_FIP_SIZE = 313066
+RECOVERY_FIP_SOURCE_SHA = "8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1"
+RECOVERY_INITRAMFS_SHA = "7fc9cef7a6abf5b005b0db212c99aaf1a655a9b00a895c02bad43152d982f2dd"
+RECOVERY_INITRAMFS_SIZE = 8_635_288
 RECOVERY_CLIENT_DIR = RECOVERY_DIR / "recovery-clients-bin"
 RECOVERY_TFTP_CLIENT = RECOVERY_CLIENT_DIR / "nokia-tftp"
 RECOVERY_SCP_CLIENT = RECOVERY_CLIENT_DIR / "nokia-scp"
 RECOVERY_TFTP_CLIENT_SHA = "2b6bbc51975e22f420565c42363821eb362936136b03f70a2a0cedee99c1641a"
 RECOVERY_SCP_CLIENT_SHA = "232a4ba7f8ae62922815bb12503fd7d09c3b4f40929d130475e467f0a597ac89"
-MD_RECOVERY_SOURCE_INITRAMFS_SHA = "a8e24301925c4a7b120594b61aa679bac835b26ef70736fd28a69c9029ffda3b"
-MD_RECOVERY_SOURCE_INITRAMFS_SIZE = 11_141_120
-MF_RECOVERY_DIR = RECOVERY_DIR / "mf"
-MF_RECOVERY_METADATA = MF_RECOVERY_DIR / "OPENWRT_SNAPSHOT.json"
+MD_RECOVERY_SOURCE_INITRAMFS_SHA = "ee88a11e1ff7f232afb8eda38870e65f6625e0d95b97c70ccbe59098bd1ba05a"
+MD_RECOVERY_SOURCE_INITRAMFS_SIZE = 8_519_680
+MF_RECOVERY_METADATA = DATA / "payload-refresh" / "provenance" / "mf-openwrt-snapshot.json"
 MF_RECOVERY_BASE_URL = "https://downloads.openwrt.org/snapshots/targets/airoha/an7583/"
-MF_RECOVERY_PRELOADER_NAME = "openwrt-airoha-an7583-airoha_an7583-evb-preloader.bin"
-MF_RECOVERY_FIP_NAME = "openwrt-airoha-an7583-airoha_an7583-evb-bl31-uboot.fip"
-MF_RECOVERY_PRELOADER = MF_RECOVERY_DIR / MF_RECOVERY_PRELOADER_NAME
-MF_RECOVERY_FIP = MF_RECOVERY_DIR / MF_RECOVERY_FIP_NAME
+MF_RECOVERY_PRELOADER_NAME = "nokia-xg-040g-mf-an7583-uart-preloader.bin"
+MF_RECOVERY_FIP_NAME = "nokia-xg-040g-mf-an7583-uart-recovery-safe-bl31-uboot.fip"
+MF_RECOVERY_PRELOADER = PAYLOADS / MF_RECOVERY_PRELOADER_NAME
+MF_RECOVERY_FIP = PAYLOADS / MF_RECOVERY_FIP_NAME
 MF_RECOVERY_PRELOADER_SHA = "c2ac1c183b18bc34632c958dfe0bd1dfdfb607f090e39c41126956641893362f"
 MF_RECOVERY_FIP_SHA = "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2"
 MF_RECOVERY_FIP_SOURCE_SHA = "b2f5f93f52afbaf539fe362267b13a91fb0a3a22c4ea770f2fc984dece176c12"
 MF_RECOVERY_PRELOADER_SIZE = 118322
 MF_RECOVERY_FIP_SIZE = 339010
-MF_STOCK_RECOVERY_INITRAMFS = MF_RECOVERY_DIR / "nokia-xg040gmf-stock-recovery-initramfs.itb"
+MF_STOCK_RECOVERY_INITRAMFS = PAYLOADS / "nokia-xg-040g-mf-an7583-stock-recovery-initramfs.itb"
 MF_STOCK_RECOVERY_INITRAMFS_SHA = "da1f3cb376ad599a2d8ffea3d03abeb02bdec1114aad06d6ad049885914b045f"
 MF_STOCK_RECOVERY_INITRAMFS_SIZE = 7_479_380
 MF_UBI_PRELOADER_SIZE = 118333
@@ -112,7 +120,7 @@ MD_INSTALL_PROFILE = InstallProfile(
     expected_board="nokia,xg-040g-md-ubi",
     auto_bundle=BUNDLE,
     manual_bundle=MANUAL_BUNDLE,
-    runtime_bundle_name="transition-bundle.bin",
+    runtime_bundle_name="nokia-xg-040g-md-an7581-transition-auto.bin",
     runtime_env_name="OpenWrt.mtd2.u-boot-env.bin",
 )
 MF_INSTALL_PROFILE = InstallProfile(
@@ -122,7 +130,7 @@ MF_INSTALL_PROFILE = InstallProfile(
     expected_board=MF_UBI_BOARD,
     auto_bundle=MF_TRANSITION_BUNDLE,
     manual_bundle=MF_MANUAL_TRANSITION_BUNDLE,
-    runtime_bundle_name="mf-transition-bundle.bin",
+    runtime_bundle_name="nokia-xg-040g-mf-an7583-transition-auto.bin",
     runtime_env_name="OpenWrt.mf.u-boot-env.bin",
     force_tftp=True,
 )
@@ -152,8 +160,8 @@ STOCK_BADBLOCK_SAFE_PHYS_START = 0x052C0000
 STOCK_BADBLOCK_SAFE_PHYS_END = 0x0EB60000
 STOCK_BADBLOCK_SAFE_UBI_START = STOCK_BADBLOCK_SAFE_PHYS_START - STOCK_BL2_SIZE
 STOCK_BADBLOCK_SAFE_UBI_END = STOCK_BADBLOCK_SAFE_PHYS_END - STOCK_BL2_SIZE
-OPENWRT_PRELOADER_SIZE = 113447
-OPENWRT_PRELOADER_SHA = "6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808"
+OPENWRT_PRELOADER_SIZE = 112195
+OPENWRT_PRELOADER_SHA = "ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30"
 STOCK_RAW_SLICES = {
     0: (0x0000000, 0x0080000),
     1: (0x0080000, 0x0040000),
@@ -176,10 +184,10 @@ STOCK_STABLE_RAW_SLICES = frozenset((0, 1, 6, 7, 14, 15))
 # Their own transfer SHA256, gzip integrity and exact size are still mandatory;
 # mtd16 is the canonical restore image.
 STOCK_LIVE_RAW_SLICES = frozenset(STOCK_RAW_SLICES) - STOCK_STABLE_RAW_SLICES
-EXPECTED_BUNDLE_SHA = "bb421ef151a5ea118f10780042461f594b84925cdc92381dcc4de19f8ac35fb1"
-EXPECTED_BUNDLE_SIZE = 21_626_880
-EXPECTED_MANUAL_BUNDLE_SHA = "394461e5cb65eddef7615967603c08b14811c07168293bdc93a630f823aaf85f"
-EXPECTED_MANUAL_BUNDLE_SIZE = 8_388_608
+EXPECTED_BUNDLE_SHA = "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264"
+EXPECTED_BUNDLE_SIZE = 19_955_992
+EXPECTED_MANUAL_BUNDLE_SHA = "ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512"
+EXPECTED_MANUAL_BUNDLE_SIZE = 9_437_184
 EXPECTED_MF_TRANSITION_BUNDLE_SHA = "9ec21e8f7454011e91f251a0784c0c57b815c39e4defe74cc031eb270e6a9aa3"
 EXPECTED_MF_TRANSITION_BUNDLE_SIZE = 17_694_720
 EXPECTED_MF_TRANSITION_FIT_SIZE = 7_702_044
@@ -189,8 +197,8 @@ EXPECTED_MF_MANUAL_TRANSITION_BUNDLE_SHA = "120488c7b2c26cc3a036a12de1572e207d50
 EXPECTED_MF_MANUAL_TRANSITION_BUNDLE_SIZE = 8_388_608
 EXPECTED_MF_MANUAL_TRANSITION_FIT_SIZE = 7_702_276
 EXPECTED_MF_MANUAL_TRANSITION_FIT_SHA = "f8a8d9a1ce867029ab8b74e497910678530fc1cf54ac0211b174089e8459240c"
-EXPECTED_PROD_SIZE = 13_226_255
-EXPECTED_PROD_SHA = "c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03"
+EXPECTED_PROD_SIZE = 10_518_808
+EXPECTED_PROD_SHA = "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867"
 FIXED_EXPECTED = {
     0: 524288, 1: 262144, 6: 262144, 7: 262144, 8: 262144,
     9: 262144, 10: 10485760, 11: 135135232, 12: 4194304,
@@ -1136,7 +1144,7 @@ def _bundled_pinned_mf_recovery_artifact(name: str, expected_size: int, expected
     exact release-pinned stages and verifies local size/SHA256 before COM/XMODEM;
     missing or changed bytes fail closed and are never fetched at runtime.
     """
-    bundled = MF_RECOVERY_DIR / name
+    bundled = PAYLOADS / name
     print(tr(
         f"[CHECK] {label}: проверяю bundled stage и SHA256...",
         f"[CHECK] {label}: verifying bundled stage and SHA256...",
@@ -1216,13 +1224,13 @@ def bundle_release_metadata(bundle_path: Path = BUNDLE) -> dict[str, int | str]:
         bundle_info = manifest["manual_bundle" if bundle_path == MANUAL_BUNDLE else "bundle"]
         production_size = int(bundle_info["production_size"])
         production_sha = str(bundle_info["production_sha256"])
-        production_offset = int(bundle_info.get("production_offset_in_bundle", 0x800000))
+        production_offset = int(bundle_info.get("production_offset_in_bundle", 0x900000))
+        window_size = int(bundle_info.get("transition_window_size", production_offset))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise Error(tr(
             f"не удалось прочитать metadata bundle из MANIFEST.json: {exc}",
             f"failed to read bundle metadata from MANIFEST.json: {exc}",
         )) from exc
-    window_size = 0x800000
     if production_offset != window_size:
         raise Error(tr(
             "неожиданный offset embedded sysupgrade в MANIFEST.json",
@@ -1246,6 +1254,8 @@ def bundle_release_metadata(bundle_path: Path = BUNDLE) -> dict[str, int | str]:
         "transition_fit_size": fit_size,
         "transition_fit_sha": hashlib.sha256(raw[:fit_size]).hexdigest(),
         "transition_window_sha": hashlib.sha256(raw[:window_size]).hexdigest(),
+        "transition_window_size": window_size,
+        "production_offset": production_offset,
         "production_size": production_size,
         "production_sha": production_sha,
     }
@@ -1286,6 +1296,7 @@ def mf_transition_release_metadata(bundle_path: Path = MF_TRANSITION_BUNDLE) -> 
         "bundle_size": len(raw), "bundle_sha": bundle_sha,
         "transition_fit_size": fit_size, "transition_fit_sha": fit_sha,
         "transition_window_sha": window_sha,
+        "transition_window_size": 0x800000, "production_offset": 0x800000,
         "production_size": production_size, "production_sha": production_sha,
     }
 
@@ -1351,7 +1362,7 @@ def verify_kit() -> None:
     root_version = KIT / "VERSION"
     data_version = DATA / "VERSION"
     manifest_path = DATA / "MANIFEST.json"
-    required = (root_version, data_version, manifest_path, BUNDLE, MANUAL_BUNDLE, MF_TRANSITION_BUNDLE, MF_MANUAL_TRANSITION_BUNDLE, LAUNCHER_TEMPLATE, BACKUP_AGENT, STOCK_WEB, DATA / "env_patcher.py", RECOVERY_PRELOADER, RECOVERY_FIP, RECOVERY_INITRAMFS, MF_RECOVERY_METADATA, MF_RECOVERY_PRELOADER, MF_RECOVERY_FIP, MF_STOCK_RECOVERY_INITRAMFS, STOCK_AUDIT_SCRIPT, STOCK_AUDIT_PARSER, FIRMWARE_CAPABILITIES, RECOVERY_DIR / "transition-network-source" / "patch_transition_network.py", RECOVERY_DIR / "recovery-clients-source" / "patch_recovery_clients.py", RECOVERY_TFTP_CLIENT, RECOVERY_SCP_CLIENT, RECOVERY_DIR / "transition-network-source" / "shipped-md-02_network.sh", RECOVERY_DIR / "transition-network-source" / "shipped-mf-02_network.sh", RECOVERY_DIR / "recovery-safe-uboot-source" / "patch_recovery_safe_fip.py", RECOVERY_DIR / "recovery-safe-uboot-source" / "lzma1ext_noeopm.c", RECOVERY_DIR / "recovery-safe-uboot-source" / "md-rc18-safe-fip-report.json", RECOVERY_DIR / "recovery-safe-uboot-source" / "mf-rc18-safe-fip-report.json", VENDOR / "rich" / "__init__.py", VENDOR / "RICH_LICENSE.txt")
+    required = (root_version, data_version, manifest_path, BUNDLE, MANUAL_BUNDLE, MF_TRANSITION_BUNDLE, MF_MANUAL_TRANSITION_BUNDLE, LAUNCHER_TEMPLATE, BACKUP_AGENT, STOCK_WEB, DATA / "env_patcher.py", RECOVERY_PRELOADER, RECOVERY_FIP, RECOVERY_INITRAMFS, MF_RECOVERY_METADATA, MF_RECOVERY_PRELOADER, MF_RECOVERY_FIP, MF_STOCK_RECOVERY_INITRAMFS, STOCK_AUDIT_SCRIPT, STOCK_AUDIT_PARSER, FIRMWARE_CAPABILITIES, RECOVERY_DIR / "transition-network-source" / "patch_transition_network.py", RECOVERY_DIR / "recovery-clients-source" / "patch_recovery_clients.py", RECOVERY_TFTP_CLIENT, RECOVERY_SCP_CLIENT, RECOVERY_DIR / "transition-network-source" / "shipped-md-02_network.sh", RECOVERY_DIR / "transition-network-source" / "shipped-mf-02_network.sh", RECOVERY_DIR / "recovery-safe-uboot-source" / "patch_recovery_safe_fip.py", RECOVERY_DIR / "recovery-safe-uboot-source" / "lzma1ext_noeopm.c", RECOVERY_DIR / "recovery-safe-uboot-source" / "md-rc32-safe-fip-report.json", RECOVERY_DIR / "recovery-safe-uboot-source" / "mf-rc18-safe-fip-report.json", VENDOR / "rich" / "__init__.py", VENDOR / "RICH_LICENSE.txt")
     for path in required:
         if not path.is_file():
             raise Error(f"повреждён комплект: отсутствует {path.relative_to(KIT)}")
@@ -1390,11 +1401,40 @@ def verify_kit() -> None:
             "MANIFEST.json release.version/build_tag/archive_root не совпадают с кодом",
             "MANIFEST.json release.version/build_tag/archive_root do not match the code",
         ))
+    # RC33 packaging contract: every firmware payload byte is in one canonical
+    # directory and every file there is bound by MANIFEST size+SHA256.
+    payload_catalog = release_manifest.get("payload_catalog") or []
+    catalog_files: set[str] = set()
+    for entry in payload_catalog:
+        rel = str(entry.get("file", ""))
+        if not rel.startswith("data/payloads/"):
+            raise Error(tr(
+                f"payload вне canonical data/payloads: {rel}",
+                f"payload outside canonical data/payloads: {rel}",
+            ))
+        if rel in catalog_files:
+            raise Error(tr(f"дубликат payload в MANIFEST: {rel}", f"duplicate payload in MANIFEST: {rel}"))
+        catalog_files.add(rel)
+        path = KIT / rel
+        if not path.is_file():
+            raise Error(tr(f"payload отсутствует: {rel}", f"payload is missing: {rel}"))
+        if path.stat().st_size != int(entry.get("size", -1)) or sha_file(path) != entry.get("sha256"):
+            raise Error(tr(f"payload size/SHA256 не совпадает: {rel}", f"payload size/SHA256 mismatch: {rel}"))
+    actual_payloads = {
+        path.relative_to(KIT).as_posix()
+        for path in PAYLOADS.iterdir()
+        if path.is_file() and path.suffix.lower() in {".bin", ".itb", ".fip"}
+    }
+    if actual_payloads != catalog_files:
+        raise Error(tr(
+            "MANIFEST payload_catalog не является точным списком data/payloads",
+            "MANIFEST payload_catalog is not an exact inventory of data/payloads",
+        ))
     _verify_exact_artifact(RECOVERY_TFTP_CLIENT, 7792, RECOVERY_TFTP_CLIENT_SHA, "pinned AArch64 nokia-tftp")
     _verify_exact_artifact(RECOVERY_SCP_CLIENT, 6072, RECOVERY_SCP_CLIENT_SHA, "pinned AArch64 nokia-scp")
-    _verify_exact_artifact(RECOVERY_PRELOADER, 113447, RECOVERY_PRELOADER_SHA, "AN7581 preloader")
-    _verify_exact_artifact(RECOVERY_FIP, RECOVERY_FIP_SIZE, RECOVERY_FIP_SHA, "AN7581 RC18 RECOVERY_SAFE BL31+U-Boot FIP")
-    _verify_recovery_safe_fip(RECOVERY_FIP, "a81dbbe98acb1dabc2afcbf72e73ad87e24efa8dd88e559612a024c28ece920e", "df4803b9f70bb35050555947268fc35d61f1724814a1ea59b480689f056fa123", "AN7581 RC18 RECOVERY_SAFE FIP")
+    _verify_exact_artifact(RECOVERY_PRELOADER, OPENWRT_PRELOADER_SIZE, RECOVERY_PRELOADER_SHA, "AN7581 preloader")
+    _verify_exact_artifact(RECOVERY_FIP, RECOVERY_FIP_SIZE, RECOVERY_FIP_SHA, "AN7581 RC32 Fudan-capable RECOVERY_SAFE BL31+U-Boot FIP")
+    _verify_recovery_safe_fip(RECOVERY_FIP, "1952c3a023187305e544b3370ca3dc840e39e39d6ae6edaf67bbd7b46e87962a", "09aeafcfa75880e219e4047a79e402bfead14352098f75ced8412f82c3d45f84", "AN7581 RC32 Fudan-capable RECOVERY_SAFE FIP")
     _load_mf_snapshot_metadata()
     _verify_exact_artifact(MF_RECOVERY_PRELOADER, MF_RECOVERY_PRELOADER_SIZE, MF_RECOVERY_PRELOADER_SHA, "AN7583 preloader")
     _verify_exact_artifact(MF_RECOVERY_FIP, MF_RECOVERY_FIP_SIZE, MF_RECOVERY_FIP_SHA, "AN7583 RC18 RECOVERY_SAFE BL31+U-Boot FIP")
@@ -1419,7 +1459,7 @@ def verify_kit() -> None:
     for key in (
         "PROFILE_FAMILY", "PROFILE_LABEL", "RELEASE_VERSION", "BUNDLE_NAME", "ENV_NAME",
         "BUNDLE_SIZE", "BUNDLE_SHA", "TRANSITION_TOTALSIZE", "TRANSITION_FIT_SHA",
-        "TRANSITION_WINDOW_SHA", "SYSUPGRADE_SIZE", "SYSUPGRADE_SHA",
+        "TRANSITION_WINDOW_SHA", "TRANSITION_WINDOW", "SYSUPGRADE_OFFSET", "ENV_BOOTCMD", "SYSUPGRADE_SIZE", "SYSUPGRADE_SHA",
         "MANUAL_TRANSITION", "ENV_SHA", "ENV_SOURCE_SHA",
     ):
         if not re.search(rf"^{key}=", launcher_template, flags=re.M):
@@ -1798,6 +1838,14 @@ def _print_install_backup_validation(profile: InstallProfile, backup_dir: Path, 
         print(tr(f"[WARNING] Backup: {warning}", f"[WARNING] Backup: {warning}"))
 
 
+def transition_bootcmd(profile: InstallProfile) -> str:
+    if profile.family == "md":
+        return MD_BOOTCMD
+    if profile.family == "mf":
+        return MF_BOOTCMD
+    raise Error(tr("неизвестный install profile", "unknown install profile"))
+
+
 def personalize_transition(
     profile: InstallProfile,
     backup_dir: Path,
@@ -1808,7 +1856,8 @@ def personalize_transition(
     validation = _validate_install_backup(profile, backup_dir)
     mtd0 = Path(validation["files"]["0"])
     module = env_module()
-    env_data, report = module.create_image(module.read_input(mtd0), BOOTCMD)
+    profile_bootcmd = transition_bootcmd(profile)
+    env_data, report = module.create_image(module.read_input(mtd0), profile_bootcmd)
     device_id = report["source_erase_block_sha256"][:16]
     device_root = WORK / device_id
     output = device_root / "install"
@@ -1835,6 +1884,9 @@ def personalize_transition(
         "TRANSITION_TOTALSIZE": str(metadata["transition_fit_size"]),
         "TRANSITION_FIT_SHA": f"'{metadata['transition_fit_sha']}'",
         "TRANSITION_WINDOW_SHA": f"'{metadata['transition_window_sha']}'",
+        "TRANSITION_WINDOW": str(metadata["transition_window_size"]),
+        "SYSUPGRADE_OFFSET": str(metadata["production_offset"]),
+        "ENV_BOOTCMD": f"'{profile_bootcmd}'",
         "SYSUPGRADE_SIZE": str(metadata["production_size"]),
         "SYSUPGRADE_SHA": f"'{metadata['production_sha']}'",
         "MANUAL_TRANSITION": "1" if manual_transition else "0",
@@ -5929,7 +5981,7 @@ class _RescueTftpServer:
 def _fit_only(image: Path) -> Path:
     """Serve exactly the flattened image, never the bytes appended after it.
 
-    ``transition-bundle.bin`` is a FIT with the production sysupgrade appended,
+    ``nokia-xg-040g-md-an7581-transition-auto.bin`` is a FIT with the production sysupgrade appended,
     so the file on disk is far larger than the image U-Boot should receive.
     """
     head = image.read_bytes()[:8]
@@ -9208,7 +9260,7 @@ def _bootrom_backup_safety_selftest() -> None:
         raise Error("post-restore reboot selftest accepted a U-Boot prompt as reboot evidence")
     if not _uboot_reboot_evidence(b"Secure key does not exist\r\nHWCONF is 1f\r\nAN7583DRAMC V0.6"):
         raise Error("post-restore reboot selftest rejected known AN7583 boot evidence")
-    _verify_recovery_safe_fip(RECOVERY_FIP, "a81dbbe98acb1dabc2afcbf72e73ad87e24efa8dd88e559612a024c28ece920e", "df4803b9f70bb35050555947268fc35d61f1724814a1ea59b480689f056fa123", "AN7581 RC18 RECOVERY_SAFE FIP")
+    _verify_recovery_safe_fip(RECOVERY_FIP, "1952c3a023187305e544b3370ca3dc840e39e39d6ae6edaf67bbd7b46e87962a", "09aeafcfa75880e219e4047a79e402bfead14352098f75ced8412f82c3d45f84", "AN7581 RC32 Fudan-capable RECOVERY_SAFE FIP")
     _verify_recovery_safe_fip(MF_RECOVERY_FIP, "6d97815b5cdf905eff874062f9364ebe41a2a11f4b25944a82aea4fcbdd71e35", "3bb4cf1aa950dd212e1b5781abf55c239ff61326d5ca0c19e9f2c010285f5bb1", "AN7583 RC18 RECOVERY_SAFE FIP")
 
 
@@ -9867,7 +9919,7 @@ def _rc30_install_rescue_selftest() -> None:
             if int.from_bytes(image.read_bytes()[:4], "big") != 0xD00DFEED:
                 raise Error(f"rescue selftest: {image.name} is not a flattened image")
 
-    # transition-bundle.bin carries the production sysupgrade after its FIT; the
+    # the model-named transition-auto payload carries the production sysupgrade after its FIT; the
     # board must receive the image and nothing else.
     trimmed, _ = _rescue_tftp_for_board("nokia,xg-040g-md-ubi")
     declared = int.from_bytes(trimmed.read_bytes()[4:8], "big")
@@ -11484,6 +11536,12 @@ def install_openwrt_wizard(profile: InstallProfile, from_existing_backup: bool =
             backup_validation = _validate_install_backup(profile, backup_dir)
             _print_install_backup_validation(profile, backup_dir, backup_validation)
 
+        if profile.family == "md":
+            raise Error(tr(
+                "RC32-prep1: MD destructive handoff заблокирован: универсальные SkyHigh+Fudan transition/production/FIP payload еще не импортированы и не закреплены SHA256.",
+                "RC32-prep1: MD destructive handoff is blocked: universal SkyHigh+Fudan transition/production/FIP payloads have not yet been imported and SHA256-pinned.",
+            ))
+
         install_dir, info = personalize_transition(profile, backup_dir, manual_transition=manual)
         print(tr(
             f"[OK] Персональный пакет создан: {install_dir}",
@@ -12442,11 +12500,10 @@ def _selftest_mf_transition_release() -> None:
         assert "ubiformat -y" in stage2
     assert "require_mtd ibu 268304384" in md_stage2
     assert "require_mtd ubi 268304384" in mf_stage2
-    assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-preloader.bin").exists()
-    assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-bl31-uboot.fip").exists()
-    assert not (MF_RECOVERY_DIR / "openwrt-airoha-an7583-nokia_xg-040g-mf-ubi-squashfs-sysupgrade.itb").exists()
-    assert not (MF_RECOVERY_DIR / "nokia-xg040gmf-medveflasher-auto-initramfs.itb").exists()
-    assert not (MF_RECOVERY_DIR / "nokia-xg040gmf-medveflasher-manual-initramfs.itb").exists()
+    # RC33 exposes the exact MF production bytes as standalone catalog entries.
+    _verify_exact_artifact(MF_PRODUCTION_PRELOADER, MF_UBI_PRELOADER_SIZE, MF_UBI_PRELOADER_SHA, "AN7583 production preloader")
+    _verify_exact_artifact(MF_PRODUCTION_FIP, MF_UBI_FIP_SIZE, MF_UBI_FIP_SHA, "AN7583 production BL31+U-Boot FIP")
+    _verify_exact_artifact(MF_PRODUCTION_SYSUPGRADE, MF_UBI_SYSUPGRADE_SIZE, MF_UBI_SYSUPGRADE_SHA, "AN7583 production sysupgrade")
     print("shared MD/MF transition installer selftest: PASS")
 
 def _selftest_firmware_capabilities() -> None:

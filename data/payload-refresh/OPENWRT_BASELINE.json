@@ -1,0 +1,88 @@
+{
+  "selected_at": "2026-08-20",
+  "target": "airoha/an7581",
+  "operator_supplied_snapshot": {
+    "version_number": "SNAPSHOT",
+    "version_code": "r35845+3-3bed4be017",
+    "git_commit": "99f690077f2bcf4af3818e5f9d07787bb50ed404",
+    "source_date_epoch": 1786867035,
+    "source_date_utc": "2026-08-16 07:57:15 UTC",
+    "kernel": "6.18.44",
+    "kernel_release": "1",
+    "vermagic": "14f650d089157be953cc0f1813504152",
+    "provenance_files": [
+      "data/payload-refresh/provenance/profiles.json",
+      "data/payload-refresh/provenance/sha256sums",
+      "data/payload-refresh/provenance/openwrt-airoha-an7581.manifest"
+    ]
+  },
+  "verified_inputs": {
+    "transition_source_initramfs": {
+      "file": "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-initramfs-recovery.itb",
+      "size": 8519680,
+      "sha256": "ee88a11e1ff7f232afb8eda38870e65f6625e0d95b97c70ccbe59098bd1ba05a",
+      "release_path": "data/payloads/nokia-xg-040g-md-an7581-upstream-initramfs-recovery.itb"
+    },
+    "production_sysupgrade": {
+      "file": "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb",
+      "size": 10518808,
+      "sha256": "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867",
+      "release_path": "data/payloads/nokia-xg-040g-md-an7581-production-sysupgrade.itb"
+    },
+    "preloader": {
+      "file": "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin",
+      "size": 112195,
+      "sha256": "ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30",
+      "release_path": "data/payloads/nokia-xg-040g-md-an7581-preloader.bin"
+    },
+    "production_fip": {
+      "file": "openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip",
+      "size": 314158,
+      "sha256": "8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1",
+      "fudan_strings_verified": [
+        "Fudan Micro",
+        "FM25G01B",
+        "FM25G02B",
+        "FM25S01A"
+      ],
+      "hardware_status": "HW_VERIFIED_BY_OPERATOR: revived affected Nokia XG-040G-MD Fudan U-Boot path",
+      "release_path": "data/payloads/nokia-xg-040g-md-an7581-production-bl31-uboot.fip"
+    }
+  },
+  "generated_outputs": {
+    "transition_auto": {
+      "file": "data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin",
+      "window_size": 9437184,
+      "fit_size": 8782108,
+      "size": 19955992,
+      "sha256": "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264"
+    },
+    "transition_manual": {
+      "file": "data/payloads/nokia-xg-040g-md-an7581-transition-manual.bin",
+      "window_size": 9437184,
+      "fit_size": 8782236,
+      "size": 9437184,
+      "sha256": "ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512"
+    },
+    "recovery_initramfs": {
+      "file": "data/payloads/nokia-xg-040g-md-an7581-stock-recovery-initramfs.itb",
+      "size": 8635288,
+      "sha256": "7fc9cef7a6abf5b005b0db212c99aaf1a655a9b00a895c02bad43152d982f2dd"
+    },
+    "recovery_safe_fip": {
+      "file": "data/payloads/nokia-xg-040g-md-an7581-uart-recovery-safe-bl31-uboot.fip",
+      "size": 313066,
+      "sha256": "4a94aa502e830b862d09def0c2a021a3d4aad85488fd814e79d01e3ef8fab33a",
+      "source_fip_sha256": "8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1",
+      "status": "STATIC_VERIFIED; exact RECOVERY_SAFE derivative hardware regression pending"
+    }
+  },
+  "policy": "NAND vendor/model is diagnostic only. Destructive authority is board/SoC + exact geometry + live MTD/UBI capability + pinned payload capability + backup/readback/hash gates.",
+  "uboot_fudan_source_provenance": {
+    "local_patch": "data/payload-refresh/100-mtd-spinand-fmsh-add-fm25g0102b.patch",
+    "upstream_pr": 24025,
+    "patch_commit_recorded_in_handoff": "e910ee9630ee579bdebafa942b575ef960a169b1",
+    "binary_authority": "exact production FIP SHA256 + static Fudan strings + operator hardware run",
+    "note": "profiles.json proves the OpenWrt build identity and FIP bytes; the exact local-patch-to-binary source mapping is retained as project provenance rather than inferred beyond supplied evidence."
+  }
+}

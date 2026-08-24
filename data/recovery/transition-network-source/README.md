@@ -26,4 +26,4 @@ policy is for transitional/recovery environments only; it does not claim that
 2.5G must remain disabled in the final production OpenWrt image.
 
 The patch is fail-closed: the tool refuses ambiguous DT topology, a template
-that still contains `lan1`, a non-LZMA transition kernel, or a transition image that no longer fits the fixed 8 MiB transition window. Recovery FITs are standalone and their new exact size is pinned in release metadata.
+that still contains `lan1`, a non-LZMA transition kernel, or a transition image that no longer fits this legacy 8 MiB patcher window. MD RC32 uses `data/payload-refresh/build_md_snapshot_payloads.py` with a 9 MiB window; MF retains the 8 MiB contract. Recovery FITs are standalone and their new exact size is pinned in release metadata.

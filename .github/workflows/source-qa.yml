@@ -16,8 +16,15 @@ jobs:
         run: |
           find data -type f -name '*.py' ! -path '*/vendor/*' -print0 | xargs -0 -n1 python -m py_compile
       - name: Shell syntax
+        # `find | while` exits with the status of the LAST iteration, so a broken
+        # file checked before the end used to pass unnoticed. Every file is now
+        # reported and the step fails if any of them does not parse.
         run: |
-          find . -type f \( -name '*.sh' -o -name '*.sh.in' \) -print0 | while IFS= read -r -d '' f; do sh -n "$f"; done
+          rc=0
+          while IFS= read -r -d '' f; do
+            sh -n "$f" || { echo "SHELL SYNTAX FAIL: $f"; rc=1; }
+          done < <(find . -type f \( -name '*.sh' -o -name '*.sh.in' \) -not -path './.git/*' -print0)
+          exit $rc
       - name: JSON syntax
         run: |
           find data -type f -name '*.json' -print0 | while IFS= read -r -d '' f; do python -m json.tool "$f" >/dev/null; done

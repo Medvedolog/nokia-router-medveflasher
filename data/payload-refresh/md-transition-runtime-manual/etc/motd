@@ -1,0 +1,5 @@
+Nokia Router MedveFlasher manual transition for nokia,xg-040g-md-ubi
+
+No automatic NAND formatting or sysupgrade is scheduled.
+The PC wizard will upload, validate and start the selected image.
+

@@ -5,19 +5,19 @@ export PATH
 umask 077
 
 PRELOADER=/installer/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin
-FIP=/installer/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot-ethfix.fip
-PRELOADER_SHA='6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808'
-FIP_SHA='9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b'
-SYSUPGRADE_SHA='c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03'
+FIP=/installer/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
+PRELOADER_SHA='ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30'
+FIP_SHA='8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1'
+SYSUPGRADE_SHA='b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867'
 DEFAULT_SYSUPGRADE='openwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb'
 EMBEDDED_OPENWRT_SYSUPGRADE='/tmp/nokia-embedded-openwrt-sysupgrade.itb'
-EMBEDDED_OPENWRT_SYSUPGRADE_SIZE=13226255
-EMBEDDED_OPENWRT_SYSUPGRADE_OFFSET=0x8c0000
-EMBEDDED_OPENWRT_SYSUPGRADE_SHA='c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03'
+EMBEDDED_OPENWRT_SYSUPGRADE_SIZE=10518808
+EMBEDDED_OPENWRT_SYSUPGRADE_OFFSET=0x9c0000
+EMBEDDED_OPENWRT_SYSUPGRADE_SHA='b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867'
 BL2_SIZE=131072
 BL2_OFFSET=2048
 FF_2K_SHA='d0ff1b294b5288d1ae1421eadf5b2d38a8752b76d472ff30bed9028e25b1c5b8'
-BL2_EXPECTED_SHA='6f9c928bad500de0339bbfdfa354c17a7ac044f96c913f3a01301971d6cd659d'
+BL2_EXPECTED_SHA='1156abc41c5066aee4d673633306ccfd286e23a2f39f58414014955227c2c83b'
 ZERO_256K_SHA='8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90'
 FF_256K_SHA='3b874d3ba46c638fc3094f8e92fb744ca974893873f8885f54e23760f9b6311b'
 LOG=/tmp/nokia-ubi-installer.log
@@ -170,9 +170,9 @@ check_nand() {
     if [ -r /tmp/NOKIA_NAND_IDENTITY ]; then
         cached="$(cat /tmp/NOKIA_NAND_IDENTITY 2>/dev/null || true)"
         case "$cached" in
-            skyhigh) log '[OK] SkyHigh ML02G300WHI00 identity retained from the pre-format check.'; return 0 ;;
-            fudan) die 'FudanMicro FM25G02B NAND is not supported by this U-Boot' ;;
-            unknown) log 'WARNING: NAND identity remains unknown from the pre-format check.'; return 0 ;;
+            skyhigh) log '[INFO] NAND: SkyHigh ML02G300WHI00 (cached).'; return 0 ;;
+            fudan) log '[INFO] NAND: FudanMicro FM25G01B/FM25G02B (cached).'; return 0 ;;
+            unknown|other) log '[INFO] NAND identity is unknown/other; vendor identity is informational.'; return 0 ;;
         esac
     fi
     evidence="$WORK/nand-identity.txt"
@@ -190,24 +190,22 @@ check_nand() {
         printf '\n--- %s ---\n' "$file" >> "$evidence"
         cat "$file" >> "$evidence" 2>/dev/null || true
     done
-
-    if grep -qi -E 'fm25g02b' "$evidence"; then
+    if grep -qi -E 'fudan|fm25g01b|fm25g02b' "$evidence"; then
         identity=fudan
         printf '%s\n' "$identity" > /tmp/NOKIA_NAND_IDENTITY
-        die 'FudanMicro FM25G02B NAND is not supported by this U-Boot'
-    fi
-    if grep -qi -E 'ml02g300whi00' "$evidence"; then
-        identity=skyhigh
-        printf '%s\n' "$identity" > /tmp/NOKIA_NAND_IDENTITY
-        log '[OK] SkyHigh ML02G300WHI00 explicitly detected.'
+        log '[INFO] NAND: FudanMicro FM25G01B/FM25G02B detected.'
         return 0
     fi
-
+    if grep -qi -E 'skyhigh|ml02g300whi00' "$evidence"; then
+        identity=skyhigh
+        printf '%s\n' "$identity" > /tmp/NOKIA_NAND_IDENTITY
+        log '[INFO] NAND: SkyHigh ML02G300WHI00 detected.'
+        return 0
+    fi
     identity=unknown
     printf '%s\n' "$identity" > /tmp/NOKIA_NAND_IDENTITY
-    log 'WARNING: the stock/mainline kernel did not expose the SPI-NAND model string.'
-    log 'WARNING: Fudan was not detected, but SkyHigh cannot be proven from userspace.'
-    log 'WARNING: unidentified NAND accepted after exact board/MTD/geometry checks; explicit Fudan remains blocked.'
+    log 'WARNING: NAND vendor/model was not identified; identity is informational only.'
+    log 'WARNING: destructive authority remains exact geometry, live MTD/UBI capability, pinned payload hashes and readback verification.'
 }
 
 check_geometry() {
@@ -234,7 +232,7 @@ check_tools() {
 check_payloads() {
     local preloader_size fip_size
     [ -s "$PRELOADER" ] || die 'preloader payload is missing'
-    [ -s "$FIP" ] || die 'ETH-fixed FIP payload is missing'
+    [ -s "$FIP" ] || die 'Fudan-capable production FIP payload is missing'
     [ "$(sha_file "$PRELOADER")" = "$PRELOADER_SHA" ] || die 'preloader SHA256 mismatch'
     [ "$(sha_file "$FIP")" = "$FIP_SHA" ] || die 'FIP SHA256 mismatch'
     preloader_size="$(file_size "$PRELOADER")"
@@ -243,7 +241,7 @@ check_payloads() {
         die 'preloader plus mandatory 0x800 prefix does not fit BL2 partition'
     [ "$fip_size" -le 1048576 ] || die 'FIP exceeds reserved 1 MiB volume'
     log "[OK] preloader size=$preloader_size SHA256=$PRELOADER_SHA"
-    log "[OK] ETH-fixed FIP size=$fip_size SHA256=$FIP_SHA"
+    log "[OK] production FIP size=$fip_size SHA256=$FIP_SHA"
 }
 
 prepare_bl2_image() {
@@ -290,7 +288,7 @@ current_fit_size() {
     hex="$(dd if="$all_ro" bs=1 skip=$((0xc0000 + 4)) count=4 2>/dev/null | hexdump -v -e '4/1 "%02x"')"
     case "$hex" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
     size=$((0x$hex))
-    [ "$size" -gt 1048576 ] && [ "$size" -le 8388608 ] || return 1
+    [ "$size" -gt 1048576 ] && [ "$size" -le 9437184 ] || return 1
     printf '%s\n' "$size"
 }
 
@@ -476,9 +474,9 @@ run_install() {
     log ''
     log 'IRREVERSIBLE: stock NAND from 0x20000 will be formatted, then BL2, FIP and OpenWrt will be flashed.'
     log 'Continue only if a complete verified stock backup is saved on the PC, not only on the Nokia USB drive.'
-    log 'Compatible NAND is mandatory; the blocked model remains unsupported.'
+    log 'Universal SkyHigh+Fudan payload set is pinned; NAND identity is diagnostic only.'
     [ "$(cat /tmp/NOKIA_NAND_IDENTITY 2>/dev/null || echo unknown)" != unknown ] || \
-        log 'WARNING: NAND identity is unknown; exact geometry passed and compatibility remains the operator responsibility.'
+        log 'WARNING: NAND identity is unknown; continuing only because exact geometry and live capability gates passed.'
     log 'Keep stable power. Do not reboot or disconnect power after authorization.'
     if [ "${NOKIA_PC_CONFIRMED_CUSTOM_FLASH:-0}" = 1 ]; then
         log 'PC WIZARD MODE: the selected image was validated and confirmed by the operator.'
@@ -528,7 +526,7 @@ run_install() {
     ubiupdatevol "/dev/${ubi}_2" "$WORK/bosa.bin" || critical 'cannot write bosa'
     ubiupdatevol "/dev/${ubi}_3" "$WORK/ri.bin" || critical 'cannot write ri'
 
-    log '[5/8] Writing Ethernet-fixed FIP and fallback installer FIT.'
+    log '[5/8] Writing Fudan-capable production FIP and fallback installer FIT.'
     ubiupdatevol "/dev/${ubi}_4" "$FIP" || critical 'cannot write FIP'
     ubiupdatevol "/dev/${ubi}_5" "$WORK/installer.itb" || critical 'cannot write fallback installer FIT'
     sync

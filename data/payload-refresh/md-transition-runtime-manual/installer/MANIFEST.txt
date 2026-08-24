@@ -1,0 +1,9 @@
+version=1.0.0-rc32-manual
+family=MD
+board=nokia,xg-040g-md-ubi
+autoflash=disabled
+transition_window=0x900000
+default_sysupgrade_sha256=b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867
+production_fip_sha256=8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1
+nand_identity=informational
+supported_nand=SkyHigh+Fudan

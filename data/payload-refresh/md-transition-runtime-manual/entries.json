@@ -1,0 +1,26 @@
+{
+  "etc/init.d/nokia-manual-ready": {
+    "mode": 33261
+  },
+  "etc/motd": {
+    "mode": 33188
+  },
+  "etc/profile.d/10-nokia-autoflash-status.sh": {
+    "mode": 33261
+  },
+  "etc/rc.d/S99nokia-manual-ready": {
+    "mode": 41471
+  },
+  "installer/MANIFEST.txt": {
+    "mode": 33188
+  },
+  "installer/boot-manual.sh": {
+    "mode": 33261
+  },
+  "installer/install.sh": {
+    "mode": 33261
+  },
+  "lib/preinit/00_nokia_manual_installer": {
+    "mode": 33261
+  }
+}

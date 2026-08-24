@@ -1,5 +1,9 @@
 # Архитектура Nokia Router MedveFlasher
 
+> **RC33 / layout:** firmware payload bytes обеих моделей хранятся только в `data/payloads/`. Имя каждого файла явно содержит модель, SoC и роль; `master.py`, CI, builders и verifier используют только этот canonical путь. RC33 не пересобирает RC32 payload bytes.
+>
+> **RC32 / payload refresh:** MD использует проверенный набор OpenWrt `r35845+3-3bed4be017` от 2026-08-16, kernel `6.18.44`. Fresh transition FIT требует 9 MiB window (`0x900000`), production sysupgrade начинается с bundle offset `0x900000` / NAND offset `0x9c0000`. Permanent FIP `8625d786…540f1` аппаратно поднял Fudan MD; отдельный UART `RECOVERY_SAFE` FIP детерминированно получен из тех же BL31/U-Boot bytes.
+
 Технический разбор для разработчиков и любопытных: как устроена установка, чем
 всё передаётся, и на каких приёмах держится путь без UART. Пользователю это
 читать не обязательно — для установки достаточно [инструкции](INSTRUCTION_RU.md).
@@ -91,8 +95,10 @@ mtd16  all_flash    0x0EBA0000   stock restore span (основа backup/restore
 переменные**, меняя ровно одну — `bootcmd`:
 
 ```text
-flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000
+flash read 0xc0000 0x900000 0x92000000; bootm 0x92000000
 ```
+
+В RC32 это профиль MD: fresh FIT требует 9 MiB. MF-профиль остаётся на `0x800000`; `master.py` подставляет bootcmd по семейству.
 
 Эта команда велит штатному U-Boot прочитать transition-образ из NAND (по
 физическому offset, куда он ляжет после записи в `mtd14`) в RAM по `0x92000000`
@@ -115,7 +121,7 @@ transition OpenWrt из NAND в RAM. UART при этом не нужен — в
 
 ## Ноу-хау: transition-образ со встроенным snapshot
 
-`transition-bundle.bin` — это не просто initramfs. Внутри него FIT-образ
+`nokia-xg-040g-md-an7581-transition-auto.bin` — это не просто initramfs. Внутри него FIT-образ
 OpenWrt initramfs, а в него **встроен полный production sysupgrade** (SNAPSHOT
 OpenWrt с LuCI). Смысл: после того как transition-система поднялась в RAM, ей не
 нужно ничего скачивать — образ постоянной системы уже при ней.
@@ -144,7 +150,7 @@ SHA256, offset в bundle) — в [IMAGE_STATUS_RU.md](IMAGE_STATUS_RU.md).
 
 ## Ноу-хау: ручной режим для экспертов
 
-Помимо `transition-bundle.bin` есть `transition-manual-bundle.bin` — тот же
+Помимо `nokia-xg-040g-md-an7581-transition-auto.bin` есть `nokia-xg-040g-md-an7581-transition-manual.bin` — тот же
 transition initramfs, но **без встроенного sysupgrade** и без автоматического
 этапа 2. Он для тех, кто хочет поставить **свой** образ, а не тот SNAPSHOT, что
 вшит в основной bundle.
@@ -309,7 +315,7 @@ Python, поэтому в файлы сессии оно не копируетс
 при любом расхождении. Это не формальность: проверка сцепляет Python и shell.
 
 1. наличие `VERSION`, `data/VERSION`, `MANIFEST.json` и всех обязательных payload/скриптов; обе версии и `MANIFEST version/build_tag` обязаны совпадать с кодом;
-2. наличие MD recovery preloader/FIP/initramfs, `recovery/mf/OPENWRT_SNAPSHOT.json` и bundled MF stock-recovery FIT;
+2. наличие MD recovery preloader/FIP/initramfs, `payload-refresh/provenance/mf-openwrt-snapshot.json` и bundled MF stock-recovery FIT;
 3. точный размер и SHA256 обоих transition-бандлов;
 4. SHA256 трёх встроенных MD recovery-артефактов и bundled MF stock-recovery FIT, плюс exact size/SHA256 двух bundled AN7583 EVB RAM stages и точное совпадение MF snapshot provenance metadata с закреплёнными в коде именами/размерами/SHA256;
 5. **сверку метаданных внутри `stock-launcher.sh.in` с реальным бандлом** —
@@ -404,10 +410,10 @@ data/MANIFEST.json                   описание релиза: размер
 data/SHA256SUMS                      контрольные суммы всего поставляемого комплекта
 data/VERSION                         версия, из неё берётся APP_VERSION и BUILD_TAG
 
-data/transition-bundle.bin           transition + встроенный SNAPSHOT
-data/transition-manual-bundle.bin    transition без sysupgrade (эксперт)
-data/recovery/                       MD preloader, FIP, recovery FIT
-data/recovery/mf/OPENWRT_SNAPSHOT.json provenance metadata snapshot AN7583; release-pinned EVB preloader/FIP лежат рядом как обязательные bundled payload; recovery flow hardware-confirmed, refreshed exact bytes tracked separately и проверяются локально по exact size/SHA256; runtime download/cache запрещён
+data/payloads/                       единый firmware payload catalog для MD/AN7581 и MF/AN7583
+  nokia-xg-040g-md-an7581-*          MD transition / production / stock recovery / UART recovery
+  nokia-xg-040g-mf-an7583-*          MF transition / production / stock recovery / UART recovery
+data/payload-refresh/provenance/     snapshot/build provenance; firmware bytes здесь не хранятся
 data/recovery/recovery-clients-source/    исходники nokia-tftp / nokia-scp (C, aarch64)
 data/recovery/manual-transition-source/   сборка manual-transition бандла
 

@@ -1,15 +1,19 @@
+> **RC33 / payload layout:** все firmware payload bytes обеих моделей теперь находятся только в `data/payloads/` и имеют единообразные имена `model-soc-role`. Runtime, CI, verifier и manifest переведены на новые пути. Бинарные payload RC32 не пересобирались и сохраняют прежние SHA256; MF production preloader/FIP/sysupgrade дополнительно вынесены как отдельные byte-exact файлы из уже закреплённого transition-набора.
+>
+
+> **RC32 / MD payload refresh:** импортирован и перепроверен snapshot `r35845+3-3bed4be017` от 2026-08-16 (kernel `6.18.44`). Transition переведён на 9 MiB окно; production sysupgrade сохранён byte-for-byte (`b0556660…8d867`). Permanent FIP `8625d786…540f1` содержит Fudan FM25G01B/FM25G02B/FM25S01A и, по аппаратному прогону оператора, поднял проблемный XG-040G-MD с Fudan. NAND vendor теперь только диагностический признак; destructive gate остаётся capability/geometry/MTD/UBI + backup/readback/hash.
 <div align="center">
 
 # 🐻 Nokia Router MedveFlasher
 
 **OpenWrt на Nokia XG-040G-MD / MF — без паяльника, без разборки корпуса и без UART**
 
-`1.0.0-rc31` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
+`1.0.0-rc33` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
 
-[![Release](https://img.shields.io/badge/release-1.0.0--rc31-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
+[![Release](https://img.shields.io/badge/release-1.0.0--rc33-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
 [![Targets](https://img.shields.io/badge/SoC-AN7581%20%7C%20AN7583-8250df?style=flat-square)](#поддерживаемое-железо)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-all--in--UBI%20+%20LuCI-00b5e2?style=flat-square&logo=openwrt&logoColor=white)](https://openwrt.org/)
-[![Python](https://img.shields.io/badge/Python%203-stdlib%20only-3776ab?style=flat-square&logo=python&logoColor=white)](#ноль-зависимостей--ну-почти)
+[![Python](https://img.shields.io/badge/Python%203-pip%20не%20требуется-3776ab?style=flat-square&logo=python&logoColor=white)](#ноль-зависимостей--ну-почти)
 [![UART](https://img.shields.io/badge/UART-не%20требуется-2da44e?style=flat-square)](#что-это-такое)
 [![License](https://img.shields.io/badge/license-MIT-6e7781?style=flat-square)](LICENSE)
 
@@ -53,16 +57,16 @@ MF больше не «экспериментальная боковая вет�
 Обычная установка OpenWrt на это железо требует UART-доступа к U-Boot. Мы обходимся без него нагло: `env_patcher.py` достаёт из вашего же backup штатный U-Boot environment, **сохраняет каждый байт и каждую переменную**, кроме одной, и меняет `bootcmd` на:
 
 ```text
-flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000
+flash read 0xc0000 0x900000 0x92000000; bootm 0x92000000
 ```
 
 Дальше пересчитывается CRC32 (иначе U-Boot справедливо обидится) — и всё. Загрузчик остался тот же самый, просто теперь у него другие планы на утро. Пока NAND не отформатирован, устройство грузится штатно.
 
 ### 📦 Медвефича №2: образ, который несёт систему в себе
 
-`transition-bundle.bin` — это не просто initramfs. Внутрь FIT-образа **вшит полный production sysupgrade**. Смысл прозаичен: когда временная система поднялась в RAM, ей уже ничего не нужно от сети. Ни репозиториев, ни «а скачайте вот это». Всё приехало вместе с ней.
+`nokia-xg-040g-md-an7581-transition-auto.bin` — это не просто initramfs. Внутрь FIT-образа **вшит полный production sysupgrade**. Смысл прозаичен: когда временная система поднялась в RAM, ей уже ничего не нужно от сети. Ни репозиториев, ни «а скачайте вот это». Всё приехало вместе с ней.
 
-Для тех, кто хочет свой образ, есть `transition-manual-bundle.bin` — то же самое, но без вшитого sysupgrade и без автоматического этапа 2. Ваш `.itb` проверяется по FIT magic, размеру, SHA256, `nokia-ubi-installer check` и `sysupgrade -T` — и только потом второе подтверждение запускает форматирование.
+Для тех, кто хочет свой образ, есть `nokia-xg-040g-md-an7581-transition-manual.bin` — то же самое, но без вшитого sysupgrade и без автоматического этапа 2. Ваш `.itb` проверяется по FIT magic, размеру, SHA256, `nokia-ubi-installer check` и `sysupgrade -T` — и только потом второе подтверждение запускает форматирование.
 
 ### 🪂 Медвефича №3: воркер, переживающий стирание собственного rootfs
 
@@ -74,7 +78,7 @@ flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000
 
 ## Ноль зависимостей — ну почти
 
-Весь ПК-скрипт работает на стандартной библиотеке Python 3. Ни `requests`, ни `pyserial`, ни `cryptography`, ни браузерного движка. Причина не в аскетизме: целевой пользователь не разработчик, а каждая внешняя библиотека — это ещё одна команда, которую можно набрать не так, и необходимость интернета ровно в тот момент, когда компьютер уже воткнут кабелем в роутер.
+Весь ПК-скрипт работает на стандартной библиотеке Python 3 — с одной оговоркой, которая приехала вместе с ним: `rich` лежит в `data/vendor/` и подключается оттуда, а не из `pip`. Ни `requests`, ни `pyserial`, ни `cryptography`, ни браузерного движка по-прежнему нет, и устанавливать по-прежнему нечего. Причина не в аскетизме: целевой пользователь не разработчик, а каждая внешняя библиотека — это ещё одна команда, которую можно набрать не так, и необходимость интернета ровно в тот момент, когда компьютер уже воткнут кабелем в роутер.
 
 Поэтому написано своё там, где обычно берут пакет из пакета пакетов:
 

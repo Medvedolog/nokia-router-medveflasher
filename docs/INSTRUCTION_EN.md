@@ -1,6 +1,8 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc31 · **Date:** 18 August 2026
+**Version:** 1.0.0-rc33 · **Date:** 20 August 2026
+
+> **RC33 layout:** all firmware payload bytes live in the single `data/payloads/` directory; runtime and verification use only the new model/SoC/role names. Payload bytes were not rebuilt relative to RC32.
 
 **OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
 **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
@@ -69,7 +71,7 @@ wrong, see [If an error occurs](#if-an-error-occurs).
 
 Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-Release profile for 1.0.0-rc31:
+Release profile for 1.0.0-rc33:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -78,11 +80,11 @@ CAP_RAM_OPENWRT           YES                    YES
 CAP_UBI_FORMAT            YES                    YES
 CAP_UBI_VOLUME_WRITE      YES                    YES
 CAP_BOOTLOADER_REPLACE    EXPERIMENTAL_DISABLED  YES
-CAP_PERMANENT_INSTALL     YES                    YES
-CAP_UART_RECOVERY         RC18_SAFE_PENDING_HW   RC18_SAFE_PENDING_HW
+CAP_PERMANENT_INSTALL     YES_RUNTIME_GATED      YES
+CAP_UART_RECOVERY         YES_RUNTIME_GATED_HW_REGRESSION_PENDING  RC18_SAFE_PENDING_HW
 ```
 
-From RC25 the slot variant no longer changes capability within a family, so the table carries no `(MF-A)` qualifiers: `MF-A-MIRROR`, `MF-B`, `MF-B-MIRROR`, and recognized MD revisions follow the same install policy as the exact variant. `YES` means the family path exists under current live gates, not that a write is already authorized: a full backup, exact stock handoff targets `mtd0/mtd14/mtd15/mtd16`, and the physical NAND/UBI geometry check in the RAM transition all remain mandatory. `RC18_SAFE_PENDING_HW` means the restore path itself is hardware-confirmed while the exact RC18 SAFE FIP bytes await their first regression run.
+From RC25 the slot variant no longer changes capability within a family, so the table carries no `(MF-A)` qualifiers: `MF-A-MIRROR`, `MF-B`, `MF-B-MIRROR`, and recognized MD revisions follow the same install policy as the exact variant. `YES` means the family path exists under current live gates, not that a write is already authorized: a full backup, exact stock handoff targets `mtd0/mtd14/mtd15/mtd16`, and the physical NAND/UBI geometry check in the RAM transition all remain mandatory. For MD, `YES_RUNTIME_GATED` means the current production bytes are pinned while destructive authority still comes only from live capability/geometry/MTD/UBI plus backup/readback gates. The exact RC32 `RECOVERY_SAFE` derivative passed static QA; its separate hardware regression is still pending.
 
 After the startup Web fingerprint, the installation menu selects the MD or MF profile, but that never authorizes writes: live Web/root/MTD/backup gates are repeated inside the shared installer engine. MD and MF expose the same installation actions; board-specific differences live in the profile. Machine-readable release matrix: `data/FIRMWARE_CAPABILITIES.json`.
 
@@ -92,12 +94,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc31.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc33.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc31.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc33.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root
@@ -312,7 +314,7 @@ starts: an explicit `AN7583` is blocked, an explicit `AN7581` is accepted, and a
 undetermined result can be accepted after a warning.
 
 **Item 4** installs a user-selected sysupgrade in expert mode. It skips the
-model check and uses direct TFTP only. A separate `transition-manual-bundle.bin`
+model check and uses direct TFTP only. A separate `nokia-xg-040g-md-an7581-transition-manual.bin`
 is written; after reboot it brings up SSH and waits for the wizard to select an
 `.itb` file from the PC.
 
@@ -443,12 +445,12 @@ second confirmation. Once autonomous flashing starts, do not cut power.
 verifies it by read-back SHA256, writes the personal environment last, and
 reboots into temporary OpenWrt in RAM.
 
-**Normal stage 2.** `transition-bundle.bin` contains the verified production
+**Normal stage 2.** `nokia-xg-040g-md-an7581-transition-auto.bin` contains the verified production
 sysupgrade. Temporary OpenWrt checks the board, NAND, BL2/FIP, and image, formats
 NAND as UBI, creates and verifies the volumes, writes full BL2 **last**, and runs
 `sysupgrade -v -n`.
 
-**Expert stage 2.** `transition-manual-bundle.bin` contains no production
+**Expert stage 2.** `nokia-xg-040g-md-an7581-transition-manual.bin` contains no production
 sysupgrade and performs no automatic formatting. The wizard waits for SSH,
 selects a PC `.itb`, uploads it by TFTP into `/tmp`, verifies SHA256, runs
 `nokia-ubi-installer check` and `sysupgrade -T`, and only after a second
@@ -493,7 +495,7 @@ Do not blindly rerun `fullflash`, `ubiformat`, or a BL2 write.
 
 ## If the installation stops at "starting production OpenWrt"
 
-From 1.0.0-rc31 the wizard keeps a rescue TFTP server up for the whole wait, so
+From 1.0.0-rc32 the wizard keeps a rescue TFTP server up for the whole wait, so
 an interruption here normally repairs itself: unable to boot, U-Boot asks for
 the recovery image once a second, the wizard serves it, and the board comes up.
 A `[RESCUE]` line in the wizard window reports this.
@@ -643,14 +645,14 @@ operate the tcboot web interface.
 
 ### MD and MF support
 
-UART restore classifies the backup by stock geometry and selects a SoC-specific profile. The preloader remains release-pinned, while the RC18 FIP is a **RECOVERY_SAFE derivative** of the ordinary RAM U-Boot.
+UART restore classifies the backup by stock geometry and selects a SoC-specific profile. The preloader remains release-pinned; for MD, RC32 derives the SAFE FIP from the current Fudan-capable production FIP, while MF retains its RC18 SAFE pair.
 
-- **MD / AN7581**: preloader `113447` bytes / `6c3b2339…`; RC18 SAFE FIP `308154` bytes / `2ebcbf3981e3e56b6389521fc2caa3320cf259c08f173b660b29366b9290bcc1`. The unsafe source FIP SHA256 was `9c29cdbc…`.
+- **MD / AN7581**: preloader `112195` bytes / `ed42a1d2…`; RC32 SAFE FIP `313066` bytes / `4a94aa502e830b862d09def0c2a021a3d4aad85488fd814e79d01e3ef8fab33a`. Its source production FIP is `314158` bytes / `8625d786…540f1`, with operator Fudan-MD hardware evidence.
 - **MF / AN7583**: hardware-proven EVB preloader `118322` bytes / `c2ac1c18…`; RC18 SAFE FIP `339010` bytes / `8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2`. The source EVB FIP `339224` / `b2f5f93f…` is retained only as provenance.
 
 Both SAFE BL33 images use `bootdelay=-1`, inert `bootcmd/preboot`, marker `medveflasher_recovery_safe=rc18`, and neutralized persistent environment volume names. After XMODEM, the master does not trust a banner or visual prompt alone: marker + `bootdelay=-1` + inert bootcmd + a fresh nonce are required. NAND erase/write/saveenv remain blocked before that gate.
 
-Ctrl-C after the U-Boot banner is only a secondary safety net. Linux fallback after a missed SAFE prompt is disabled for both families. Exact RC18 SAFE FIP bytes are hardware-regression pending.
+Ctrl-C after the U-Boot banner is only a secondary safety net. Linux fallback after a missed SAFE prompt is disabled for both families. For MD, the exact RC32 SAFE derivative is hardware-regression pending while its production-FIP source has Fudan HW evidence. MF retains the previous RC18 SAFE regression status.
 
 ### What you need
 

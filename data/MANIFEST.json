@@ -1,657 +1,391 @@
 {
-  "version": "1.0.0-rc31",
+  "schema": 2,
+  "version": "1.0.0-rc33",
+  "build_tag": "medveflasher-1.0.0-rc33",
   "product": "Nokia Router MedveFlasher",
-  "supported_device": {
-    "install_model": "Nokia XG-040G-MD / Nokia XG-040G-MF",
-    "install_soc": "Airoha AN7581 / AN7583",
-    "install_exclusive": false,
-    "brick_recovery_models": [
-      {
-        "model": "Nokia XG-040G-MD",
-        "soc": "Airoha AN7581",
-        "status": "hardware-confirmed"
-      },
-      {
-        "model": "Nokia XG-040G-MF",
-        "soc": "Airoha AN7583",
-        "status": "hardware-confirmed through scripted RAM U-Boot mtd list, network setup and 8-MiB TFTP preflight; rc9 replaces unavailable U-Boot hash with CRC32 verification"
-      }
-    ],
-    "policy": "MD and MF use one profile-driven installer engine and one stock launcher template. MF-A permanent writes retain HW-validated backup/live root/geometry/explicit-confirmation gates. MD slot revisions are recognized within a window for backup/evidence; permanent write requires an exact hardware-observed layout.",
-    "stock_layouts": {
-      "md": [
-        "MD-A 003AF6DA/01CC0000/00480000/02400000",
-        "MD-A-MIRROR",
-        "MD-*-REV (recognition only): canonical slot 00480000/02400000 byte-exact, opposite slot within +-2000 (kernel image) and +-10000 (rootfs slot, 10000-aligned) of the MD reference"
-      ],
-      "mf": [
-        "MF-A 003B6CC0/01D00000/00480000/02400000",
-        "MF-A-MIRROR",
-        "MF-B 003B6D40/01D10000/00480000/02400000",
-        "MF-B-MIRROR"
-      ],
-      "md_permanent_write": [
-        "MD-A 003AF6DA/01CC0000/00480000/02400000",
-        "MD-A-MIRROR 00480000/02400000/003AF6DA/01CC0000",
-        "MD-A-MIRROR-REV 00480000/02400000/003AF742/01CB0000 (hardware observed)",
-        "A revision recognized by the window but absent here backs up and does not install"
-      ]
+  "release": {
+    "version": "1.0.0-rc33",
+    "build_tag": "medveflasher-1.0.0-rc33",
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc33",
+    "date": "2026-08-20"
+  },
+  "supported_devices": [
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "Airoha AN7581",
+      "install": true,
+      "uart_stock_recovery": true
     },
-    "normal_stock_backup_models": [
-      "Nokia XG-040G-MD",
-      "Nokia XG-040G-MF"
-    ]
-  },
-  "bundle": {
-    "file": "data/transition-bundle.bin",
-    "size": 21626880,
-    "sha256": "bb421ef151a5ea118f10780042461f594b84925cdc92381dcc4de19f8ac35fb1",
-    "transition_window_size": 8388608,
-    "transition_fit_totalsize": 7673752,
-    "production_offset_in_bundle": 8388608,
-    "production_physical_offset_in_nand": 9175040,
-    "production_size": 13226255,
-    "production_sha256": "c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03",
-    "transition_fit_sha256": "044401c2780f0d21bf8bc2948546834d9611eac9e9374aabf32682d0986e7eba",
-    "transition_window_sha256": "e553811a9593b167bc19fd108bf7c03a620b7d4de5d1c8c716429225acb06f1d",
-    "production_source": "Dark patched Nokia XG-040G-MD UBI snapshot set dated 2026-08-09",
-    "production_revision": "r0-486b4a4",
-    "production_kernel": "6.18.41",
-    "production_luci": "build-time filesystem validation PASS: luci/luci-base/admin modules/rpcd-mod-luci/uhttpd/web assets present",
-    "behavior": "RC19 MD auto transition: Dark 6.18.41 base, raw stock RI NVMEM, LAN1/2.5G disabled, LAN2/LAN3/LAN4 control-plane, and pinned AArch64 nokia-tftp/nokia-scp clients embedded for deterministic transient transport."
-  },
-  "bootcmd": "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000",
-  "stock_web_automation": {
-    "module": "data/stock_web.py",
-    "login": "encrypted-first; explicit one-time plain HTTP retry remains available",
-    "reads": [
-      "device model (ModelName/chipset) — verified before any write",
-      "Telnet username/password/port",
-      "FTP username/password/port",
-      "service state"
-    ],
-    "writes": [
-      "enable Telnet",
-      "enable Samba only for USB/Samba",
-      "enable FTP only for USB/FTP"
-    ],
-    "ftp_enable": "POST /storage.cgi?ftp_config with ftp_en=true and fresh CSRF; re-read state and verify actual configured port",
-    "safety": "device_status.cgi remains the preferred model confirmation; manual choices 2/3 use a best-effort UID-0 Telnet probe that rejects explicit AN/EN7583, accepts AN/EN7581, and permits inconclusive output after one warning; explicit expert choice 4 skips the model probe and forces direct TFTP after an explicit y/N confirmation; passwords remain in process memory, registered secrets are filtered from session logs, and secrets are not passed through argv"
-  },
-  "transports": {
-    "usb_samba": "supported; Windows UNC authentication uses useradmin plus the already collected device/label password through WNetAddConnection2W; the secret stays in process memory, with one Nokia-share/IPC$ stale-session retry",
-    "usb_ftp": "supported with automatic FTP enablement and /mnt/USB chroot path resolution",
-    "direct_tftp": {
-      "supported": true,
-      "default_udp_port": 1069,
-      "block_size": 4096,
-      "retry_policy": "reuse one healthy UID-0 Telnet session across successful partitions; reconnect only after timeout, socket/Telnet error, or missing completion marker; validated files retained; Windows UDP connection-reset suppression",
-      "supported_models": [
-        "MD",
-        "MF"
-      ],
-      "mf_read_policy": "read /dev/mtd*ro; canonical mtd16 hashes the exact Nokia-side gzip stream via tee/FIFO/sha256sum (FIFO created by mkfifo or mknod) and requires equality with the received PC .gz SHA256; no fatal second full live-NAND read; final stock-restore validation remains mandatory"
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "Airoha AN7583",
+      "install": true,
+      "uart_stock_recovery": true
     }
+  ],
+  "payload_layout": {
+    "directory": "data/payloads",
+    "naming": "nokia-xg-040g-<md|mf>-<soc>-<role>.<ext>",
+    "policy": "All firmware/transition/boot/recovery payload bytes are stored in this one directory. Source code, provenance metadata and recovery helper executables are not firmware payloads."
   },
-  "telnet": {
-    "device": "MD install path; MD/MF credential inventory, stock audit, and normal stock backup",
-    "reconnect_policy": "up to 3 independent root sessions, each with up to 3 fresh TCP login attempts",
-    "root_gate": "id -u must return 0"
-  },
-  "recovery": {
-    "preloader": {
-      "file": "data/recovery/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin",
-      "sha256": "6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808"
+  "payload_catalog": [
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "transition-auto",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin",
+      "size": 19955992,
+      "sha256": "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264"
     },
-    "fip": {
-      "file": "data/recovery/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot-ethfix.fip",
-      "sha256": "2ebcbf3981e3e56b6389521fc2caa3320cf259c08f173b660b29366b9290bcc1",
-      "size": 308154,
-      "source_sha256": "9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b",
-      "derivation": "RC18 RECOVERY_SAFE BL33; BL31 unchanged; bootdelay=-1; inert bootcmd/preboot; persistent UBI env names neutralized; prompt+marker+nonce capability gate; BL33 LZMA-Alone is encoded with known uncompressed size and no EOPM (LZMA1EXT), matching Airoha source representation"
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "transition-manual",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-transition-manual.bin",
+      "size": 9437184,
+      "sha256": "ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512"
     },
-    "initramfs": {
-      "file": "data/recovery/nokia-xg040gmd-stock-recovery-initramfs.itb",
-      "size": 11285480,
-      "sha256": "c40c87354566eb44fc933c1ce6c0cd9c81227b525243c67c9932b80a656d01c6",
-      "source_file": "openwrt_airoha_an7581_nokia_xg_040g_md_ubi_initramfs_recovery.itb",
-      "source_size": 11141120,
-      "source_sha256": "a8e24301925c4a7b120594b61aa679bac835b26ef70736fd28a69c9029ffda3b",
-      "source": "Dark patched Nokia XG-040G-MD UBI snapshot set dated 2026-08-09",
-      "transform": "Dark kernel/rootfs retained; recovery DT fail-closed (all_flash RO, BL2 writable, mtd2=ibu without linux,ubi auto-attach, raw ri-stock MAC NVMEM, LAN1/2.5G disabled). RC19 additionally embeds pinned AArch64 nokia-tftp/nokia-scp and starts transient Dropbear with -B.",
-      "purpose": "RAM stock recovery + read-only BootROM backup environment; LAN2/LAN3/LAN4 only. PC is the TFTP server; nokia-tftp is the router-side GET client."
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "production-sysupgrade",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-production-sysupgrade.itb",
+      "size": 10518808,
+      "sha256": "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867",
+      "status": "PINNED_RUNTIME_GATED"
     },
-    "verification": {
-      "ram_uboot": "RC18 requires stable prompt + medveflasher_recovery_safe=rc18 + bootdelay=-1 + inert bootcmd + nonce before any NAND capability. After TFTP, PC source blocks are SHA256-pinned; U-Boot verifies RAM and readback with CRC32.",
-      "ram_recovery_ssh": "RC19: exact recovery MTD identity + deterministic blank-root SSH; restore order is nokia-tftp -> TCP/nc -> SCP only before mtd write. Once mtd write is issued, disconnect becomes WRITE_STATE_UNKNOWN and all automatic transport fallback is blocked. IBU/readback first, BL2/readback last, then monolithic all_flash SHA256."
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "preloader",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-preloader.bin",
+      "size": 112195,
+      "sha256": "ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30",
+      "status": "PINNED"
     },
-    "profiles": {
-      "md_an7581": {
-        "preloader": {
-          "file": "data/recovery/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin",
-          "sha256": "6c3b2339d036340396730a13adfe35c0d2a4dddedeffb6f9965a24e0c7908808"
-        },
-        "fip": {
-          "file": "data/recovery/openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot-ethfix.fip",
-          "sha256": "2ebcbf3981e3e56b6389521fc2caa3320cf259c08f173b660b29366b9290bcc1",
-          "size": 308154,
-          "source_sha256": "9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b",
-          "derivation": "RC18 RECOVERY_SAFE BL33; BL31 unchanged; bootdelay=-1; inert bootcmd/preboot; persistent UBI env names neutralized; prompt+marker+nonce capability gate; BL33 LZMA-Alone is encoded with known uncompressed size and no EOPM (LZMA1EXT), matching Airoha source representation"
-        },
-        "initramfs": {
-          "file": "data/recovery/nokia-xg040gmd-stock-recovery-initramfs.itb",
-          "size": 11285480,
-          "sha256": "c40c87354566eb44fc933c1ce6c0cd9c81227b525243c67c9932b80a656d01c6",
-          "source_file": "openwrt_airoha_an7581_nokia_xg_040g_md_ubi_initramfs_recovery.itb",
-          "source_size": 11141120,
-          "source_sha256": "a8e24301925c4a7b120594b61aa679bac835b26ef70736fd28a69c9029ffda3b",
-          "source": "Dark patched Nokia XG-040G-MD UBI snapshot set dated 2026-08-09",
-          "transform": "kernel/rootfs retained with build-time network-policy patch; recovery DT is fail-closed: all_flash RO, BL2 writable only in RAM recovery, mtd2=ibu without linux,ubi auto-attach, raw ri-stock MAC NVMEM, and unstable LAN1/2.5G disabled; LAN2/LAN3/LAN4 only",
-          "purpose": "RAM stock recovery + read-only BootROM backup environment; use LAN2/LAN3/LAN4 only, never LAN1/2.5G"
-        },
-        "linux_fallback": false,
-        "backup_initramfs": {
-          "file": "data/recovery/nokia-xg040gmd-stock-recovery-initramfs.itb",
-          "size": 11285480,
-          "sha256": "c40c87354566eb44fc933c1ce6c0cd9c81227b525243c67c9932b80a656d01c6",
-          "source_file": "openwrt_airoha_an7581_nokia_xg_040g_md_ubi_initramfs_recovery.itb",
-          "source_size": 11141120,
-          "source_sha256": "a8e24301925c4a7b120594b61aa679bac835b26ef70736fd28a69c9029ffda3b",
-          "source": "Dark patched Nokia XG-040G-MD UBI snapshot set dated 2026-08-09",
-          "transform": "kernel/rootfs retained with build-time network-policy patch; recovery DT is fail-closed: all_flash RO, BL2 writable only in RAM recovery, mtd2=ibu without linux,ubi auto-attach, raw ri-stock MAC NVMEM, and unstable LAN1/2.5G disabled; LAN2/LAN3/LAN4 only",
-          "purpose": "RAM stock recovery + read-only BootROM backup environment; use LAN2/LAN3/LAN4 only, never LAN1/2.5G"
-        }
-      },
-      "mf_an7583": {
-        "source": "https://downloads.openwrt.org/snapshots/targets/airoha/an7583/",
-        "version_buildinfo": null,
-        "metadata": "data/recovery/mf/OPENWRT_SNAPSHOT.json",
-        "delivery": "preloader/FIP: bundled in full rollup and verified locally by exact size+SHA256; no runtime download/cache fallback; stock-recovery initramfs: bundled in kit",
-        "preloader": {
-          "file": "data/recovery/mf/openwrt-airoha-an7583-airoha_an7583-evb-preloader.bin",
-          "size": 118322,
-          "sha256": "c2ac1c183b18bc34632c958dfe0bd1dfdfb607f090e39c41126956641893362f"
-        },
-        "fip": {
-          "file": "data/recovery/mf/openwrt-airoha-an7583-airoha_an7583-evb-bl31-uboot.fip",
-          "size": 339010,
-          "sha256": "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2",
-          "source_sha256": "b2f5f93f52afbaf539fe362267b13a91fb0a3a22c4ea770f2fc984dece176c12",
-          "derivation": "RC18 RECOVERY_SAFE BL33; BL31 unchanged; bootdelay=-1; inert bootcmd/preboot; persistent UBI env names neutralized; prompt+marker+nonce capability gate; BL33 LZMA-Alone is encoded with known uncompressed size and no EOPM (LZMA1EXT), matching Airoha source representation"
-        },
-        "initramfs": {
-          "file": "data/recovery/mf/nokia-xg040gmf-stock-recovery-initramfs.itb",
-          "size": 7479380,
-          "sha256": "da1f3cb376ad599a2d8ffea3d03abeb02bdec1114aad06d6ad049885914b045f",
-          "purpose": "RAM stock recovery + read-only BootROM backup environment; use LAN2/LAN3/LAN4 only, never LAN1/2.5G"
-        },
-        "linux_fallback": false,
-        "write_path": "BootROM XMODEM -> RAM U-Boot -> TFTP stock IBU chunks -> U-Boot CRC32 readback -> stock BL2 last",
-        "network_policy": "BootROM/XMODEM stage preparation is fully offline; Ethernet/TFTP is first required after RAM U-Boot is captured for stock restore data.",
-        "version_buildinfo_sha256": "521491a1df2354adc44c345c26780cd50db5a23da6874fa731fe505ddfc9b447",
-        "snapshot_index_observed": "2026-08-11 20:42:16 UTC (OpenWrt index screenshot supplied with release inputs)",
-        "stage_pair_status": "Base preloader/FIP source pair has prior HW evidence; exact RC18 RECOVERY_SAFE FIP bytes are HW-regression pending."
-      }
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "production-bl31-uboot",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-production-bl31-uboot.fip",
+      "size": 314158,
+      "sha256": "8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1",
+      "status": "HW_VERIFIED_BY_OPERATOR_FUDAN_MD"
     },
-    "legacy_top_level_profile": "md_an7581",
-    "mf_stock_recovery_initramfs": {
-      "file": "data/recovery/mf/nokia-xg040gmf-stock-recovery-initramfs.itb",
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "stock-recovery-initramfs",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-stock-recovery-initramfs.itb",
+      "size": 8635288,
+      "sha256": "7fc9cef7a6abf5b005b0db212c99aaf1a655a9b00a895c02bad43152d982f2dd",
+      "status": "STATIC_QA_PASS"
+    },
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "uart-recovery-safe-bl31-uboot",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-uart-recovery-safe-bl31-uboot.fip",
+      "size": 313066,
+      "sha256": "4a94aa502e830b862d09def0c2a021a3d4aad85488fd814e79d01e3ef8fab33a",
+      "status": "STATIC_QA_PASS_HW_REGRESSION_PENDING"
+    },
+    {
+      "family": "md",
+      "model": "Nokia XG-040G-MD",
+      "soc": "AN7581",
+      "role": "upstream-build-input",
+      "file": "data/payloads/nokia-xg-040g-md-an7581-upstream-initramfs-recovery.itb",
+      "size": 8519680,
+      "sha256": "ee88a11e1ff7f232afb8eda38870e65f6625e0d95b97c70ccbe59098bd1ba05a",
+      "status": "PINNED_SOURCE"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "transition-auto",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-transition-auto.bin",
+      "size": 17694720,
+      "sha256": "9ec21e8f7454011e91f251a0784c0c57b815c39e4defe74cc031eb270e6a9aa3"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "transition-manual",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-transition-manual.bin",
+      "size": 8388608,
+      "sha256": "120488c7b2c26cc3a036a12de1572e207d506e54ea98a4fd94de96f08301a733"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "production-sysupgrade",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-production-sysupgrade.itb",
+      "size": 9191705,
+      "sha256": "db881b8053cdfbdf49dd6c2336dee3ddfa489966456a3e75556c5a0f6cc7663b",
+      "status": "HW_CONFIRMED_LINEAGE"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "production-preloader",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-production-preloader.bin",
+      "size": 118333,
+      "sha256": "778d10a65276085b70bec005248fc87ec208b43b0239502f15ade20fe528301e",
+      "status": "EXTRACTED_FROM_PINNED_TRANSITION_SHA256_VERIFIED"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "production-bl31-uboot",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-production-bl31-uboot.fip",
+      "size": 319568,
+      "sha256": "99b6c20a7cb46a56692eaeb9f086f70fc7e987a641396653e6a8fb5c03e07aa7",
+      "status": "HW_CONFIRMED_LINEAGE"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "stock-recovery-initramfs",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-stock-recovery-initramfs.itb",
       "size": 7479380,
       "sha256": "da1f3cb376ad599a2d8ffea3d03abeb02bdec1114aad06d6ad049885914b045f",
-      "layout": "all_flash=0x10000000 RO, bl2=0x20000 writable in RAM recovery, ibu=0x0ffe0000 without linux,ubi auto-attach, ri-stock=0x05200000/0x00040000 RO",
-      "backup_tools": "BusyBox dd/gzip/tftp/sha256sum/ifconfig via rdinit=/bin/sh UART shell; Dropbear/SSH are not used for BootROM backup",
-      "purpose": "RAM stock recovery + read-only BootROM backup environment; use LAN2/LAN3/LAN4 only, never LAN1/2.5G"
+      "status": "STATIC_QA_PASS"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "uart-preloader",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-uart-preloader.bin",
+      "size": 118322,
+      "sha256": "c2ac1c183b18bc34632c958dfe0bd1dfdfb607f090e39c41126956641893362f",
+      "status": "HW_CONFIRMED_BASE_STAGE"
+    },
+    {
+      "family": "mf",
+      "model": "Nokia XG-040G-MF",
+      "soc": "AN7583",
+      "role": "uart-recovery-safe-bl31-uboot",
+      "file": "data/payloads/nokia-xg-040g-mf-an7583-uart-recovery-safe-bl31-uboot.fip",
+      "size": 339010,
+      "sha256": "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2",
+      "status": "STATIC_QA_PASS_HW_REGRESSION_PENDING"
     }
-  },
-  "documentation": {
-    "instruction_ru": "docs/INSTRUCTION_RU.md",
-    "instruction_en": "docs/INSTRUCTION_EN.md",
-    "image_status_ru": "docs/IMAGE_STATUS_RU.md",
-    "image_status_en": "docs/IMAGE_STATUS_EN.md",
-    "changelog_ru": "docs/CHANGELOG_RU.md",
-    "changelog_en": "docs/CHANGELOG.md",
-    "architecture_ru": "docs/ARCHITECTURE_RU.md",
-    "architecture_en": "docs/ARCHITECTURE_EN.md",
-    "openwrt_todo_ru": "docs/OPENWRT_TODO_RU.md",
-    "openwrt_todo_en": "docs/OPENWRT_TODO_EN.md",
-    "rc17fix2_md_itb_audit": "docs/RC17FIX2_MD_ITB_AUDIT.txt",
-    "rc17fix5_transition_network_patcher": "data/recovery/transition-network-source/patch_transition_network.py",
-    "rc17fix5_network_policy_source": "data/recovery/transition-network-source/",
-    "rc17fix5_dtb_evidence": "docs/RC17FIX5_DTB_EVIDENCE.md",
-    "rc17fix5_dtb_evidence_dir": "docs/dtb-evidence/",
-    "rc17fix5_network_policy_evidence": "docs/RC17FIX5_NETWORK_POLICY_EVIDENCE.md",
-    "rc17fix5_network_preflight": "docs/RC17FIX5_TRANSITION_NETWORK_PREFLIGHT.txt",
-    "rc18_recovery_safe_uboot": "docs/RC18_RECOVERY_SAFE_UBOOT.md",
-    "rc18_recovery_safe_patcher": "data/recovery/recovery-safe-uboot-source/patch_recovery_safe_fip.py",
-    "rc18_recovery_safe_source": "data/recovery/recovery-safe-uboot-source/",
-    "rc18_recovery_safe_evidence": "docs/RC18_RECOVERY_SAFE_EVIDENCE.txt",
-    "readme_ru": "docs/README_RU.md",
-    "readme_en": "docs/README_EN.md",
-    "release_assets_required": "docs/RELEASE_ASSETS.md"
-  },
-  "release_layout": {
-    "root_files": [
-      "VERSION",
-      "START.cmd",
-      "START.sh",
-      "RESTORE_STOCK.cmd",
-      "RESTORE_STOCK.sh"
-    ],
-    "master": "data/master.py",
-    "checksums": "data/SHA256SUMS",
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc31"
-  },
-  "hardware_status": {
-    "md_transition_install": "historical MD destructive architecture is hardware-confirmed, but RC17fix2 auto/manual transition bytes are newly rebased to Dark Linux 6.18.41/r0-486b4a4 and require hardware regression before exact-byte confirmation",
-    "md_full_brick_stock_restore": "historical recovery path hardware-confirmed, but RC18 replaces the unsafe ordinary RAM U-Boot with a new RECOVERY_SAFE FIP; exact RC18 FIP bytes are hardware-regression pending",
-    "md_production_to_ram_recovery": "hardware-confirmed",
-    "automatic_ftp_enable": "code/synthetic validation; controlled hardware confirmation still required if not yet reported",
-    "manual_telnet_model_gate": "MD evidence confirmed from stock dmesg/U-Boot logs; choices 2/3 are best-effort and expert choice 4 intentionally bypasses the probe; MF rejection remains to be hardware-confirmed",
-    "manual_transition_custom_sysupgrade": "historical manual transition workflow has hardware evidence, but RC17fix2 rebuilds MD/MF manual transition network bootstrap/readiness; exact RC17fix2 manual path requires hardware regression before destructive use",
-    "mf_full_brick_stock_restore": "RC16 base EVB pair/full stock restore HW CONFIRMED; RC18 keeps the preloader but replaces BL33 with a RECOVERY_SAFE-derived FIP, so exact RC18 FIP bytes are hardware-regression pending",
-    "mf_recovery_policy": "AN7583 direct RAM-U-Boot restore uses CRC32 readback verification in rc9; bundled MF RAM recovery is enabled for the separate read-only BootROM backup path.",
-    "bootrom_read_only_backup": "rc10fix2/rc11 SSH-free rdinit=/bin/sh UART-shell capture architecture; BootROM/XMODEM/RAM-U-Boot/recovery Linux stages were hardware-observed, but the first complete UART-shell NAND capture is still pending",
-    "mf_stock_audit": "hardware-confirmed on live XG-040G-MF: stock Web credentials, Telnet, user_ftp UID/GID 0, BusyBox su, MF-A layout, mtd16=0x0EBA0000, erase=0x20000, and /proc/mtd==sysfs",
-    "mf_normal_stock_backup": "hardware-confirmed end-to-end on live XG-040G-MF MF-A in rc12fix: Web/Telnet/root, /proc==sysfs, /dev/mtd*ro, TFTP PUT mtd0..mtd16, router gzip-stream SHA256 == PC file SHA256 for mtd16, restore-validator PASS, BACKUP_HW_VALIDATED created",
-    "startup_model_detection": "rc12 hardware-confirmed on XG-040G-MF: read-only stock-Web ModelName/chipset fingerprint selected MF/AN7583DT; manual fallback remains unverified and never substitutes for backup/write gates",
-    "mf_permanent_install": "HW CONFIRMED on RC16 2026-08-12: stock MF-A -> transition -> checks -> [1/8]..[8/8] including BL2-last -> production sysupgrade successful -> nokia,xg-040g-mf-ubi boot PASS",
-    "md_rc16_dark_payloads": "static/FIT/DT/SHA/LuCI validation PASS; hardware regression pending",
-    "mf_rc16_payloads": "Uname UBI production set hardware-booted successfully in RC16; refreshed EVB BootROM stages c2ac1c18/b2f5f93f hardware-confirmed on 2026-08-12",
-    "md_rc17fix2_transition_payloads": "static/FIT/DT/SHA provenance PASS: production sysupgrade and stock recovery are Dark-derived; auto/manual transitions now also use Dark Linux 6.18.41/r0-486b4a4; exact new transition bytes require hardware regression",
-    "mf_rc17fix2_transition_network": "hardware diagnosis on MF manual transition showed only loopback, switch/ethernet EPROBE_DEFER, raw stock RI MAC 50:88:c7:04:85:a0 at 0x05200000+0x3e, and no RI-backed NVMEM provider. RC17fix2 moves transition MAC NVMEM to read-only raw stock RI for both auto/manual. Static QA PASS; hardware regression pending.",
-    "rc17fix5_transition_recovery_network_policy": "STATIC PASS: in all MD/MF auto/manual transition and stock-recovery FITs, the 2500base-x LAN1 MAC is disabled, its OpenWrt netdev/NVMEM binding is removed, and initramfs 02_network uses LAN2/LAN3/LAN4 only. Production sysupgrade images are unchanged. Exact rc17fix5 transition/recovery bytes remain HW-regression pending.",
-    "rc17fix5_hardware_gate": "Before destructive [1/8], hardware regression must use LAN2/LAN3/LAN4 only and confirm manual/recovery network readiness without ethernet/switch deferred probes. LAN1/2.5G must not be used even if physical link is observed.",
-    "rc18_recovery_safe_fips": "STATIC PASS: BL31 byte-identical to pinned sources; BL33 default env has bootdelay=-1/inert bootcmd+preboot/SAFE marker; persistent UBI env volume names neutralized; master requires SAFE marker + nonce before NAND capability. HW regression pending.",
-    "rc19_restore_transport": "STATIC_QA_PENDING_HW: pinned AArch64 clients + no-post-write-fallback state machine; exact RC19 recovery FIT bytes need hardware regression."
-  },
-  "build_tag": "medveflasher-1.0.0-rc31",
-  "operator_progress": {
-    "telnet_console": "command echo and protocol markers suppressed; preflight runtime messages retained",
-    "transition_stage": "content-identified transition state/step telemetry over HTTP/SSH/Telnet control channels; raw TCP port state is NET-DEBUG only and never proves transition or production identity",
-    "diagnostics": "complete raw /tmp/nokia-autoflash.log appended to PC session logs only",
-    "usb_network_transfers": "FTP and Samba backup/package copies show overall byte percentage, a 20-cell bar, MiB transferred, average speed, file count, and current file; output is line-oriented for clean LATEST.log diagnostics"
+  ],
+  "bundle": {
+    "file": "data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin",
+    "size": 19955992,
+    "sha256": "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264",
+    "mode": "auto",
+    "transition_window_size": 9437184,
+    "transition_fit_totalsize": 8782108,
+    "transition_fit_sha256": "2a85487dbedf4ddb8df43683e7887f10df3afc887d204831d82832ba255581ba",
+    "transition_window_sha256": "992f6f4bf0d1464345b2e4cd9e827d7a68b40c09703247851332a6fd89521629",
+    "behavior": "Fresh OpenWrt 6.18.44 transition; 9 MiB window; LAN2/LAN3/LAN4 control-plane; SkyHigh+Fudan-capable production path; runtime capability-gated.",
+    "production_offset_in_bundle": 9437184,
+    "production_size": 10518808,
+    "production_sha256": "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867"
   },
   "manual_bundle": {
-    "file": "data/transition-manual-bundle.bin",
-    "size": 8388608,
-    "sha256": "394461e5cb65eddef7615967603c08b14811c07168293bdc93a630f823aaf85f",
-    "transition_window_size": 8388608,
-    "transition_fit_totalsize": 7673848,
-    "production_offset_in_bundle": 8388608,
-    "production_physical_offset_in_nand": null,
+    "file": "data/payloads/nokia-xg-040g-md-an7581-transition-manual.bin",
+    "size": 9437184,
+    "sha256": "ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512",
+    "mode": "manual",
+    "transition_window_size": 9437184,
+    "transition_fit_totalsize": 8782236,
+    "transition_fit_sha256": "d8e3bb7eb9eae095a3c1b4cbe88af1a06736b3ec7652bcfccfa17bf2d6788869",
+    "transition_window_sha256": "ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512",
+    "behavior": "Manual MD transition; fresh 6.18.44 kernel/modules; no embedded production sysupgrade.",
+    "production_offset_in_bundle": 9437184,
     "production_size": 0,
-    "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "behavior": "RC19 MD manual transition: persistent READY monitor, raw stock RI NVMEM, LAN1/2.5G disabled, LAN2/LAN3/LAN4 only, Dropbear -B, and pinned AArch64 nokia-tftp/nokia-scp clients.",
-    "transition_fit_sha256": "92cf0c94d423c7291b8bae982f248345faeb07773f249c075feb0c0f1b0103b8",
-    "transition_window_sha256": "394461e5cb65eddef7615967603c08b14811c07168293bdc93a630f823aaf85f"
-  },
-  "expert_custom_sysupgrade": {
-    "access_menu_item": 4,
-    "transport": "TFTP when available -> legacy SCP -> raw SSH stdin fallback; all pre-validation writes stay in /tmp",
-    "transition": "separate manual FIT with no autoflash service",
-    "validation": [
-      "local FIT magic/size/SHA256",
-      "remote size + SHA256 after transport",
-      "nokia-ubi-installer check",
-      "sysupgrade -T"
-    ],
-    "destructive_gate": "second y/N confirmation after remote validation",
-    "fallback": "manual transition FIT stored in UBI fit volume",
-    "ssh_control": "short readiness probe with deterministic passwordless minimal-auth path, one short BatchMode fallback, surfaced diagnostics, and reuse of the proven auth mode for upload/check/fullflash/monitoring"
-  },
-  "release": {
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc31",
-    "version": "1.0.0-rc31",
-    "build_tag": "medveflasher-1.0.0-rc31"
-  },
-  "bootrom_backup": {
-    "menu_item": "Backup submenu -> read-only BootROM/UART backup",
-    "models": [
-      "Nokia XG-040G-MD / AN7581",
-      "Nokia XG-040G-MF / AN7583"
-    ],
-    "write_policy": "read-only; before any MTD read the RC18 RECOVERY_SAFE prompt/marker/nonce gate must pass; no erase/write/saveenv is issued in backup mode",
-    "bootstrap": "BootROM -> XMODEM SoC-specific preloader -> XMODEM RC18 RECOVERY_SAFE BL31/U-Boot -> stable prompt + SAFE marker + nonce -> TFTP model-specific recovery FIT -> rdinit=/bin/sh minimal RAM shell",
-    "capture": "UART controls BusyBox rdinit shell; first STOCK_RESTORE_SPAN=0x0EBA0000 bytes are read in 8-MiB chunks and gzip/TFTP PUT to the PC; SSH is not used",
-    "verification": "before NAND read: model/all_flash/applets/TFTP probe; each saved chunk is checked for decompressed size and SHA256 against a second independent NAND read calculated by dd|sha256sum over UART shell",
-    "resume": "a retained gzip + .raw.sha256 is skipped only after its SHA256 is recalculated from the current NAND and matches; stale chunks from another device are recaptured",
-    "output": "conventional MedveFlasher mtd0..mtd16 backup plus canonical mtd16, bosa/ri convenience files, SHA256SUMS.txt and BOOTROM_BACKUP.json",
-    "slot_views": "mtd2..mtd5 are normalized to accepted layout A because raw NSB data contain overlapping vendor views and BootROM capture has no stock /proc/mtd; mtd14/mtd15/mtd16 are authoritative raw data",
-    "hardware_status": "Base BootROM/XMODEM paths have prior hardware evidence; exact RC18 RECOVERY_SAFE FIP bytes are HW-regression pending."
-  },
-  "rc10": {
-    "menu": "grouped flashing/recovery, backup, credentials/users, preparation/continuation",
-    "credentials": "console-only secrets; device Web/Telnet/FTP/Samba plus /etc/passwd privilege inventory; no dictionary guessing",
-    "stage2_label": "transition OpenWrt already in RAM -> UBI format -> sysupgrade flash -> first-boot monitoring",
-    "bootrom_backup_ssh": "retry full SSH handshake after TCP/22 to tolerate early Dropbear startup race",
-    "telecomadmin_policy": "do not invent a password; report the account only when actually present in device /etc/passwd"
-  },
-  "rc10fix": {
-    "credential_web_transport": "retries RemoteDisconnected/reset/URL transport failures and forces Connection: close",
-    "encrypted_to_plain_fallback": "when explicit plain compatibility is enabled, encrypted transport close no longer prevents plain login attempt",
-    "credential_wizard_failure_policy": "Web failure is non-fatal; hardcoded defaults remain visible and optional read-only Telnet /etc/passwd fallback is offered"
-  },
-  "release_notes": {
-    "rc10fix2_bootrom_backup": "BootROM backup no longer depends on SSH/Dropbear. The recovery FIT is booted with rdinit=/bin/sh; UART controls a minimal BusyBox shell, pseudo filesystems and eth0 are configured explicitly, and all_flash is transferred read-only by gzip/TFTP with a second NAND SHA256 read per chunk.",
-    "rc17fix2_transition_network_dark_md": "MF auto/manual transition DT now sources MAC NVMEM from raw stock RI before format; MF auto progress gets a real LAN/SSH control path. MD audit found auto/manual transition still on old 6.18.39 r35573; both are now rebased to the selected Dark 6.18.41 r0-486b4a4 initramfs subset. Production sysupgrade and stock-recovery payload provenance remain pinned.",
-    "rc17fix5_lan_safety_policy": "Transition/recovery-only policy: do not use LAN1/2.5G. Use LAN2/LAN3/LAN4. The build-time patcher enforces this in both DT and initramfs network defaults for MD/MF auto/manual transition and stock-recovery FITs."
-  },
-  "diagnostics": {
-    "stock_audit_script": "data/diagnostics/mf-stock-audit.sh",
-    "stock_audit_parser": "data/diagnostics/mf_audit_parse.py",
-    "root_gate": "PC-side interactive Telnet/su; capability accepted only after id -u = 0",
-    "geometry_policy": "restore span from stock mtd16/all_flash plus sysfs cross-check; physical NAND from NAND-driver/dmesg evidence, never from stock mtd0",
-    "upgrade_scan": "discovered files are never executed; parser accepts write verbs only from AUDIT_HIT markers; rc12 also records metadata and bounded text/strings evidence",
-    "mf_install_policy": "rc14fix6 enables MF-A permanent all-in-UBI install after HW-validated backup/live gates and explicit confirmation; auto and custom sysupgrade modes are included; BL2 is written last."
-  },
-  "rc11": {
-    "purpose": "diagnostic MD/MF build; no new MF permanent-write path",
-    "constant_rename": "STOCK_ALL_FLASH_SIZE -> STOCK_RESTORE_SPAN; PHYSICAL_NAND_SIZE is a reference only",
-    "mf_layouts": [
-      "MF-A",
-      "MF-A-MIRROR",
-      "MF-B",
-      "MF-B-MIRROR"
-    ],
-    "stock_audit": "Web credentials -> Telnet -> interactive su -> proven UID0 -> MTD/sysfs/NAND/UBI/users/read-primitives/upgrade inventory",
-    "capability_policy": "capabilities derive from explicit audit evidence; CAP_PERMANENT_INSTALL remains disabled",
-    "bootrom_safety": "runtime destructive-command firewall plus selftest-safety subcommand",
-    "review_rollup": "separate no-large-payloads archive omits large ITB and transition BIN payloads and is explicitly not runnable for flashing/recovery"
-  },
-  "rc12": {
-    "purpose": "enable read-only normal MF stock backup after live rc11 audit; keep permanent MF installation disabled",
-    "startup_detection": "language -> read-only stock Web model/chipset fingerprint; manual fallback is UNVERIFIED UI state only",
-    "mf_backup_gate": "Web MF -> Telnet -> proven UID0 -> MF-A/MF-B -> fixed geometry -> /proc/sysfs match -> /dev/mtd*ro -> gzip/TFTP",
-    "mf_mtd16_verification": "historical rc12 behavior: PC raw SHA256 had to match a second independent /dev/mtd16ro read; live hardware showed this is invalid as a fatal gate because mutable stock areas change between reads",
-    "final_backup_validator": "verify_stock_restore_backup before BACKUP_COMPLETE/BACKUP_HW_VALIDATED",
-    "audit_parser": "Model/SoC fallback to CAPABILITY-EVIDENCE; deeper read-only NAND/UBI and upgrade utility inventory",
-    "permanent_mf_install": "disabled"
-  },
-  "rc12fix": {
-    "purpose": "fix live-stock MF TFTP backup verification without weakening the final restore validator",
-    "hardware_evidence": "rc12 live MF run transferred all mtd0..mtd16 successfully; only the second full mtd16 read differed after the capture",
-    "mf_mtd16_transport_verification": "one gzip stream is split by tee; FIFO (mkfifo or mknod) -> Nokia sha256sum and stdout -> TFTP PUT; router compressed-stream SHA256 must equal the received PC .gz SHA256",
-    "resume": "retained MF mtd16 requires gzip integrity, exact raw size, and mtd16_transport_sha256.txt matching the local compressed file; current live NAND is not re-read for equality",
-    "progress": "adaptive B/KiB/MiB/GiB units, [1/17]..[17/17], explicit receive-start line, raw+compressed completion sizes",
-    "final_backup_validator": "verify_stock_restore_backup before BACKUP_COMPLETE/BACKUP_HW_VALIDATED",
-    "permanent_mf_install": "disabled"
-  },
-  "firmware_capabilities": {
-    "file": "data/FIRMWARE_CAPABILITIES.json",
-    "policy": "capabilities explain release/live gates; MF-A destructive permanent install remains HW-confirmed from RC16, while RC17fix2 changes transition network/bootstrap bytes and therefore requires a transition hardware regression without weakening backup/root/geometry/confirmation gates",
-    "mf_a_transition": "HW_CONFIRMED_MF_A_DESTRUCTIVE_RC16; RC17FIX2_NETWORK_CONTROL_PLANE_DELTA_STATICALLY_VALIDATED_HW_REGRESSION_PENDING"
-  },
-  "rc13": {
-    "purpose": "surface release-level and live firmware capabilities without enabling a new MF destructive path",
-    "mf_backup_status": "MF-A normal stock TFTP backup is hardware-confirmed end-to-end; CAP_FULL_BACKUP=YES for live MF-A after root/geometry gates",
-    "firmware_menu": "adds a read-only capability probe and blocks MD-only install entries when startup Web fingerprint verified an MF device",
-    "capabilities": [
-      "CAP_WEB_CREDS",
-      "CAP_TELNET",
-      "CAP_STOCK_ROOT",
-      "CAP_MTD_GEOMETRY",
-      "CAP_FULL_BACKUP",
-      "CAP_RAM_OPENWRT",
-      "CAP_UBI_FORMAT",
-      "CAP_UBI_VOLUME_WRITE",
-      "CAP_BOOTLOADER_REPLACE",
-      "CAP_PERMANENT_INSTALL",
-      "CAP_UART_RECOVERY"
-    ],
-    "mf_write_policy": "CAP_UBI_FORMAT, CAP_UBI_VOLUME_WRITE, CAP_BOOTLOADER_REPLACE and CAP_PERMANENT_INSTALL remain BLOCKED until hardware-confirmed write sequences exist",
-    "md_regression_policy": "existing hardware-confirmed MD bootcmd+transition+UBI install path is unchanged"
+    "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "mf_transition_bundle": {
-    "file": "data/mf-transition-bundle.bin",
-    "mode": "auto",
+    "file": "data/payloads/nokia-xg-040g-mf-an7583-transition-auto.bin",
     "size": 17694720,
     "sha256": "9ec21e8f7454011e91f251a0784c0c57b815c39e4defe74cc031eb270e6a9aa3",
+    "mode": "auto",
+    "transition_window_size": 8388608,
     "transition_fit_totalsize": 7702044,
     "transition_fit_sha256": "d32997998f0e74bf6063982b4a20da656048ea9c3443df61fd297cb512cdf341",
     "transition_window_sha256": "5ef8e2c1d433c5e3d695517de40f0dd093a100487e9f0cee1a07f23ff4b17215",
+    "behavior": "Hardware-confirmed MF all-in-UBI transition lineage; 8 MiB window; LAN2/LAN3/LAN4 control-plane.",
     "production_offset_in_bundle": 8388608,
     "production_size": 9191705,
-    "production_sha256": "db881b8053cdfbdf49dd6c2336dee3ddfa489966456a3e75556c5a0f6cc7663b",
-    "behavior": "RC19 MF-A auto transition: raw stock RI NVMEM, LAN1/2.5G disabled, LAN2/LAN3/LAN4 only, and pinned AArch64 nokia-tftp/nokia-scp clients; destructive installer remains autonomous.",
-    "transition_fit_delivery": "embedded byte-for-byte at offset 0 in the ready transition bundle; no standalone duplicate is shipped"
-  },
-  "rc14": {
-    "date": "2026-08-11",
-    "scope": "MF-A stock-to-RAM transition hardware gate only",
-    "changes": [
-      "adds CAP_MF_TRANSITION_BOOT",
-      "adds data/mf-transition-bundle.bin from the pinned MF recovery initramfs padded to 8 MiB",
-      "adds dedicated stock-mf-transition-launcher.sh.in isolated from the established MD launcher",
-      "requires BACKUP_HW_VALIDATED family=mf variant=MF-A plus live Web/Telnet UID0 and MF-A /proc==sysfs",
-      "writes/reads back mtd14 first; rechecks source env; writes only mtd0 offset 0x60000 length 0x20000 last",
-      "reboots to pinned MF initramfs and verifies RAM OpenWrt by LuCI or SSH identity when possible",
-      "does not invoke ubiformat, ubi create/write, sysupgrade, or bootloader replacement",
-      "MF stage2 remains blocked"
-    ]
+    "production_sha256": "db881b8053cdfbdf49dd6c2336dee3ddfa489966456a3e75556c5a0f6cc7663b"
   },
   "mf_manual_transition_bundle": {
-    "file": "data/mf-transition-manual-bundle.bin",
-    "mode": "manual",
+    "file": "data/payloads/nokia-xg-040g-mf-an7583-transition-manual.bin",
     "size": 8388608,
     "sha256": "120488c7b2c26cc3a036a12de1572e207d506e54ea98a4fd94de96f08301a733",
+    "mode": "manual",
+    "transition_window_size": 8388608,
     "transition_fit_totalsize": 7702276,
     "transition_fit_sha256": "f8a8d9a1ce867029ab8b74e497910678530fc1cf54ac0211b174089e8459240c",
+    "transition_window_sha256": "120488c7b2c26cc3a036a12de1572e207d506e54ea98a4fd94de96f08301a733",
+    "behavior": "Manual MF transition; 8 MiB window; no embedded production sysupgrade.",
+    "production_offset_in_bundle": 8388608,
     "production_size": 0,
-    "production_sha256": "",
-    "behavior": "RC19 MF-A manual transition: persistent READY monitor, raw stock RI NVMEM, LAN1/2.5G disabled, LAN2/LAN3/LAN4 only, Dropbear -B, and pinned AArch64 nokia-tftp/nokia-scp clients.",
-    "transition_fit_delivery": "embedded byte-for-byte at offset 0 in the ready transition bundle; no standalone duplicate is shipped",
-    "transition_window_sha256": "120488c7b2c26cc3a036a12de1572e207d506e54ea98a4fd94de96f08301a733"
+    "production_sha256": ""
   },
-  "mf_ubi_build_set": {
-    "target": "airoha/an7583",
-    "board": "nokia,xg-040g-mf-ubi",
-    "revision": "r35705+25-71f139a048",
-    "kernel": "6.18.41",
-    "preloader": {
-      "size": 118333,
-      "sha256": "778d10a65276085b70bec005248fc87ec208b43b0239502f15ade20fe528301e",
-      "delivery": "embedded in transition initramfs /installer payload; standalone runtime duplicate is not shipped"
-    },
-    "fip": {
-      "size": 319568,
-      "sha256": "99b6c20a7cb46a56692eaeb9f086f70fc7e987a641396653e6a8fb5c03e07aa7",
-      "delivery": "embedded in transition initramfs /installer payload; standalone runtime duplicate is not shipped"
-    },
-    "sysupgrade": {
-      "size": 9191705,
-      "sha256": "db881b8053cdfbdf49dd6c2336dee3ddfa489966456a3e75556c5a0f6cc7663b",
-      "delivery": "embedded byte-for-byte at offset 0x800000 in data/mf-transition-bundle.bin; source artifact is not duplicated in runtime rollup"
-    },
-    "bl2_partition_sha256": "c655479c4d14b4f6d1a7a5eb8de80bfb204b3cdf46c9e48a5c6f3aea22d98131"
+  "bootcmd": {
+    "md": "flash read 0xc0000 0x900000 0x92000000; bootm 0x92000000",
+    "mf": "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
   },
-  "rc14fix": {
-    "date": "2026-08-11",
-    "scope": "MF-A permanent all-in-UBI install enabled, mirroring established MD transition architecture",
-    "gates": [
-      "VERIFIED MF Web fingerprint",
-      "live Telnet UID0",
-      "live MF-A /proc==sysfs",
-      "BACKUP_HW_VALIDATED family=mf variant=MF-A",
-      "pinned transition/FIP/preloader/sysupgrade SHA256",
-      "explicit CONFIRM FORMAT AND FLASH"
-    ],
-    "auto_path": "stock -> mtd14 transition bundle + personalized env -> MF initramfs -> ubiformat -> UBI volumes 0..5 -> bosa/ri/FIP/fallback FIT readback -> BL2 last -> bundled sysupgrade -> production OpenWrt",
-    "manual_path": "same transition without embedded sysupgrade -> custom image transfer -> transition sysupgrade -T/check -> operator confirm -> all-in-UBI migration -> custom sysupgrade",
-    "fallback": "hardware-confirmed UART/BootROM full stock restore"
-  },
-  "rc14fix2": {
-    "date": "2026-08-11",
-    "scope": "MF-A permanent installer hotfix: RAM BusyBox shell compatibility and operator UI/log cleanup",
-    "changes": [
-      "staged RAM BusyBox worker uses sh instead of requiring the ash applet",
-      "MF operator menu is device-specific and no longer lists MD-only actions",
-      "preflight details are hidden from operator console/LATEST and retained only in timestamped session diagnostics",
-      "raw Telnet protocol/command markers are hidden on normal and failure paths",
-      "destructive gates and write ordering are unchanged"
-    ],
-    "write_order": "transition/readback -> personalized env last -> reboot -> UBI migration/readbacks -> BL2 last",
-    "fallback": "hardware-confirmed UART/BootROM full stock restore"
-  },
-  "rc14fix3": {
-    "date": "2026-08-11",
-    "scope": "shared profile-driven MD/MF installer engine, synchronized menus, and duplicate MF payload removal",
-    "installer_engine": "one install_openwrt_wizard(profile, from_existing_backup) orchestration for MD and MF; no separate MF orchestration function",
-    "launcher": "one data/stock-launcher.sh.in personalized with PROFILE_FAMILY/profile bundle/env metadata",
-    "menu": "MD and MF expose the same install/restore/capability structure; auto/custom sysupgrade submenu is identical",
-    "payload_policy": [
-      "MF auto bundle already embeds the transition FIT and production sysupgrade",
-      "MF manual bundle already embeds the manual transition FIT",
-      "standalone duplicate MF auto/manual transition FIT and standalone MF sysupgrade are not shipped",
-      "no runtime repacking is performed",
-      "MF production preloader/FIP are embedded inside the transition initramfs installer payload and are not duplicated as standalone runtime files"
-    ],
-    "safety": "MF-A BACKUP_HW_VALIDATED + live VERIFIED MF + UID0 + MF-A /proc==sysfs + explicit confirmation; destructive ordering/readback/BL2-last unchanged"
-  },
-  "rc14fix5": {
-    "date": "2026-08-11",
-    "scope": "hardware hotfix for MF vendor BusyBox lacking the awk applet in the detached RAM worker",
-    "root_cause": "initial symptom was failure on the first required applet (awk); rc14fix6 proved the underlying issue was parsing vendor BusyBox no-argument output as an applet list, not reliable evidence that awk itself was absent",
-    "changes": [
-      "removed awk from staged BusyBox applet requirements",
-      "replaced all RAM-worker rbb awk hash parsing with POSIX shell parameter expansion",
-      "stock-side preflight may still use standalone awk before NAND writes",
-      "no payload repacking or destructive sequencing changes"
-    ],
-    "safety": "failure remained before erase/write; rc14fix6 supersedes the applet-list diagnosis while preserving UART FIFO isolation, BACKUP_HW_VALIDATED/live MF-A gates, readback checks and BL2-last"
-  },
-  "rc14fix6": {
-    "date": "2026-08-11",
-    "scope": "RAM BusyBox applet-probe correction for vendor BusyBox output differences",
-    "root_cause": "the previous self-test parsed BusyBox no-argument text as a compiled applet list; stock MF does not provide the expected Currently defined functions section, so the test failed on the first requested applet regardless of actual availability",
-    "changes": [
-      "replaced textual applet-list parsing with direct staged-BusyBox <applet> --help probes",
-      "redirected probe stdin from /dev/null so a vendor applet cannot stall the pre-write self-test",
-      "removed stale comments claiming no-argument BusyBox output is a portable applet inventory",
-      "no payload repacking, installer-engine, NAND-write, readback, or BL2-order changes"
-    ],
-    "safety": "all probes run before erase/write; UART FIFO isolation, BACKUP_HW_VALIDATED/live MF-A gates, explicit confirmation, readbacks and BL2-last are unchanged"
-  },
-  "rc15": {
-    "date": "2026-08-11",
-    "scope": "MF transition-only writable BL2 + pinned BL2 last-write gate + common MD/MF live stage2 monitor",
-    "hardware_evidence_from_rc14fix6": [
-      "stock MF-A transition write/readback and reboot succeeded",
-      "MF UBI initramfs booted Linux 6.18.41",
-      "UBI format/attach, canonical volume creation, bosa/ri/FIP/fallback FIT writes and readback SHA256 succeeded",
-      "BL2-last failed because the transition FIT DT marked bl2 read-only; production sysupgrade was therefore intentionally not started"
-    ],
-    "changes": [
-      "MF auto and manual transition DTs remove read-only from bl2 and carry an explicit medveflasher,transition-writable-bl2 marker; production sysupgrade bytes are unchanged and retain production DT protection",
-      "transition installer requires the marker and MTD_WRITEABLE before formatting UBI",
-      "immediately before BL2-last, installer rechecks exact pinned preloader/FIP sizes+SHA256 and complete BL2 partition SHA256/prefix/payload",
-      "auto transition Dropbear permits deterministic blank-password BatchMode probes, matching manual transition semantics",
-      "shared MD/MF run_stage2 reads progress by SSH with Telnet fallback; FAILED is surfaced immediately instead of continuing generic wait output"
-    ],
-    "safety": "BACKUP_HW_VALIDATED/live MF-A gates, explicit confirmation, UBI readback and BL2-last ordering remain fail-closed; writable BL2 exists only in transition DT."
-  },
-  "md_dark_build_set": {
-    "date": "2026-08-09",
-    "builder": "Dark user patched OpenWrt snapshot set",
-    "target": "airoha/an7581",
-    "board": "nokia,xg-040g-md-ubi",
-    "revision": "r0-486b4a4",
-    "kernel": "6.18.41",
-    "patches": [
-      "712e5c4 airoha: an7581: describe EN8811H PHY by ID on Nokia XG-040G-MD",
-      "eea3fe8 airoha: an7583: fix EN8811H PHY binding on Nokia XG-040G-MF",
-      "fd2f44c uboot-airoha: add support for FM25G0102B SPI NAND",
-      "bf92e04 airoha: npu: load the firmware without the sysfs fallback",
-      "c992f10 airoha: an7581: reserve NPU Wi-Fi regions only on Wi-Fi boards"
-    ],
-    "selected_source_initramfs": {
-      "size": 11141120,
-      "sha256": "a8e24301925c4a7b120594b61aa679bac835b26ef70736fd28a69c9029ffda3b"
-    },
-    "medveflasher_recovery_initramfs": {
-      "size": 11285480,
-      "sha256": "c40c87354566eb44fc933c1ce6c0cd9c81227b525243c67c9932b80a656d01c6",
-      "derivation": "Dark kernel/rootfs + RC19 recovery DT/network/transport patch: all_flash RO, BL2 writable, IBU no auto-attach, raw ri-stock MAC NVMEM, 2.5G MAC disabled, LAN2-LAN4 only, pinned nokia-tftp/nokia-scp, Dropbear -B"
-    },
-    "sysupgrade": {
-      "size": 13226255,
-      "sha256": "c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03",
-      "delivery": "embedded byte-for-byte at offset 0x800000 in data/transition-bundle.bin",
-      "luci_verified": true
-    },
-    "production_bootloader_policy": "MD BootROM recovery preloader/FIP remain the previously hardware-confirmed MedveFlasher recovery pair; the supplied Dark UBI preloader/FIP are not substituted into the UART recovery chain in RC16.",
-    "transition_kernel_policy": "RC17fix2: MD auto/manual transition rebased to the selected Dark Linux 6.18.41 / r0-486b4a4 kernel+userland subset; recovery and production were already Dark-derived.",
-    "transition_network_policy": "Pre-format transition DT uses raw stock RI at 0x05200000 as NVMEM. RC17fix5 additionally disables LAN1/2.5G and removes it from initramfs UCI defaults; all transition/recovery control-plane traffic must use LAN2/LAN3/LAN4."
-  },
-  "rc16": {
-    "date": "2026-08-12",
-    "scope": "MD Dark 2026-08-09 payload refresh + rc15fix metadata consistency hardening; MF Uname production set retained",
-    "changes": [
-      "MD embedded production sysupgrade replaced with Dark patched LuCI-enabled build c6f06fcf... size 13226255; automatic transition FIT repinned/rebuilt for that exact image",
-      "MD stock-recovery initramfs now derives kernel/rootfs from the operator-selected Dark image a8e24301..., while MedveFlasher rebuilds only the recovery DT to preserve all_flash RO, writable BL2 only in recovery, and ibu restore geometry",
-      "MF production UBI initramfs/sysupgrade/preloader/FIP remain the Uname build set; no cross-builder substitution",
-      "MF EVB BootROM preloader/FIP remain bundled/offline pins c2ac1c18.../b2f5f93f...; refreshed exact-byte pair was HW-confirmed by the RC16 full stock-restore run on 2026-08-12",
-      "fixed stale rc15fix MF transition_fit_totalsize metadata and added verify_kit regression checks binding MANIFEST size/SHA/FIT totalsize/FIT SHA/production metadata to all four shipped transition bundles",
-      "removed the unused stale MF snapshot-initramfs pin from the active recovery metadata contract",
-      "RC15 transition writable-BL2/production read-only-BL2, pinned BL2 provenance gate, BL2-last order and stage2 SSH/Telnet/FAILED handling are retained unchanged for MF",
-      "build QA validates LuCI presence in both MD Dark and MF Uname production sysupgrade files before release packaging"
-    ],
-    "safety": "No runtime recovery downloads. Destructive writes remain behind backup/profile/layout gates; IBU/UBI is verified before BL2, and BL2 is written last."
-  },
-  "rc17": {
-    "date": "2026-08-12",
-    "scope": "control-plane/monitoring/restore UX hardening; production payload bytes unchanged from RC16",
-    "auto_transition": {
-      "md": {
-        "bundle_size": 21626880,
-        "bundle_sha256": "47631c782b75aef2a13082a4da2ffcee687742d8d743ed357a5753236b640962",
-        "fit_totalsize": 7509716,
-        "fit_sha256": "4a898c31dc69065decc267d5ede173530932079d5fc75344a417cf4e5946d392",
-        "window_sha256": "e25b1156b945c66516bedccf420efe1c835b80d7701ce9d7201fc1d178cbb4b1"
+  "build_sets": {
+    "md_an7581": {
+      "target": "airoha/an7581",
+      "board": "nokia,xg-040g-md-ubi",
+      "revision": "r35845+3-3bed4be017",
+      "git_commit": "99f690077f2bcf4af3818e5f9d07787bb50ed404",
+      "kernel": "6.18.44",
+      "source_date_epoch": 1786867035,
+      "preloader": {
+        "file": "data/payloads/nokia-xg-040g-md-an7581-preloader.bin",
+        "size": 112195,
+        "sha256": "ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30",
+        "role": "preloader",
+        "status": "PINNED"
       },
-      "mf": {
-        "bundle_size": 17694720,
-        "bundle_sha256": "988fb4aa960441aa7176672c23181a373f54690fcc9a63389124adc8c7a6a188",
-        "fit_totalsize": 7649300,
-        "fit_sha256": "be365db3dabf68eb4e5cad56087e5af241f8fdb2c24c8936bf427d57cf7e469c",
-        "window_sha256": "325bef457b611e81cf4a45885fb82c91b96ad1c9de14ae40d4adcf82461b3428"
+      "production_fip": {
+        "file": "data/payloads/nokia-xg-040g-md-an7581-production-bl31-uboot.fip",
+        "size": 314158,
+        "sha256": "8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1",
+        "role": "production-bl31-uboot",
+        "status": "HW_VERIFIED_BY_OPERATOR_FUDAN_MD"
+      },
+      "sysupgrade": {
+        "file": "data/payloads/nokia-xg-040g-md-an7581-production-sysupgrade.itb",
+        "size": 10518808,
+        "sha256": "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867",
+        "role": "production-sysupgrade",
+        "status": "PINNED_RUNTIME_GATED"
+      },
+      "upstream_initramfs": {
+        "file": "data/payloads/nokia-xg-040g-md-an7581-upstream-initramfs-recovery.itb",
+        "size": 8519680,
+        "sha256": "ee88a11e1ff7f232afb8eda38870e65f6625e0d95b97c70ccbe59098bd1ba05a",
+        "role": "upstream-build-input",
+        "status": "PINNED_SOURCE"
+      },
+      "build_report": "data/payload-refresh/provenance/md-rc32-build-report.json",
+      "profiles_json": "data/payload-refresh/provenance/profiles.json"
+    },
+    "mf_an7583": {
+      "target": "airoha/an7583",
+      "board": "nokia,xg-040g-mf-ubi",
+      "revision": "r35705+25-71f139a048",
+      "kernel": "6.18.41",
+      "preloader": {
+        "file": "data/payloads/nokia-xg-040g-mf-an7583-production-preloader.bin",
+        "size": 118333,
+        "sha256": "778d10a65276085b70bec005248fc87ec208b43b0239502f15ade20fe528301e",
+        "role": "production-preloader",
+        "status": "EXTRACTED_FROM_PINNED_TRANSITION_SHA256_VERIFIED"
+      },
+      "production_fip": {
+        "file": "data/payloads/nokia-xg-040g-mf-an7583-production-bl31-uboot.fip",
+        "size": 319568,
+        "sha256": "99b6c20a7cb46a56692eaeb9f086f70fc7e987a641396653e6a8fb5c03e07aa7",
+        "role": "production-bl31-uboot",
+        "status": "HW_CONFIRMED_LINEAGE"
+      },
+      "sysupgrade": {
+        "file": "data/payloads/nokia-xg-040g-mf-an7583-production-sysupgrade.itb",
+        "size": 9191705,
+        "sha256": "db881b8053cdfbdf49dd6c2336dee3ddfa489966456a3e75556c5a0f6cc7663b",
+        "role": "production-sysupgrade",
+        "status": "HW_CONFIRMED_LINEAGE"
+      },
+      "bl2_partition_sha256": "c655479c4d14b4f6d1a7a5eb8de80bfb204b3cdf46c9e48a5c6f3aea22d98131"
+    }
+  },
+  "recovery": {
+    "policy": "Stable RECOVERY_SAFE prompt + marker/nonce before NAND capability; exact geometry/MTD checks; stock body first and BL2 last; per-range readback verification. NAND vendor identity is informational only.",
+    "profiles": {
+      "md_an7581": {
+        "preloader": {
+          "file": "data/payloads/nokia-xg-040g-md-an7581-preloader.bin",
+          "size": 112195,
+          "sha256": "ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30",
+          "role": "preloader",
+          "status": "PINNED"
+        },
+        "fip": {
+          "file": "data/payloads/nokia-xg-040g-md-an7581-uart-recovery-safe-bl31-uboot.fip",
+          "size": 313066,
+          "sha256": "4a94aa502e830b862d09def0c2a021a3d4aad85488fd814e79d01e3ef8fab33a",
+          "role": "uart-recovery-safe-bl31-uboot",
+          "status": "STATIC_QA_PASS_HW_REGRESSION_PENDING"
+        },
+        "initramfs": {
+          "file": "data/payloads/nokia-xg-040g-md-an7581-stock-recovery-initramfs.itb",
+          "size": 8635288,
+          "sha256": "7fc9cef7a6abf5b005b0db212c99aaf1a655a9b00a895c02bad43152d982f2dd",
+          "role": "stock-recovery-initramfs",
+          "status": "STATIC_QA_PASS"
+        },
+        "production_fip_source": {
+          "file": "data/payloads/nokia-xg-040g-md-an7581-production-bl31-uboot.fip",
+          "size": 314158,
+          "sha256": "8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1",
+          "role": "production-bl31-uboot",
+          "status": "HW_VERIFIED_BY_OPERATOR_FUDAN_MD"
+        },
+        "linux_fallback": false
+      },
+      "mf_an7583": {
+        "preloader": {
+          "file": "data/payloads/nokia-xg-040g-mf-an7583-uart-preloader.bin",
+          "size": 118322,
+          "sha256": "c2ac1c183b18bc34632c958dfe0bd1dfdfb607f090e39c41126956641893362f",
+          "role": "uart-preloader",
+          "status": "HW_CONFIRMED_BASE_STAGE"
+        },
+        "fip": {
+          "file": "data/payloads/nokia-xg-040g-mf-an7583-uart-recovery-safe-bl31-uboot.fip",
+          "size": 339010,
+          "sha256": "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2",
+          "role": "uart-recovery-safe-bl31-uboot",
+          "status": "STATIC_QA_PASS_HW_REGRESSION_PENDING"
+        },
+        "initramfs": {
+          "file": "data/payloads/nokia-xg-040g-mf-an7583-stock-recovery-initramfs.itb",
+          "size": 7479380,
+          "sha256": "da1f3cb376ad599a2d8ffea3d03abeb02bdec1114aad06d6ad049885914b045f",
+          "role": "stock-recovery-initramfs",
+          "status": "STATIC_QA_PASS"
+        },
+        "metadata": "data/payload-refresh/provenance/mf-openwrt-snapshot.json",
+        "linux_fallback": false
       }
     },
-    "changes": [
-      "content-identified ASCII transition status/log endpoint over HTTP; SSH/Telnet remain fallback transports",
-      "raw TCP 22/23/80/443 reachability is debug telemetry only and never identifies transition or production state",
-      "one controlled pre-destructive power-cycle suggestion is allowed only after transition SAFE_TO_POWER_CYCLE=1 and before any destructive step 1/8 is observed",
-      "Restore Stock is family-bound to the validated MD/MF backup and accepts the matching production/recovery board layout",
-      "START exposes brick BootROM/UART recovery before stock Web autodetection",
-      "on-device shell payloads are ASCII/English; operator RU/EN localization remains PC-side",
-      "strong production success requires expected board, canonical UBI volumes, OpenWrt release identity, and LuCI HTTP content validation",
-      "auto-transition FIT root/kernel release identity updated to RC17; destructive installer command logic is unchanged apart from ASCII control-plane/web-log mirroring"
-    ],
-    "hardware_evidence": "RC16 2026-08-12 HW-confirmed MF refreshed EVB recovery and permanent install end-to-end. RC17 auto-transition binary delta is statically validated and awaits a regression run on hardware.",
-    "payload_policy": "MD Dark production sysupgrade and MF Uname production UBI/bootloader payload bytes are unchanged from RC16."
+    "safe_fip": {
+      "marker": "rc18",
+      "bootcmd": "echo RECOVERY_SAFE_RC18",
+      "md_safe_fip_sha256": "4a94aa502e830b862d09def0c2a021a3d4aad85488fd814e79d01e3ef8fab33a",
+      "md_source_fip_sha256": "8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1",
+      "mf_safe_fip_sha256": "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2",
+      "mf_source_fip_sha256": "b2f5f93f52afbaf539fe362267b13a91fb0a3a22c4ea770f2fc984dece176c12"
+    }
   },
-  "rc17fix4_recovery_dt_hardening": "Both MD and MF stock-recovery FITs now use recovery-specific DTs: all_flash RO, BL2 writable only in RAM recovery, mtd2=ibu with no linux,ubi pre-restore auto-attach, and Ethernet MAC NVMEM bound to read-only raw stock RI at 0x05200000+0x3e. MF recovery no longer reuses its production DT. Manual readiness removes the approximate /proc/net/route fallback; optional content-based HTTP status is consumed before SSH becomes usable.",
-  "validation": {
-    "rc17fix4_manual_initramfs_preflight": "docs/RC17FIX4_MANUAL_INITRAMFS_PREFLIGHT.txt",
-    "rc17fix5_dtb_evidence": "docs/RC17FIX5_DTB_EVIDENCE.md",
-    "rc17fix5_dtb_evidence_dir": "docs/dtb-evidence/",
-    "rc17fix5_network_policy_evidence": "docs/RC17FIX5_NETWORK_POLICY_EVIDENCE.md",
-    "rc17fix5_network_preflight": "docs/RC17FIX5_TRANSITION_NETWORK_PREFLIGHT.txt",
-    "rc18_recovery_safe_uboot": "docs/RC18_RECOVERY_SAFE_UBOOT.md",
-    "rc18_recovery_safe_evidence": "docs/RC18_RECOVERY_SAFE_EVIDENCE.txt"
-  },
-  "rc17fix5_lan_safety_policy": "LAN1/2.5G is intentionally excluded from every MD/MF transition and RAM-recovery environment because it is unstable for recovery/control-plane use. Build-time patcher disables the 2500base-x MAC in DT, removes its netdev/NVMEM binding, and replaces initramfs 02_network so only LAN2/LAN3/LAN4 are used. Production sysupgrade images remain unchanged.",
-  "rc18_recovery_safe_uboot": {
-    "policy": "U-Boot banner != prompt. Recovery BL33 must be non-autobooting by construction; persistent NAND environment cannot override safe defaults; PC must prove SAFE marker + nonce before NAND capability.",
-    "md_source_fip_sha256": "9c29cdbcc3f9c00070cc72262c83dcd1eb212f89f6fb84806ad8657eadec2b8b",
-    "md_safe_fip_sha256": "2ebcbf3981e3e56b6389521fc2caa3320cf259c08f173b660b29366b9290bcc1",
-    "mf_source_fip_sha256": "b2f5f93f52afbaf539fe362267b13a91fb0a3a22c4ea770f2fc984dece176c12",
-    "mf_safe_fip_sha256": "8bfe8870e44923a463a3ed66c8b1906214f5c820fd8c15865c63430185de8bb2",
-    "hardware_status": "exact RC18 safe FIP bytes pending hardware regression",
-    "compression_contract": "BL33 uses canonical Airoha LZMA-Alone: known uncompressed size, no EOPM. Runtime preflight pins exact FIP+compressed BL31/BL33 SHA256 and does not decode BL33 on the operator PC.",
-    "packaging_correction": "The first RC18 archive used Python FORMAT_ALONE output with EOPM and then rewrote the size field; strict Windows liblzma rejected it before COM/XMODEM. Corrected RC18 rebuild uses LZMA1EXT without EOPM."
-  },
-  "rc19_restore_transport_hardening": {
-    "historical_client_provenance": "Pinned minimal AArch64 recovery clients restored from the pre-Dark recovery lineage. This is a TFTP GET client, not a tftpd server; the PC-side Python TFTP server remains authoritative.",
+  "restore_transport": {
     "nokia_tftp": {
       "file": "data/recovery/recovery-clients-bin/nokia-tftp",
       "size": 7792,
@@ -662,91 +396,83 @@
       "size": 6072,
       "sha256": "232a4ba7f8ae62922815bb12503fd7d09c3b4f40929d130475e467f0a597ac89"
     },
-    "embedded_in": [
-      "MD auto transition",
-      "MD manual transition",
-      "MF auto transition",
-      "MF manual transition",
-      "MD stock recovery",
-      "MF stock recovery"
-    ],
-    "symlinks": [
-      "/usr/bin/tftp -> nokia-tftp",
-      "/usr/bin/scp -> nokia-scp"
-    ],
-    "ssh_policy": "Transient root is intentionally blank; Dropbear is launched with -B. master.py prefers deterministic none-auth SSH for recovery and ignores operator known_hosts.",
-    "restore_transport_order": [
+    "order": [
       "nokia-tftp",
       "tcp-nc",
       "scp"
     ],
-    "write_state_policy": "Transport fallback is permitted only before the SSH command containing mtd write is issued. Any disconnect/error after issue is WRITE_STATE_UNKNOWN and stops the workflow for read-only re-identification; no second write transport is attempted automatically.",
-    "production_payloads": "MD Dark and MF Uname production sysupgrade tails remain byte-identical to RC18.",
-    "known_md_initramfs_issue": "Known upstream MD initramfs kernel panics remain tracked separately; production/sysupgrade kernel behavior is not rolled back."
+    "write_state_policy": "No automatic transport fallback after an mtd write command has been issued; disconnect/error becomes WRITE_STATE_UNKNOWN."
   },
-  "rc22_bad_block_aware_uboot_restore": {
-    "status": "HW_PARTIAL_FAIL_RESTORE_NOT_VALIDATED",
-    "scope": "BootROM/UART direct stock restore for MD/MF",
-    "root_cause": "fixed 8 MiB U-Boot mtd writes crossed bad eraseblocks; U-Boot skipped bad blocks and compacted the stream, so the next nominal chunk could overlap previously written physical NAND",
-    "gates": [
-      "mtd bad bl2 must be empty before any erase/write",
-      "mtd bad ubi parsed and erase-aligned before destructive confirmation",
-      "bad blocks inside canonical stock span are allowed only in stock UBI-backed config/data/oopsfs/log_truncated physical range 0x052C0000..0x0EB60000",
-      "bad-block map is rescanned after whole-ubi erase before first IBU write",
-      "each 8 MiB source chunk is split into contiguous good physical spans; RAM and destination offsets advance identically so known bad PEBs create holes, never compaction",
-      "each good span is read back and CRC32 verified",
-      "bad-block map must remain stable across all body writes/readbacks",
-      "BL2 remains LAST and is never written if body verification or bad-block map stability fails"
+  "stock_bootstrap": {
+    "family_authority": "stock Web ModelName/chipset; unknown family blocks mutations",
+    "sequence": [
+      "Web auth",
+      "verify model/SoC",
+      "read Telnet credentials",
+      "enable/verify Telnet if needed",
+      "ordinary Telnet login",
+      "enable/verify FTP",
+      "re-read credentials",
+      "re-read /etc/passwd",
+      "discover actual UID0 account",
+      "prove su + id -u == 0"
     ],
-    "hardware_trigger_map_relative_ubi": [
-      "0x05d00000",
-      "0x05d20000",
-      "0x05de0000"
+    "secret_policy": "credentials remain in memory and are redacted from logs/argv",
+    "root_gate": "id -u == 0"
+  },
+  "transports": {
+    "stock_backup": "Telnet + router-side gzip/TFTP PUT with PC-side validation",
+    "transition": "profile-selected stock launcher; MD/MF use model-specific payloads from data/payloads",
+    "uart_recovery": "BootROM/XMODEM -> release-pinned RAM preloader/FIP -> TFTP stock restore",
+    "runtime_download_of_boot_stages": false
+  },
+  "backup": {
+    "stock_restore_span": "0x0EBA0000",
+    "physical_nand_reference": "0x10000000",
+    "policy": "verified device-bound backup before destructive install/restore; BL2 restored last in UART disaster recovery"
+  },
+  "diagnostics": {
+    "default": "read-only",
+    "nand_identity": "informational",
+    "family_ambiguity": "fail closed"
+  },
+  "safety": {
+    "nand_identity": "INFO/WARN only; never a vendor allowlist write gate",
+    "destructive_authority": [
+      "verified board/SoC",
+      "exact physical geometry",
+      "working NAND/MTD/UBI capability",
+      "pinned payload bytes with intended SPI-NAND support",
+      "verified backup",
+      "full readback/hash invariants"
     ],
-    "hardware_trigger_failure": "RC21 failed at IBU 13/30 readback ubi+0x06000800 with -74 after chunk 12 crossed three marked bad eraseblocks",
-    "firmware_payloads": "unchanged from RC21",
-    "hardware_result": "Real MF: physical good-span write/readback completed and stock main image/kernel booted, but stock data UBIFS failed ubifs_recover_master_node and entered watchdog reboot. Do not classify exact RC22 bad-block restore as full HW PASS."
+    "stock_restore": "large stock body first; first boot-critical/BL2 region LAST; readback before reset"
   },
-  "rc23_timestamp_backup_identity": {
-    "status": "STATIC_QA_PASS_HW_PENDING",
-    "console_timestamps": "local YYYY-MM-DD HH:MM:SS on operator lines/prompts",
-    "backup_mac_file": "DEVICE_MAC.txt",
-    "backup_mac_source": "eth0 preferred; first non-loopback sysfs interface fallback",
-    "legacy_backup_compatible": true,
-    "firmware_payloads": "byte-identical to rc22"
+  "capabilities_file": "data/FIRMWARE_CAPABILITIES.json",
+  "provenance": {
+    "md_refresh": "data/payload-refresh/OPENWRT_BASELINE.json",
+    "md_build_report": "data/payload-refresh/provenance/md-rc32-build-report.json",
+    "md_profiles": "data/payload-refresh/provenance/profiles.json",
+    "md_sha256sums": "data/payload-refresh/provenance/sha256sums",
+    "mf_uart_snapshot": "data/payload-refresh/provenance/mf-openwrt-snapshot.json"
   },
-  "rc24_interactive_navigation": {
-    "status": "STATIC_QA_PASS_HW_PENDING",
-    "behavior": "interactive actions no longer terminate master.py on normal completion or ordinary recoverable errors; operator chooses back to section, main menu, or exit",
-    "invalid_selection": "re-prompt in place, including startup mode selection",
-    "safety": "WRITE_STATE_UNKNOWN raises a process-local SAFETY-LATCH that blocks normal install/no-UART restore/destructive continuation; successful full BootROM/UART recovery clears the latch; no automatic destructive retry is introduced",
-    "cli_contract": "direct subcommands retain ordinary process exit codes and are not wrapped by menu recovery",
-    "firmware_payloads": "byte-identical to rc23"
+  "documentation": {
+    "readme": "README.md",
+    "instruction_ru": "docs/INSTRUCTION_RU.md",
+    "instruction_en": "docs/INSTRUCTION_EN.md",
+    "image_status_ru": "docs/IMAGE_STATUS_RU.md",
+    "image_status_en": "docs/IMAGE_STATUS_EN.md",
+    "architecture_ru": "docs/ARCHITECTURE_RU.md",
+    "architecture_en": "docs/ARCHITECTURE_EN.md",
+    "changelog_ru": "docs/CHANGELOG_RU.md",
+    "changelog_en": "docs/CHANGELOG.md",
+    "release_assets": "docs/RELEASE_ASSETS.md"
   },
-  "rc25": {
-    "date": "2026-08-17",
-    "scope": "PC orchestration / stock Web session lifetime / UID0 service escalation / diagnostics / release identity",
-    "runtime_payloads": "byte-identical to RC25; not modified by rc25",
-    "web_session_policy": {
-      "read_only": "stock audit and firmware capabilities close Web session before return",
-      "operational": "backup and install retain Web session only for explicit service provisioning and close it in caller finally"
-    },
-    "service_provisioning": "at most one stock service attempt per failed root-discovery cycle; FTP before Samba",
-    "slot_policy": "recognition window unchanged; permanent-write allowlist unchanged; field-observed MD 00480000/02400000/003AF742/01CB0000 remains exact-authorized",
-    "source_tree_note": "complete runnable release: the six runtime assets omitted from the earlier REVIEW_ONLY input are embedded from the supplied repository archive and verified against the pre-existing size/SHA256 pins; verify_kit remains fail-closed",
-    "runtime_assets": {
-      "status": "embedded_sha256_verified",
-      "count_restored_from_supplied_repository_archive": 6,
-      "verification_tool": "data/verify_release_assets.py"
-    }
-  },
-  "rc25_install_geometry_policy": {
-    "scope": "MD/MF stock -> transition -> OpenWrt UBI install",
-    "slot_views": "mtd2..mtd5 classify MD/MF through canonical-pair + non-overlapping family windows; exact vendor revision does not authorize or veto permanent write",
-    "stock_handoff_gate": "fixed stock partitions remain exact; /proc/mtd must equal sysfs; mtd0 bootloader=0x80000, mtd14/mtd15=0x2880000, mtd16/all_flash=0x0EBA0000, erase=0x20000",
-    "backup_gate": "both MD and MF selected install backups use verify_stock_restore_backup and are revalidated from content; marker files are evidence only",
-    "ram_physical_gate": "board-specific transition installer independently requires physical all_flash=0x10000000, BL2=0x20000, UBI/IBU=0x0FFE0000, erase=0x20000, write=0x800 before ubiformat",
-    "symmetry": "same authorization semantics for MD and MF; payload/board implementations remain SoC-specific",
-    "payload_bytes": "unchanged from rc25"
+  "release_layout": {
+    "payloads": "data/payloads",
+    "master": "data/master.py",
+    "manifest": "data/MANIFEST.json",
+    "checksums": "data/SHA256SUMS",
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc33"
   }
 }

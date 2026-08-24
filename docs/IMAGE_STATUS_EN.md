@@ -1,4 +1,6 @@
-# Nokia Router MedveFlasher 1.0.0-rc31 image status
+# Nokia Router MedveFlasher 1.0.0-rc33 image status
+
+> RC33 status: firmware bytes are retained from RC32, while the complete MD/MF payload set is normalized into `data/payloads/` with one naming scheme. The MD production FIP retains operator Fudan hardware evidence; the exact MD `RECOVERY_SAFE` derivative remains static-QA / HW-regression-pending.
 
 This file answers one question: **what exactly ships in the release, and which parts of it are confirmed on real hardware.** Per-version chronology lives in [CHANGELOG.md](CHANGELOG.md).
 
@@ -12,8 +14,8 @@ This file answers one question: **what exactly ships in the release, and which p
 | Read-only BootROM/UART backup | ✅ **HW CONFIRMED** |
 | UART/BootROM full stock restore | ✅ **HW CONFIRMED** on the RC16 preloader/FIP pair |
 | UART stock restore on NAND with bad blocks (RC22 mapper) | ⚠️ **NOT FULL PASS** — see below |
-| RC18 `RECOVERY_SAFE` SAFE FIP, exact bytes | `RC18_SAFE_PENDING_HW` — the path itself is confirmed, the exact bytes await regression |
-| PC-side changes RC21–RC31 | STATIC_QA_PASS, HW regression pending |
+| MD RC32 `RECOVERY_SAFE` FIP, exact bytes | STATIC_QA_PASS / HW regression pending; source production FIP HW-verified on Fudan MD |
+| RC32 MD payload refresh + PC-side integration | STATIC_QA_PASS; runtime capability-gated |
 
 ### ⚠️ RC22 bad-block restore — why this is not a PASS
 
@@ -21,9 +23,13 @@ On real MF hardware the write and readback completed, BMT/BBT and the partition 
 
 The trigger that produced the mapper in the first place: a real restore exposed `mtd bad ubi = 0x05d00000, 0x05d20000, 0x05de0000`, after which RC21 failed at IBU readback 13/30 at `ubi+0x06000800` with `-74`.
 
-### Payload stability
+### RC33 packaging delta
 
-Firmware/transition/recovery payloads are **unchanged since RC19**. RC20–RC31 alter only PC-side orchestration, metadata, and documentation, so hardware evidence for the install paths carries across those releases without rebuilding images.
+RC33 does not change the RC32 firmware bytes. Every `.bin/.itb/.fip` is now under `data/payloads/`; the MF production preloader/FIP/sysupgrade are also exposed as standalone byte-exact files extracted from the already pinned transition set. The active `MANIFEST.json` no longer carries stale per-release state blocks and instead contains an exact payload catalog.
+
+### RC32 payload delta
+
+MD firmware/transition/recovery payloads **change in RC32**: snapshot `r35845+3-3bed4be017`, Linux `6.18.44`, a 9 MiB transition window, production sysupgrade `b0556660…8d867`, Fudan-capable production FIP `8625d786…540f1`, a new recovery initramfs, and a new RECOVERY_SAFE derivative. MF payloads are unchanged. Previous install HW evidence remains historical evidence for the path; the exact new transition/recovery bytes are static-QA + runtime-gated except for the production FIP, which has a new operator Fudan HW run.
 
 ### RC25: slot variant versus hardware evidence
 

@@ -1,8 +1,8 @@
 {
-  "schema": 1,
-  "version": "1.0.0-rc31",
+  "schema": 2,
+  "version": "1.0.0-rc33",
   "product": "Nokia Router MedveFlasher",
-  "semantics": "RC25 keeps the pinned transition/recovery payload bytes from RC24 but changes PC/stock-launcher authorization: MD and MF vendor slot revisions identify the stock family only and are not permanent-write allowlists. Before destructive handoff, fixed stock target partitions and /proc/sysfs geometry remain exact; the selected full backup is revalidated from content; the RAM transition independently requires exact 256MiB NAND, 0x20000 BL2 and 0x0FFE0000 UBI target geometry.",
+  "semantics": "RC33 keeps the RC32 firmware bytes and reorganizes every firmware payload into data/payloads with model/SoC/role names. MD remains the operator-verified 2026-08-16 OpenWrt r35845+3-3bed4be017 / Linux 6.18.44 set with Fudan-capable production FIP. MF current production/recovery bytes are preserved and exposed as standalone pinned payloads. NAND identity remains diagnostic only; destructive operations are capability/geometry/backup/readback gated.",
   "md": {
     "CAP_FULL_BACKUP": {
       "status": "YES",
@@ -25,12 +25,12 @@
       "evidence": "AN7581 tcboot research is not integrated into the production installer"
     },
     "CAP_PERMANENT_INSTALL": {
-      "status": "YES",
-      "evidence": "hardware-confirmed MD path; rc25 authorizes recognized MD slot revisions only after exact handoff-target and restore-grade backup gates"
+      "status": "YES_RUNTIME_GATED",
+      "evidence": "RC32 exact transition/production/permanent-FIP bytes are pinned; production FIP is operator-HW-verified on affected Fudan MD. New transition bytes passed static/reproducibility QA; live board/geometry/MTD/UBI/readback gates remain mandatory."
     },
     "CAP_UART_RECOVERY": {
-      "status": "RC18_SAFE_PENDING_HW",
-      "evidence": "Historical MD BootROM/XMODEM path exists, but RC17fix5 exposed an unsafe ordinary U-Boot autoboot path that could run ubi_format=mtd erase ubi before prompt capture. RC18 replaces BL33 with RECOVERY_SAFE and blocks NAND capability until SAFE marker + nonce proof; exact RC18 FIP is not yet hardware-confirmed."
+      "status": "YES_RUNTIME_GATED_HW_REGRESSION_PENDING",
+      "evidence": "RC32 RECOVERY_SAFE FIP is deterministically derived from the operator-HW-verified Fudan-capable production FIP; compressed BL31/BL33 identities and safe env/autoboot invariants are pinned. Exact derived FIP hardware regression remains provenance, not a NAND-vendor stop gate."
     },
     "CAP_MF_TRANSITION_BOOT": {
       "status": "N/A",
@@ -71,27 +71,6 @@
       "evidence": "hardware-confirmed AN7583 transition path; exact stock vendor slot revision is not a destructive-write gate in rc25"
     }
   },
-  "rc22_bad_block_restore": {
-    "status": "HW_PARTIAL_FAIL_RESTORE_NOT_VALIDATED",
-    "transport": "RECOVERY_SAFE RAM U-Boot + Ethernet/TFTP",
-    "bad_block_policy": "physical-span restore for known bad PEBs only in stock UBI-backed mutable region; raw-critical bad blocks fail closed",
-    "bl2_last": true,
-    "evidence": "Real MF write/readback completed; stock main image/kernel booted; data UBIFS failed ubifs_recover_master_node and watchdog rebooted. Full stock restore is not HW PASS."
-  },
-  "rc23_timestamp_and_backup_identity": {
-    "status": "STATIC_QA_PASS_HW_PENDING",
-    "console_timestamps": "absolute local YYYY-MM-DD HH:MM:SS on master.py operator lines/prompts",
-    "backup_identity": "DEVICE_MAC.txt on live-stock TFTP and USB backups; primary eth0 when available; SHA256-covered",
-    "legacy_backup_compatibility": true,
-    "firmware_payloads": "byte-identical to rc22"
-  },
-  "rc24_interactive_navigation": {
-    "status": "STATIC_QA_PASS_HW_PENDING",
-    "scope": "interactive wizard only; direct CLI subcommands keep exit codes",
-    "post_action_navigation": "after success or ordinary recoverable error: back to section / main menu / exit",
-    "invalid_selection": "menus stay open and re-prompt",
-    "write_state_unknown": "sets process-local SAFETY-LATCH; normal install/no-UART restore/destructive continuation blocked until successful full BootROM/UART recovery",
-    "keyboard_interrupt": "not swallowed by the interactive wrapper during possible NAND activity",
-    "firmware_payloads": "byte-identical to rc23"
-  }
+  "payload_layout": "data/payloads",
+  "payload_catalog": "data/MANIFEST.json#payload_catalog"
 }

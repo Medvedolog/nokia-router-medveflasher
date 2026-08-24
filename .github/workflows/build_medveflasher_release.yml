@@ -427,7 +427,13 @@ jobs:
           - **LAN1 advisory.** Installation, backup, restore, UART recovery and Stage 2 warn when the PC link negotiates 2.5G, which only LAN1 can do. It is an advisory, not a gate, and defaults to continuing.
           - **Release identity is self-checking.** A selftest compares every version declaration in the kit and rejects a \`fix\` suffix.
 
-          Firmware payload bytes are unchanged from RC32; RC33 changes packaging/paths only and exposes the already pinned MF production preloader/FIP/sysupgrade as standalone byte-exact catalog files.
+          RC33 runs no new builds: the MD payload bytes are RC32's, the MF bytes are RC31's,
+          and the already pinned MF production preloader/FIP/sysupgrade are exposed as standalone
+          byte-exact catalog files. RC32 was never published, so upgrading from RC31 does replace
+          every MD payload — transition auto/manual, stock-recovery initramfs, production
+          BL31+U-Boot FIP, UART RECOVERY_SAFE FIP and the preloader — and adds an upstream
+          initramfs-recovery. The preloader arrived with the RC32 snapshot and has no separate
+          hardware run of its own.
 
           The release workflow validates \`data/SHA256SUMS\`, pinned transition/recovery images, embedded production sysupgrade tails, RECOVERY_SAFE FIPs, transient recovery clients, and safety selftests before publishing.
 

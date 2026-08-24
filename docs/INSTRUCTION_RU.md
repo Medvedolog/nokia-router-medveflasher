@@ -2,7 +2,7 @@
 
 **Версия:** 1.0.0-rc33 · **Дата:** 20 августа 2026
 
-> **RC33 layout:** все firmware payload находятся в одном каталоге `data/payloads/`; runtime и проверки используют только новые model/SoC/role имена. Payload bytes не пересобирались относительно RC32.
+> **RC33 layout:** все firmware payload находятся в одном каталоге `data/payloads/`; runtime и проверки используют только новые model/SoC/role имена. Payload bytes не пересобирались относительно RC32. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31.
 
 **Установка OpenWrt:** Nokia XG-040G-MD (AN7581) и Nokia XG-040G-MF (AN7583) — обе модели проходят полный цикл.
 **Brick recovery:** XG-040G-MD/AN7581 и XG-040G-MF/AN7583.

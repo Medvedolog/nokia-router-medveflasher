@@ -1,6 +1,6 @@
 # Nokia Router MedveFlasher 1.0.0-rc33 image status
 
-> RC33 status: firmware bytes are retained from RC32, while the complete MD/MF payload set is normalized into `data/payloads/` with one naming scheme. The MD production FIP retains operator Fudan hardware evidence; the exact MD `RECOVERY_SAFE` derivative remains static-QA / HW-regression-pending.
+> RC33 status: firmware bytes are retained from RC32, while the complete MD/MF payload set is normalized into `data/payloads/` with one naming scheme. The MD production FIP retains operator Fudan hardware evidence; the exact MD `RECOVERY_SAFE` derivative remains static-QA / HW-regression-pending. The public baseline is RC31: against it, RC32 replaced every MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP and the preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), and added an upstream initramfs-recovery. MF payload bytes are identical to RC31. The preloader arrived with the RC32 snapshot and has no separate hardware run.
 
 This file answers one question: **what exactly ships in the release, and which parts of it are confirmed on real hardware.** Per-version chronology lives in [CHANGELOG.md](CHANGELOG.md).
 
@@ -25,7 +25,7 @@ The trigger that produced the mapper in the first place: a real restore exposed 
 
 ### RC33 packaging delta
 
-RC33 does not change the RC32 firmware bytes. Every `.bin/.itb/.fip` is now under `data/payloads/`; the MF production preloader/FIP/sysupgrade are also exposed as standalone byte-exact files extracted from the already pinned transition set. The active `MANIFEST.json` no longer carries stale per-release state blocks and instead contains an exact payload catalog.
+RC33 does not change the RC32 firmware bytes. Every `.bin/.itb/.fip` is now under `data/payloads/`; the MF production preloader/FIP/sysupgrade are also exposed as standalone byte-exact files extracted from the already pinned transition set. The active `MANIFEST.json` no longer carries stale per-release state blocks and instead contains an exact payload catalog. The public baseline is RC31: against it, RC32 replaced every MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP and the preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), and added an upstream initramfs-recovery. MF payload bytes are identical to RC31.
 
 ### RC32 payload delta
 

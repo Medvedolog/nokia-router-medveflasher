@@ -1,6 +1,6 @@
 # Архитектура Nokia Router MedveFlasher
 
-> **RC33 / layout:** firmware payload bytes обеих моделей хранятся только в `data/payloads/`. Имя каждого файла явно содержит модель, SoC и роль; `master.py`, CI, builders и verifier используют только этот canonical путь. RC33 не пересобирает RC32 payload bytes.
+> **RC33 / layout:** firmware payload bytes обеих моделей хранятся только в `data/payloads/`. Имя каждого файла явно содержит модель, SoC и роль; `master.py`, CI, builders и verifier используют только этот canonical путь. RC33 не пересобирает RC32 payload bytes. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31.
 >
 > **RC32 / payload refresh:** MD использует проверенный набор OpenWrt `r35845+3-3bed4be017` от 2026-08-16, kernel `6.18.44`. Fresh transition FIT требует 9 MiB window (`0x900000`), production sysupgrade начинается с bundle offset `0x900000` / NAND offset `0x9c0000`. Permanent FIP `8625d786…540f1` аппаратно поднял Fudan MD; отдельный UART `RECOVERY_SAFE` FIP детерминированно получен из тех же BL31/U-Boot bytes.
 

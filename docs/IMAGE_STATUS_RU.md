@@ -1,6 +1,6 @@
 # Статус образов Nokia Router MedveFlasher 1.0.0-rc33
 
-> Статус RC33: firmware bytes сохранены от RC32, но весь payload-набор MD/MF приведён к единому каталогу `data/payloads/` и единой схеме имён. MD production FIP по-прежнему имеет операторское HW-подтверждение на Fudan; exact MD `RECOVERY_SAFE` derivative остаётся static-QA / HW-regression-pending.
+> Статус RC33: firmware bytes сохранены от RC32, но весь payload-набор MD/MF приведён к единому каталогу `data/payloads/` и единой схеме имён. MD production FIP по-прежнему имеет операторское HW-подтверждение на Fudan; exact MD `RECOVERY_SAFE` derivative остаётся static-QA / HW-regression-pending. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31. Preloader пришёл вместе со snapshot RC32 и отдельного аппаратного прогона не имеет.
 
 Этот файл отвечает на один вопрос: **что именно поставляется в релизе и что из этого подтверждено живым железом.** Хронология изменений по версиям — в [CHANGELOG_RU.md](CHANGELOG_RU.md).
 
@@ -25,7 +25,7 @@
 
 ### RC33 packaging delta
 
-RC33 не меняет прошивочные байты RC32. Все `.bin/.itb/.fip` собраны в `data/payloads/`; MF production preloader/FIP/sysupgrade дополнительно вынесены как самостоятельные byte-exact файлы из уже закреплённого transition-набора. Active `MANIFEST.json` очищен от старых release-state блоков и теперь содержит точный payload catalog.
+RC33 не меняет прошивочные байты RC32. Все `.bin/.itb/.fip` собраны в `data/payloads/`; MF production preloader/FIP/sysupgrade дополнительно вынесены как самостоятельные byte-exact файлы из уже закреплённого transition-набора. Active `MANIFEST.json` очищен от старых release-state блоков и теперь содержит точный payload catalog. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31.
 
 ### RC32 payload delta
 

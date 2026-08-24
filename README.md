@@ -1,8 +1,3 @@
-> **RC33 / payload layout:** все firmware payload bytes обеих моделей теперь находятся только в `data/payloads/` и имеют единообразные имена `model-soc-role`. Runtime, CI, verifier и manifest переведены на новые пути. Бинарные payload RC32 не пересобирались и сохраняют прежние SHA256; MF production preloader/FIP/sysupgrade дополнительно вынесены как отдельные byte-exact файлы из уже закреплённого transition-набора. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31.
->
-
-> **RC32 / MD payload refresh:** импортирован и перепроверен snapshot `r35845+3-3bed4be017` от 2026-08-16 (kernel `6.18.44`). Transition переведён на 9 MiB окно; production sysupgrade сохранён byte-for-byte (`b0556660…8d867`). Permanent FIP `8625d786…540f1` содержит Fudan FM25G01B/FM25G02B/FM25S01A и, по аппаратному прогону оператора, поднял проблемный XG-040G-MD с Fudan. NAND vendor теперь только диагностический признак; destructive gate остаётся capability/geometry/MTD/UBI + backup/readback/hash.
-<div align="center">
 
 # 🐻 Nokia Router MedveFlasher
 

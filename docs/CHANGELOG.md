@@ -7,7 +7,7 @@
 - `master.py`, the stock launcher, builders, CI/import workflows, verifier, MANIFEST and documentation now use the new paths and names.
 - `MANIFEST.json` was reduced to the active release state; historical `rc10...rc25` state blocks remain in CHANGELOG instead of conflicting with current capabilities.
 - MF production sysupgrade, preloader and BL31+U-Boot FIP are exposed as standalone byte-exact files extracted from the already pinned MF transition set and checked against the existing production SHA256 pins.
-- RC33 does not rebuild or alter the RC32 firmware bytes; it is a packaging/layout cleanup.
+- RC33 does not rebuild or alter the RC32 firmware bytes; it is a packaging/layout cleanup. The public baseline is RC31: against it, RC32 replaced every MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP and the preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), and added an upstream initramfs-recovery. MF payload bytes are identical to RC31.
 - `verify_kit()` now fails closed unless every `.bin/.itb/.fip` in `data/payloads/` appears exactly once in `MANIFEST.json#payload_catalog` with matching size/SHA256.
 
 ---

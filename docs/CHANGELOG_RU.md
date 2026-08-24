@@ -7,7 +7,7 @@
 - `master.py`, stock launcher, builders, CI/import workflows, verifier, MANIFEST и документация переведены на новые пути и имена.
 - `MANIFEST.json` очищен от исторических `rc10...rc25` блоков. В active manifest остались текущий release state, payload catalog, build sets, recovery/restore policy и safety invariants. История релизов остаётся в CHANGELOG.
 - MF production sysupgrade, preloader и BL31+U-Boot FIP вынесены отдельными файлами из уже закреплённого MF transition-набора. Их SHA256 совпадают с прежними production pins: `db881b80…`, `778d10a6…`, `99b6c20a…`.
-- RC33 не меняет firmware bytes RC32: это packaging/layout cleanup. MD Fudan production FIP остаётся `8625d786…540f1`, production sysupgrade `b0556660…8d867`; MF payload bytes также сохранены.
+- RC33 не меняет firmware bytes RC32: это packaging/layout cleanup. MD Fudan production FIP остаётся `8625d786…540f1`, production sysupgrade `b0556660…8d867`; MF payload bytes также сохранены. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31.
 - `verify_kit()` теперь fail-closed требует, чтобы каждый `.bin/.itb/.fip` в `data/payloads/` был ровно один раз перечислен в `MANIFEST.json#payload_catalog` с точным size/SHA256.
 
 ---

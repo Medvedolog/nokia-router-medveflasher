@@ -208,13 +208,13 @@ jobs:
           check_file('MF RECOVERY_SAFE FIP', mf['fip'])
           check_file('MF stock-recovery initramfs', mf['initramfs'])
 
-          rc18 = m['rc18_recovery_safe_uboot']
-          if sha(root / md['fip']['file']) != rc18['md_safe_fip_sha256']:
+          safe_fip = m['recovery']['safe_fip']
+          if sha(root / md['fip']['file']) != safe_fip['md_safe_fip_sha256']:
               raise SystemExit('ERROR: MD safe FIP differs from RC18 pinned safe derivative')
-          if sha(root / mf['fip']['file']) != rc18['mf_safe_fip_sha256']:
+          if sha(root / mf['fip']['file']) != safe_fip['mf_safe_fip_sha256']:
               raise SystemExit('ERROR: MF safe FIP differs from RC18 pinned safe derivative')
 
-          # Production sysupgrades are embedded byte-for-byte after the 8 MiB transition window.
+          # Production sysupgrades are embedded byte-for-byte after each profile window (MD: 9 MiB; MF: 8 MiB).
           for family, bundle_path, spec in (
               ('MD', md_bundle, m['bundle']),
               ('MF', mf_bundle, m['mf_transition_bundle']),
@@ -234,13 +234,13 @@ jobs:
                   raise SystemExit(f'ERROR: {family} bundle has non-zero bytes after the declared production payload')
               print(f'PASS {family} embedded production sysupgrade: {size} {actual}; zero-padding={len(trailing)}')
 
-          mf_set = m['mf_ubi_build_set']
+          mf_set = m['build_sets']['mf_an7583']
           if mf_set['sysupgrade']['sha256'] != m['mf_transition_bundle']['production_sha256']:
               raise SystemExit('ERROR: MF production sysupgrade metadata mismatch')
           if int(mf_set['sysupgrade']['size']) != int(m['mf_transition_bundle']['production_size']):
               raise SystemExit('ERROR: MF production sysupgrade size metadata mismatch')
 
-          clients = m['rc19_restore_transport_hardening']
+          clients = m['restore_transport']
           check_file('Pinned nokia-tftp', clients['nokia_tftp'])
           check_file('Pinned nokia-scp', clients['nokia_scp'])
 
@@ -265,7 +265,7 @@ jobs:
           python3 data/master.py selftest-mf-transition
           python3 data/master.py selftest-safety
 
-          while IFS= read -r -d '' f; do sh -n "$f"; done < <(find data docs -type f -name '*.sh' -print0)
+          while IFS= read -r -d '' f; do sh -n "$f"; done < <(find data docs -type f \( -name '*.sh' -o -name '*.sh.in' \) -print0)
           while IFS= read -r -d '' f; do python3 -m json.tool "$f" >/dev/null; done < <(find data -type f -name '*.json' -print0)
 
           find . -type d -name __pycache__ -prune -exec rm -rf {} +
@@ -418,6 +418,8 @@ jobs:
 
           ## Highlights of this roll-up
 
+          - **Canonical payload catalog.** Every firmware `.bin/.itb/.fip` for MD and MF lives in `data/payloads/`, named by model/SoC/role and bound by MANIFEST size/SHA256.
+          - **Clean active manifest.** Historical per-RC state blocks live in CHANGELOG; current MANIFEST contains only active release, payload, build, recovery and safety contracts.
           - **Symmetric MD/MF install policy.** \`mtd2..mtd5\` classify the stock family and vendor slot revision only; they are no longer a permanent-write allowlist. Authorization comes from byte-exact stock handoff targets \`mtd0/mtd14/mtd15/mtd16\`, erase geometry, a content-revalidated full backup, and the physical NAND/UBI geometry the RAM installer re-derives before \`ubiformat\`.
           - **Revision-tolerant recognition.** Field MD revisions such as \`mtd4=0x003AF742\` and \`0x003AF61F\` are recognized; a pair landing in both family windows stays \`unknown\` and fails closed.
           - **Read-only flows stay read-only.** Audit and capability probes log out before returning; stock service provisioning is opt-in and escalates one service per failed root-discovery cycle.
@@ -425,7 +427,7 @@ jobs:
           - **LAN1 advisory.** Installation, backup, restore, UART recovery and Stage 2 warn when the PC link negotiates 2.5G, which only LAN1 can do. It is an advisory, not a gate, and defaults to continuing.
           - **Release identity is self-checking.** A selftest compares every version declaration in the kit and rejects a \`fix\` suffix.
 
-          Firmware, transition and recovery payload bytes are unchanged from RC24.
+          Firmware payload bytes are unchanged from RC32; RC33 changes packaging/paths only and exposes the already pinned MF production preloader/FIP/sysupgrade as standalone byte-exact catalog files.
 
           The release workflow validates \`data/SHA256SUMS\`, pinned transition/recovery images, embedded production sysupgrade tails, RECOVERY_SAFE FIPs, transient recovery clients, and safety selftests before publishing.
 

@@ -3,7 +3,7 @@
 set -u
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
-EXPECTED_SHA='c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03'
+EXPECTED_SHA='b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867'
 DEFAULT_NAME='openwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb'
 
 log() { printf '%s\n' "$*"; }
@@ -82,7 +82,7 @@ if [ ! -f /tmp/NOKIA_FORMAT_AND_FLASH_CONFIRMED ]; then
         log 'Automatic stage 2 authorization inherited from the confirmed stock stage.'
         touch /tmp/NOKIA_FORMAT_AND_FLASH_CONFIRMED
     else
-        log 'A complete verified stock backup must be saved on the PC and NAND must be SkyHigh ML02G300WHI00.'
+        log 'A complete verified stock backup must be saved on the PC and NAND identity is informational; exact geometry/capability/readback gates must pass.'
         printf 'Type exactly CONFIRM FORMAT AND FLASH: '
         IFS= read -r answer
         [ "$answer" = 'CONFIRM FORMAT AND FLASH' ] || die 'cancelled'

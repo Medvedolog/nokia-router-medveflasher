@@ -171,22 +171,22 @@ nokia_begin_output_mirror() {
 SCRIPT_DIR="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 PROFILE_FAMILY='md'
 PROFILE_LABEL='Nokia XG-040G-MD'
-RELEASE_VERSION='1.0.0-rc31'
-BUNDLE_NAME='transition-bundle.bin'
+RELEASE_VERSION='1.0.0-rc33'
+BUNDLE_NAME='nokia-xg-040g-md-an7581-transition-auto.bin'
 MANUAL_TRANSITION=0
-BUNDLE_SIZE=21626880
-BUNDLE_SHA='5e658b2c50719db5e552c0c047aea0d58044ebcbea016a3e61707b2c62d3affe'
-TRANSITION_WINDOW=8388608
-TRANSITION_TOTALSIZE=7509816
-TRANSITION_FIT_SHA='ffcf7b03643c91a73e6b8321d2a987a98b8e2cb30916e9db06813850359baabe'
-TRANSITION_WINDOW_SHA='29aca66e809752e8907db96491304c472db671f52edfa58984d05b30366e7469'
-SYSUPGRADE_OFFSET=8388608
-SYSUPGRADE_SIZE=13226255
-SYSUPGRADE_SHA='c6f06fcf4d155201aad3347cb0558ed11319be24f82d44106a061406d23dda03'
+BUNDLE_SIZE=19955992
+BUNDLE_SHA='6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264'
+TRANSITION_WINDOW=9437184
+TRANSITION_TOTALSIZE=8782108
+TRANSITION_FIT_SHA='2a85487dbedf4ddb8df43683e7887f10df3afc887d204831d82832ba255581ba'
+TRANSITION_WINDOW_SHA='992f6f4bf0d1464345b2e4cd9e827d7a68b40c09703247851332a6fd89521629'
+SYSUPGRADE_OFFSET=9437184
+SYSUPGRADE_SIZE=10518808
+SYSUPGRADE_SHA='b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867'
 ENV_NAME='OpenWrt.mtd2.u-boot-env.bin'
 ENV_SHA='@ENV_SHA@'
 ENV_SOURCE_SHA='@ENV_SOURCE_SHA@'
-ENV_BOOTCMD='flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000'
+ENV_BOOTCMD='flash read 0xc0000 0x900000 0x92000000; bootm 0x92000000'
 ENV_SIZE=131072
 ENV_BLOCK_OFFSET=114688
 ENV_BLOCK_SIZE=16384
@@ -365,14 +365,16 @@ check_nand() {
         cat "$file" >> "$evidence" 2>/dev/null || true
     done
 
-    if grep -qi -E 'fudan|fm25g02b' "$evidence"; then
+    if grep -qi -E 'fudan|fm25g0[12]b|fm25s01a' "$evidence"; then
         NAND_IDENTITY=fudan
-        die 'FudanMicro FM25G02B NAND explicitly detected; this release blocks it'
+        log2 '[OK] Obnaruzhena FudanMicro SPI-NAND; model zapisan tolko dlya diagnostiki.' '[OK] FudanMicro SPI-NAND detected; identity is diagnostic only.'
+        return 0
     fi
     if [ "$PROFILE_FAMILY" = mf ]; then
         if grep -qi -E 'skyhigh|ml02g300whi00' "$evidence"; then
             NAND_IDENTITY=skyhigh
-            die 'SkyHigh ML02G300WHI00 NAND detected; the MF profile is not validated for that NAND'
+            log2 '[PREDUPREZhDENIE] Obnaruzhena SkyHigh SPI-NAND na MF; identifikatsiya ne yavlyaetsya write-gate, dalshe obyazatelny capability/geometriya/MTD proverki.' '[WARN] SkyHigh SPI-NAND detected on MF; identity is not a write gate, capability/geometry/MTD checks remain mandatory.'
+            return 0
         fi
         if grep -qi -E 'gigadevice|gd5f2gm7|gd5f2g' "$evidence"; then
             NAND_IDENTITY=gigadevice
@@ -521,7 +523,8 @@ verify_stock_boot_path() {
             flashimgreadc00002048\;bootm0x85000000|\
             flashimgread0xc00002048\;bootm0x85000000|\
             flashread0xc00000x8000000x85000000\;bootm0x85000000|\
-            flashread0xc00000x8000000x92000000\;bootm0x92000000)
+            flashread0xc00000x8000000x92000000\;bootm0x92000000|\
+            flashread0xc00000x9000000x92000000\;bootm0x92000000)
                 ;;
             *)
                 log2 "Obnaruzhen bootcmd: $bootcmd" "Detected bootcmd: $bootcmd"
@@ -556,9 +559,9 @@ verify_bundle() {
     [ "$fit_size" -eq "$TRANSITION_TOTALSIZE" ] || die "transition FIT totalsize mismatch: $fit_size"
     fit_blocks=$(( (TRANSITION_TOTALSIZE + 4095) / 4096 ))
     [ "$(dd if="$bundle" bs=4096 count="$fit_blocks" 2>/dev/null | head -c "$TRANSITION_TOTALSIZE" | sha256sum | awk '{print $1}')" = "$TRANSITION_FIT_SHA" ] || die 'transition FIT SHA256 mismatch'
-    [ "$(dd if="$bundle" bs="$TRANSITION_WINDOW" count=1 2>/dev/null | sha256sum | awk '{print $1}')" = "$TRANSITION_WINDOW_SHA" ] || die '8 MiB transition window SHA256 mismatch'
+    [ "$(dd if="$bundle" bs="$TRANSITION_WINDOW" count=1 2>/dev/null | sha256sum | awk '{print $1}')" = "$TRANSITION_WINDOW_SHA" ] || die 'transition window SHA256 mismatch'
     if [ "$MANUAL_TRANSITION" = 1 ]; then
-        [ "$BUNDLE_SIZE" -eq "$TRANSITION_WINDOW" ] || die 'manual transition bundle must be exactly 8 MiB'
+        [ "$BUNDLE_SIZE" -eq "$TRANSITION_WINDOW" ] || die 'manual transition bundle must equal the declared transition window'
         [ "$SYSUPGRADE_SIZE" -eq 0 ] || die 'manual transition must not embed a production image'
     else
         [ "$(dd if="$bundle" bs=1 skip="$SYSUPGRADE_OFFSET" count=4 2>/dev/null | hexdump -v -e '4/1 "%02x"')" = d00dfeed ] || die 'embedded sysupgrade is not FIT'
@@ -572,7 +575,7 @@ verify_bundle() {
     if [ "$MANUAL_TRANSITION" = 1 ]; then
         log2 '[OK] Ruchnoy transition ne soderzhit vstroennogo sysupgrade.' '[OK] Manual transition contains no embedded sysupgrade.'
     else
-        log2 "[OK] Vstroennyy production-obraz: offset=0x800000 size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA" "[OK] Embedded production image offset=0x800000 size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA"
+        log2 "[OK] Vstroennyy production-obraz: offset=$SYSUPGRADE_OFFSET size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA" "[OK] Embedded production image offset=$SYSUPGRADE_OFFSET size=$SYSUPGRADE_SIZE SHA256=$SYSUPGRADE_SHA"
     fi
     log2 "[OK] Polnyy bundle: size=$BUNDLE_SIZE SHA256=$BUNDLE_SHA" "[OK] Complete bundle size=$BUNDLE_SIZE SHA256=$BUNDLE_SHA"
 }

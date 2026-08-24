@@ -10,8 +10,8 @@ to reproduce release images.
 
 RC17fix5 has two distinct manual transition artifacts:
 
-- `data/transition-manual-bundle.bin` for MD / AN7581;
-- `data/mf-transition-manual-bundle.bin` for MF / AN7583.
+- `data/payloads/nokia-xg-040g-md-an7581-transition-manual.bin` for MD / AN7581;
+- `data/payloads/nokia-xg-040g-mf-an7583-transition-manual.bin` for MF / AN7583.
 
 Each is derived from its corresponding release-pinned auto transition and is
 verified by release metadata and `verify-kit`.  Manual mode removes autonomous

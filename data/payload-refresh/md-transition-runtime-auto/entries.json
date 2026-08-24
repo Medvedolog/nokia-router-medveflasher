@@ -1,0 +1,35 @@
+{
+  "etc/init.d/nokia-autoflash": {
+    "mode": 33261
+  },
+  "etc/motd": {
+    "mode": 33188
+  },
+  "etc/profile.d/10-nokia-autoflash-status.sh": {
+    "mode": 33261
+  },
+  "etc/rc.d/S99nokia-autoflash": {
+    "mode": 41471
+  },
+  "installer/MANIFEST.txt": {
+    "mode": 33152
+  },
+  "installer/boot-autoflash.sh": {
+    "mode": 33261
+  },
+  "installer/boot-manual.sh": {
+    "mode": 33261
+  },
+  "installer/install.sh": {
+    "mode": 33261
+  },
+  "lib/preinit/00_nokia_manual_installer": {
+    "mode": 33261
+  },
+  "usr/sbin/nokia-ubi-autoflash": {
+    "mode": 33261
+  },
+  "usr/sbin/nokia-ubi-finish": {
+    "mode": 33261
+  }
+}

@@ -1,7 +1,30 @@
-# 1.0.0-rc31 — страховка отдаёт ту систему, которая умеет доделать
+# 1.0.0-rc33 — единый каталог payload и чистый active manifest
 
-RC30 научился отвечать на TFTP-цикл U-Boot — это была трудная часть. Отвечал он
-не тем образом. Байты payload не менялись относительно RC24.
+## 1.0.0-rc33 — 2026-08-20
+
+- Все firmware payload `.bin/.itb/.fip` для MD/AN7581 и MF/AN7583 перенесены в один canonical каталог `data/payloads/`.
+- Имена унифицированы по схеме `nokia-xg-040g-<model>-<soc>-<role>.<type>`; transition, production, stock recovery и UART recovery больше не разбросаны по `data/`, `data/recovery/` и `payload-refresh/pinned-inputs/`.
+- `master.py`, stock launcher, builders, CI/import workflows, verifier, MANIFEST и документация переведены на новые пути и имена.
+- `MANIFEST.json` очищен от исторических `rc10...rc25` блоков. В active manifest остались текущий release state, payload catalog, build sets, recovery/restore policy и safety invariants. История релизов остаётся в CHANGELOG.
+- MF production sysupgrade, preloader и BL31+U-Boot FIP вынесены отдельными файлами из уже закреплённого MF transition-набора. Их SHA256 совпадают с прежними production pins: `db881b80…`, `778d10a6…`, `99b6c20a…`.
+- RC33 не меняет firmware bytes RC32: это packaging/layout cleanup. MD Fudan production FIP остаётся `8625d786…540f1`, production sysupgrade `b0556660…8d867`; MF payload bytes также сохранены.
+- `verify_kit()` теперь fail-closed требует, чтобы каждый `.bin/.itb/.fip` в `data/payloads/` был ровно один раз перечислен в `MANIFEST.json#payload_catalog` с точным size/SHA256.
+
+---
+
+# 1.0.0-rc32 — актуальные MD payload, Fudan-capable U-Boot/FIP
+
+## 1.0.0-rc32 — 2026-08-20
+
+- Импортирован проверенный snapshot `airoha/an7581`: OpenWrt `r35845+3-3bed4be017`, git `99f690077f2bcf4af3818e5f9d07787bb50ed404`, source date 2026-08-16, Linux `6.18.44`.
+- Все четыре присланных исходных артефакта сверены одновременно с `sha256sums` и `profiles.json`; несоответствий нет.
+- Production sysupgrade обновлён до `10518808` байт, SHA256 `b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867`; в auto transition он встроен byte-for-byte.
+- Permanent BL31+U-Boot FIP обновлён до `314158` байт, SHA256 `8625d786cdded8ce2e5de27abc1ead7b1546e058ee055089e5c9780518f540f1`. В BL33 статически подтверждены `Fudan Micro`, `FM25G01B`, `FM25G02B`, `FM25S01A`; оператор сообщил успешное восстановление сломанного U-Boot на Fudan XG-040G-MD именно этими байтами.
+- Из production FIP получен отдельный `RECOVERY_SAFE` UART FIP: `313066` байт, SHA256 `4a94aa502e830b862d09def0c2a021a3d4aad85488fd814e79d01e3ef8fab33a`; сохранены BL31 и Fudan-capable BL33, `bootdelay=-1`, inert bootcmd/preboot и нейтрализация persistent env. Exact derivative прошёл static QA, аппаратный regression этих точных SAFE bytes ещё не записан.
+- MD transition/recovery пересобраны поверх свежего kernel/modules. Из transition удалён только неиспользуемый LuCI web-static; storage/network/kernel modules сохранены. Из-за роста fresh FIT MD transition window увеличен с 8 до 9 MiB; MF остаётся на своём 8 MiB контракте.
+- Новый auto transition: `19955992` байта, SHA256 `6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264`, FIT `8782108`, production offset `0x900000`. Manual transition: `9437184`, SHA256 `ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512`.
+- Новый MD stock-recovery initramfs: `8635288` байт, SHA256 `7fc9cef7a6abf5b005b0db212c99aaf1a655a9b00a895c02bad43152d982f2dd`.
+- NAND vendor/model detection больше не является destructive authorization gate. SkyHigh/Fudan/unknown записываются в диагностику; запись разрешают только board/SoC, точная геометрия, live MTD/UBI capability, pinned payload capability и backup/readback/hash invariants.
 
 ## 1.0.0-rc31 — 19 августа 2026
 
@@ -20,7 +43,7 @@ RC30 научился отвечать на TFTP-цикл U-Boot — это бы
 - **`--stock-recovery` выбирает откатную машину явно**, когда нужно назад на
   сток, а не вперёд в OpenWrt. Оба семейства разрешаются корректно.
 
-- **Отдаваемый файл обрезается по flattened image.** `transition-bundle.bin` —
+- **Отдаваемый файл обрезается по flattened image.** `nokia-xg-040g-md-an7581-transition-auto.bin` —
   это 21 626 880 байт, у которых FIT занимает 7 673 752, а дальше приклеен
   production sysupgrade; теперь плата получает образ и ничего после него.
   Обрезка вынесена в общий помощник для мастера и `data/tftp-rescue.py` вместо
@@ -61,7 +84,7 @@ fallback-FIT проверен в томе `fit` — затем вошла в pro
 
 - **`data/tftp-rescue.py`** отдаёт тот же образ отдельно, для платы, которая уже
   крутится в цикле. Файлы с данными после flattened image —
-  `transition-bundle.bin` несёт production sysupgrade, приклеенный к своему
+  `nokia-xg-040g-md-an7581-transition-auto.bin` несёт production sysupgrade, приклеенный к своему
   FIT, — обрезаются по FIT, чтобы плата получила образ и ничего сверх него.
 
 - **Свидетельства снимаются, пока устройство ещё отвечает.** Всё после
@@ -535,7 +558,7 @@ payload не менялись относительно RC24.
 ## 1.0.0-rc14 — 11 августа 2026
 
 - Добавлен `CAP_MF_TRANSITION_BOOT` и отдельный аппаратный тест для **только MF-A**: verified stock Web → Telnet/UID0 → `BACKUP_HW_VALIDATED` → live MF-A `/proc/mtd == sysfs` → TFTP deploy персонального transition-пакета.
-- Новый `data/mf-transition-bundle.bin` — pinned MF recovery initramfs, дополненный нулями до `0x800000`; SHA256 и FIT totalsize закреплены в коде/MANIFEST/SHA256SUMS. В bundle нет sysupgrade.
+- Новый `data/payloads/nokia-xg-040g-mf-an7583-transition-auto.bin` — pinned MF recovery initramfs, дополненный нулями до `0x800000`; SHA256 и FIT totalsize закреплены в коде/MANIFEST/SHA256SUMS. В bundle нет sysupgrade.
 - Новый `data/stock-mf-transition-launcher.sh.in` изолирован от hardware-confirmed MD launcher. Он принимает только MF-A, сначала пишет `mtd14/nsb_master`, проверяет полный readback SHA256, повторно сверяет исходный env, затем последним стирает/пишет только `mtd0+0x60000..0x7ffff` (`0x20000`) и проверяет readback.
 - После reboot мастер доказывает RAM OpenWrt по LuCI либо SSH board identity и пишет `MF_TRANSITION_HW_VALIDATED.json`; **после этого workflow останавливается**. `CAP_UBI_FORMAT`, `CAP_UBI_VOLUME_WRITE`, `CAP_BOOTLOADER_REPLACE`, `CAP_PERMANENT_INSTALL` остаются BLOCKED.
 - MF-A transition требует backup именно с `BACKUP_HW_VALIDATED`; MF-A-MIRROR/MF-B/MF-B-MIRROR распознаются, но write-gate rc14 их блокирует.
@@ -624,7 +647,7 @@ payload не менялись относительно RC24.
 - Добавлен новый пункт `8 — снять read-only backup через BootROM/UART (MD/MF)`: BootROM/XMODEM поднимает SoC-specific preloader и U-Boot в RAM, затем модельный recovery FIT загружается по TFTP и работает только из RAM. NAND в этом режиме не стирается и не записывается.
 - Backup снимает первые `0x0EBA0000` байт `all_flash` 30 блоками до 8 МиБ, gzip-потоками отправляет их на ПК по TFTP PUT и сверяет SHA256 каждого сохранённого блока со вторым независимым чтением NAND в recovery Linux. Проверенные блоки можно возобновлять по `.raw.sha256`.
 - На ПК из канонического `mtd16` формируется обычный MedveFlasher backup `mtd0..mtd16`, `bosa.bin`, `ri.bin`, `proc_mtd.txt`, `SHA256SUMS.txt` и `BOOTROM_BACKUP.json`; splitter/validator проверен на реальном MF backup.
-- В комплект добавлен MF stock-recovery FIT `data/recovery/mf/nokia-xg040gmf-stock-recovery-initramfs.itb`, SHA256 `65c3b1a610dd56fee917e1b7c30d23592821b1321cb0ed1134cccbad7fdd819c`; он используется для read-only backup из RAM.
+- В комплект добавлен MF stock-recovery FIT `data/payloads/nokia-xg-040g-mf-an7583-stock-recovery-initramfs.itb`, SHA256 `65c3b1a610dd56fee917e1b7c30d23592821b1321cb0ed1134cccbad7fdd819c`; он используется для read-only backup из RAM.
 - Аппаратный прогон rc8fix2 подтвердил на MF scripted `mtd list`, сетевые `setenv` и TFTP первого 8-МиБ блока. Обнаружено, что AN7583 U-Boot не содержит `hash sha256`; до записи NAND скрипт корректно остановился.
 - Brick restore в U-Boot переведён на `crc32`: PC-источник остаётся закреплён SHA256, RAM после TFTP и каждый readback проверяются CRC32. BL2 по-прежнему записывается последним.
 - VERSION/MANIFEST/README/CHANGELOG/IMAGE_STATUS/ARCHITECTURE синхронизированы для rc9 на русском и английском.
@@ -650,7 +673,7 @@ payload не менялись относительно RC24.
 - Добавлен первый **brick-recovery для Nokia XG-040G-MF / AN7583**. Обычная установка OpenWrt остаётся только для XG-040G-MD / AN7581.
 - Restore validator больше не применяет MD-only размеры `mtd2..mtd5` как физический инвариант `all_flash`; для brick recovery он отдельно распознаёт известные stock-профили MD и MF и по-прежнему строго проверяет `mtd0/mtd1/mtd6/mtd7/mtd14/mtd15` против `mtd16`.
 - Подтверждён предоставленный MF backup: `mtd16=0x0EBA0000`, статические диапазоны совпадают, отличие `mtd13/log` допустимо как live-раздел.
-- MF XMODEM-профиль использует официальные OpenWrt snapshot-артефакты `airoha/an7583`: AN7583 EVB preloader, AN7583 EVB BL31+U-Boot FIP и Nokia XG-040G-MF initramfs. Их размер и SHA256 закреплены в `data/recovery/mf/OPENWRT_SNAPSHOT.json`.
+- MF XMODEM-профиль использует официальные OpenWrt snapshot-артефакты `airoha/an7583`: AN7583 EVB preloader, AN7583 EVB BL31+U-Boot FIP и Nokia XG-040G-MF initramfs. Их размер и SHA256 закреплены в `data/payload-refresh/provenance/mf-openwrt-snapshot.json`.
 - Если MF-артефакты отсутствуют локально, мастер может скачать только закреплённые rc8 файлы по HTTPS и принимает их лишь при точном совпадении размера/SHA256. Если snapshot сменился, процедура останавливается до XMODEM/NAND.
 - Добавлено распознавание приглашения `AN7583>`; generic `=>` сохранён. Для MF Linux/recovery fallback в rc8 намеренно отключён: при незахваченном RAM U-Boot NAND не меняется.
 - Добавлена команда `python3 data/master.py fetch-mf-recovery` для предварительного получения и проверки MF recovery-артефактов, пока у ПК есть Интернет.
@@ -723,7 +746,7 @@ payload не менялись относительно RC24.
   bundle, журналов, временных путей, manifest, README и исходников.
 - Каталог `docs` принят из параллельной ветки в сокращённой структуре: README,
   IMAGE_STATUS и CHANGELOG на русском и английском.
-- Добавлен отдельный `transition-manual-bundle.bin` без встроенного production
+- Добавлен отдельный `nokia-xg-040g-md-an7581-transition-manual.bin` без встроенного production
   sysupgrade и без автоматического второго этапа.
 - Экспертный режим выбирает пользовательский `.itb` на ПК, передаёт его по TFTP
   в RAM и проверяет FIT magic, размер, SHA256, `nokia-ubi-installer check` и

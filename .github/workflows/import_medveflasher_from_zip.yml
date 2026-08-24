@@ -200,8 +200,14 @@ jobs:
             START.cmd START.sh RESTORE_STOCK.cmd RESTORE_STOCK.sh
             data/VERSION data/MANIFEST.json data/FIRMWARE_CAPABILITIES.json data/SHA256SUMS
             data/master.py data/stock_web.py data/env_patcher.py
-            data/transition-bundle.bin data/transition-manual-bundle.bin
-            data/mf-transition-bundle.bin data/mf-transition-manual-bundle.bin
+            data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin
+            data/payloads/nokia-xg-040g-md-an7581-transition-manual.bin
+            data/payloads/nokia-xg-040g-mf-an7583-transition-auto.bin
+            data/payloads/nokia-xg-040g-mf-an7583-transition-manual.bin
+            data/payloads/nokia-xg-040g-md-an7581-production-sysupgrade.itb
+            data/payloads/nokia-xg-040g-md-an7581-production-bl31-uboot.fip
+            data/payloads/nokia-xg-040g-mf-an7583-production-sysupgrade.itb
+            data/payloads/nokia-xg-040g-mf-an7583-production-bl31-uboot.fip
             docs/INSTRUCTION_RU.md docs/INSTRUCTION_EN.md
             docs/CHANGELOG_RU.md docs/CHANGELOG.md
             docs/ARCHITECTURE_RU.md docs/ARCHITECTURE_EN.md
@@ -333,7 +339,7 @@ jobs:
           python3 "$SRC/data/master.py" selftest-mf-transition
           python3 "$SRC/data/master.py" selftest-safety
 
-          while IFS= read -r -d '' f; do sh -n "$f"; done < <(find "$SRC" -type f -name '*.sh' -print0)
+          while IFS= read -r -d '' f; do sh -n "$f"; done < <(find "$SRC" -type f \( -name '*.sh' -o -name '*.sh.in' \) -print0)
           while IFS= read -r -d '' f; do python3 -m json.tool "$f" >/dev/null; done < <(find "$SRC" -type f -name '*.json' -print0)
 
           find "$SRC" -type d -name __pycache__ -prune -exec rm -rf {} +

@@ -15,7 +15,8 @@
 | UART/BootROM полный stock restore | ✅ **HW CONFIRMED** на RC16-паре preloader/FIP |
 | UART stock restore на NAND с bad blocks (RC22 mapper) | ⚠️ **NOT FULL PASS** — см. ниже |
 | MD RC32 `RECOVERY_SAFE` FIP, точные байты | STATIC_QA_PASS / HW regression pending; source production FIP HW-verified on Fudan MD |
-| RC32 MD payload refresh + PC-side integration | STATIC_QA_PASS; runtime capability-gated |
+| RC35 MD payload set (aligned auto bundle) | ✅ **HW PASS (полевой)** — два независимых перехода на OpenWrt, один на Fudan NAND, 2026-08-26; см. «RC35 полевые прогоны» |
+| RC32 MD payload refresh + PC-side integration | STATIC_QA_PASS; runtime capability-gated; покрыто полевыми прогонами RC35 |
 
 ### ⚠️ RC22 bad-block restore — почему это не PASS
 
@@ -29,7 +30,28 @@ RC33 не меняет прошивочные байты RC32. Все `.bin/.itb
 
 ### RC32 payload delta
 
-MD firmware/transition/recovery payloads **изменены в RC32**: snapshot `r35845+3-3bed4be017`, Linux `6.18.44`, 9 MiB transition window, production sysupgrade `b0556660…8d867`, Fudan-capable production FIP `8625d786…540f1`, new recovery initramfs and RECOVERY_SAFE derivative. MF payloads не менялись. Предыдущие HW install свидетельства остаются историей пути; exact new transition/recovery bytes считаются static-QA + runtime-gated, кроме production FIP, для которого есть новый операторский Fudan HW run.
+MD firmware/transition/recovery payloads **изменены в RC32**: snapshot `r35845+3-3bed4be017`, Linux `6.18.44`, 9 MiB transition window, production sysupgrade `b0556660…8d867`, Fudan-capable production FIP `8625d786…540f1`, new recovery initramfs and RECOVERY_SAFE derivative. MF payloads не менялись. Предыдущие HW install свидетельства остаются историей пути; exact new transition/recovery bytes оставались static-QA + runtime-gated до RC35, полевые прогоны которого подтвердили набор на живом железе, включая Fudan.
+
+### RC35 полевые прогоны
+
+2026-08-26 два независимых Nokia XG-040G-MD перешли на OpenWrt на опубликованном RC35 payload-наборе,
+**один из них на Fudan NAND**. Прогоны выполнены операторами и подтверждены оператором проекта; полные
+логи `[1/8]..[8/8]` в репозитории не хранятся.
+
+Свидетельство относится ровно к этим байтам:
+
+```text
+auto transition (0x20000-aligned)  20054016   ac9658f4…0268fb0b03
+production sysupgrade              10518808   b0556660…3af8d867
+production BL31+U-Boot FIP (Fudan) 314158     8625d786…0518f540f1
+```
+
+Это первое полевое подтверждение MD-набора после RC32, где все MD payload были заменены, и второе
+независимое свидетельство по Fudan: до него существовал только отчёт о восстановлении сломанного
+U-Boot этим же FIP, но не полный цикл установки.
+
+Прогоны выполнялись **не** на RC33: в нём после валидного backup срабатывал безусловный `RC32-prep1`
+stop, блокировавший destructive handoff любого MD. RC35 его удалил.
 
 ### RC25: вариант слота и аппаратные свидетельства
 

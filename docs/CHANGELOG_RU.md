@@ -8,6 +8,7 @@
 - MD device/backup identity больше не берётся из `eth0`: stock может публиковать vendor placeholder `00:aa:bb:01:23:40`. Authoritative base MAC читается из `mtd7/ri` offset `0x3e`, length 6 — того же NVMEM source, который использует transition DT. Sysfs interface MACs сохраняются только как diagnostic evidence.
 - MD TFTP и USB backup используют один RI-MAC контракт; MF сохраняет прежний sysfs identity path. Legacy MD `DEVICE_MAC.txt` с sysfs-source автоматически supersede'ится RI metadata; mismatch двух уже RI-bound backup остаётся fail-closed.
 - Добавлен selftest, фиксирующий family-aware preflight label, `0x20000` alignment, RI identity и отсутствие stale MD stop. README/CHANGELOG/ARCHITECTURE/IMAGE_STATUS/RELEASE_ASSETS синхронизированы.
+- Полевое подтверждение: 2026-08-26 два независимых MD перешли на OpenWrt на этом payload-наборе, один на Fudan NAND. Подробности и точные байты — в `docs/IMAGE_STATUS_RU.md`.
 
 ---
 

@@ -1,0 +1,16 @@
+{
+  "release": "1.0.0-rc35",
+  "date": "2026-08-25",
+  "reason": "Stock launcher writes the composite MD auto bundle to mtd14 in 0x20000 eraseblocks; the fresh 2026-08-16 sysupgrade tail made the previous composite size unaligned.",
+  "source_bundle_size": 19955992,
+  "source_bundle_sha256": "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264",
+  "fit_window_size": 9437184,
+  "embedded_sysupgrade_offset": 9437184,
+  "embedded_sysupgrade_size": 10518808,
+  "embedded_sysupgrade_sha256": "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867",
+  "eraseblock_size": 131072,
+  "trailing_zero_padding_size": 98024,
+  "release_bundle_size": 20054016,
+  "release_bundle_sha256": "ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03",
+  "invariant": "Only zero bytes after the exact production sysupgrade were added; FIT window and production payload bytes/offset/hash are unchanged."
+}

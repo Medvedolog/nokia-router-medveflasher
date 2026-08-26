@@ -1,6 +1,6 @@
-# Nokia Router MedveFlasher 1.0.0-rc33 image status
+# Nokia Router MedveFlasher 1.0.0-rc35 image status
 
-> RC33 status: firmware bytes are retained from RC32, while the complete MD/MF payload set is normalized into `data/payloads/` with one naming scheme. The MD production FIP retains operator Fudan hardware evidence; the exact MD `RECOVERY_SAFE` derivative remains static-QA / HW-regression-pending. The public baseline is RC31: against it, RC32 replaced every MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP and the preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), and added an upstream initramfs-recovery. MF payload bytes are identical to RC31. The preloader arrived with the RC32 snapshot and has no separate hardware run.
+> RC35 keeps the fresh 2026-08-16 MD OpenWrt/Linux 6.18.44 payload content and Fudan-capable U-Boot, aligns the complete auto bundle to 0x20000 for stock mtd14 writes, and takes MD backup identity from RI/mtd7@0x3e. MF payload bytes are unchanged.
 
 This file answers one question: **what exactly ships in the release, and which parts of it are confirmed on real hardware.** Per-version chronology lives in [CHANGELOG.md](CHANGELOG.md).
 
@@ -15,7 +15,8 @@ This file answers one question: **what exactly ships in the release, and which p
 | UART/BootROM full stock restore | ✅ **HW CONFIRMED** on the RC16 preloader/FIP pair |
 | UART stock restore on NAND with bad blocks (RC22 mapper) | ⚠️ **NOT FULL PASS** — see below |
 | MD RC32 `RECOVERY_SAFE` FIP, exact bytes | STATIC_QA_PASS / HW regression pending; source production FIP HW-verified on Fudan MD |
-| RC32 MD payload refresh + PC-side integration | STATIC_QA_PASS; runtime capability-gated |
+| RC35 MD payload set (aligned auto bundle) | ✅ **HW PASS (field)** — two independent OpenWrt migrations, one on Fudan NAND, 2026-08-26; see "RC35 field runs" |
+| RC32 MD payload refresh + PC-side integration | STATIC_QA_PASS; runtime capability-gated; covered by the RC35 field runs |
 
 ### ⚠️ RC22 bad-block restore — why this is not a PASS
 
@@ -29,7 +30,28 @@ RC33 does not change the RC32 firmware bytes. Every `.bin/.itb/.fip` is now unde
 
 ### RC32 payload delta
 
-MD firmware/transition/recovery payloads **change in RC32**: snapshot `r35845+3-3bed4be017`, Linux `6.18.44`, a 9 MiB transition window, production sysupgrade `b0556660…8d867`, Fudan-capable production FIP `8625d786…540f1`, a new recovery initramfs, and a new RECOVERY_SAFE derivative. MF payloads are unchanged. Previous install HW evidence remains historical evidence for the path; the exact new transition/recovery bytes are static-QA + runtime-gated except for the production FIP, which has a new operator Fudan HW run.
+MD firmware/transition/recovery payloads **change in RC32**: snapshot `r35845+3-3bed4be017`, Linux `6.18.44`, a 9 MiB transition window, production sysupgrade `b0556660…8d867`, Fudan-capable production FIP `8625d786…540f1`, a new recovery initramfs, and a new RECOVERY_SAFE derivative. MF payloads are unchanged. Previous install HW evidence remains historical evidence for the path; the exact new transition/recovery bytes stayed static-QA + runtime-gated until the RC35 field runs confirmed the set on live hardware, Fudan included.
+
+### RC35 field runs
+
+On 2026-08-26 two independent Nokia XG-040G-MD units migrated to OpenWrt on the published RC35 payload
+set, **one of them on Fudan NAND**. The runs were performed by operators and confirmed by the project
+operator; full `[1/8]..[8/8]` logs are not kept in the repository.
+
+The evidence applies to exactly these bytes:
+
+```text
+auto transition (0x20000-aligned)  20054016   ac9658f4…0268fb0b03
+production sysupgrade              10518808   b0556660…3af8d867
+production BL31+U-Boot FIP (Fudan) 314158     8625d786…0518f540f1
+```
+
+This is the first field confirmation of the MD set since RC32 replaced every MD payload, and the second
+independent Fudan data point: the earlier one covered rescuing a broken U-Boot with the same FIP, not a
+complete install cycle.
+
+The runs were **not** on RC33: there, an unconditional `RC32-prep1` stop fired after a valid backup and
+blocked the destructive handoff for any MD. RC35 removed it.
 
 ### RC25: slot variant versus hardware evidence
 

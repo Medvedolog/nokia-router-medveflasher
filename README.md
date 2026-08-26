@@ -3,9 +3,9 @@
 
 **OpenWrt на Nokia XG-040G-MD / MF — без паяльника, без разборки корпуса и без UART**
 
-`1.0.0-rc33` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
+`1.0.0-rc35` · Airoha AN7581 (MD) · Airoha AN7583 (MF)
 
-[![Release](https://img.shields.io/badge/release-1.0.0--rc33-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
+[![Release](https://img.shields.io/badge/release-1.0.0--rc35-0969da?style=flat-square)](docs/CHANGELOG_RU.md)
 [![Targets](https://img.shields.io/badge/SoC-AN7581%20%7C%20AN7583-8250df?style=flat-square)](#поддерживаемое-железо)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-all--in--UBI%20+%20LuCI-00b5e2?style=flat-square&logo=openwrt&logoColor=white)](https://openwrt.org/)
 [![Python](https://img.shields.io/badge/Python%203-pip%20не%20требуется-3776ab?style=flat-square&logo=python&logoColor=white)](#ноль-зависимостей--ну-почти)
@@ -19,6 +19,13 @@
 </div>
 
 ---
+
+## RC35: исправления полевого MD-прогона
+
+- MD auto transition теперь дополняется нулями до полного `0x20000` eraseblock; FIT и embedded production sysupgrade не менялись.
+- Ошибка MD preflight больше не подписывается как MF.
+- MD device identity/backup MAC берётся из stock `RI` (`mtd7`, offset `0x3e`, 6 байт); `eth0` и остальные sysfs MAC — только диагностика.
+- Устаревший `RC32-prep1` unconditional MD stop удалён: Fudan/SkyHigh/unknown по-прежнему не являются write-gate.
 
 ## Что это такое
 

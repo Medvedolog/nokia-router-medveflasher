@@ -1,5 +1,7 @@
 # Nokia Router MedveFlasher — Architecture
 
+> **RC35 / MD field fixes:** the complete MD auto bundle is now `0x20000`-aligned (`0x1320000`) by zero-padding only after the exact production sysupgrade; the FIT window and production bytes/offset/SHA are unchanged. MD device identity comes from raw stock `RI` (`mtd7@0x3e`, 6 bytes); sysfs MACs are diagnostic only. Family-aware preflight no longer labels MD failures as MF. MF payload/identity semantics are unchanged by this fix.
+>
 > **RC33 / layout:** firmware payload bytes for both models live only in `data/payloads/`. Every filename states the model, SoC and role; `master.py`, CI, builders and verifier use only this canonical path. RC33 does not rebuild the RC32 payload bytes.
 >
 > **RC32 / payload refresh:** MD uses the verified OpenWrt `r35845+3-3bed4be017` set dated 2026-08-16, kernel `6.18.44`. The fresh transition FIT requires a 9 MiB window (`0x900000`); the production sysupgrade starts at bundle offset `0x900000` / NAND offset `0x9c0000`. Permanent FIP `8625d786…540f1` recovered the Fudan MD in the operator hardware run; the UART `RECOVERY_SAFE` FIP is deterministically derived from the same BL31/U-Boot bytes.
@@ -123,6 +125,8 @@ format step.
 ---
 
 ## Key insight: transition image with an embedded snapshot
+
+**Composite-bundle eraseblock alignment (RC35).** The stock stage writes the complete auto bundle into `mtd14/nsb_master`, so its file size must be divisible by the physical `0x20000` eraseblock. The fresh snapshot made `0x900000 + 10518808 = 0x1308118`; rather than weakening the safety gate, `0x17ee8` zero bytes are appended after the exact sysupgrade, producing `0x1320000`. FIT totalsize/window and sysupgrade offset/size/SHA remain independently exact; padding exists only to make the whole-bundle write/readback physically block-aligned.
 
 `nokia-xg-040g-md-an7581-transition-auto.bin` is not just an initramfs. It is a FIT image of an OpenWrt
 initramfs with a **full production sysupgrade** (OpenWrt SNAPSHOT with LuCI)
@@ -524,7 +528,7 @@ Safety invariant: menu navigation is not authorization for a destructive retry. 
 
 Operator console contract: every non-empty line and prompt passing through the shared `master.py` print/input layer receives an absolute local `[YYYY-MM-DD HH:MM:SS]` prefix. The timestamp is presentation-only and does not alter protocol markers, hashes, UART commands, or the NAND state machine. Prompts receive a log-only terminating newline so the next timestamp does not concatenate with the prompt; no extra blank line is emitted to the console.
 
-Backup identity contract: live-stock TFTP/USB backup creates `DEVICE_MAC.txt` before the final `SHA256SUMS`. The preferred source is `/sys/class/net/eth0/address`; the fallback is the first non-loopback sysfs interface. The file contains model/family, local+UTC capture time, primary interface/MAC, and all discovered interface MACs. If a resumed TFTP directory is already bound to a different known MAC, backup fails closed to prevent cross-device mixing. Missing metadata in a legacy backup is not a compatibility failure.
+MD backup identity contract (RC35): live-stock TFTP/USB backup for MD creates `DEVICE_MAC.txt` before the final `SHA256SUMS`, but authoritative identity now comes from stock `RI` — `mtd7`, offset `0x3e`, length 6. This is the same base-MAC/NVMEM source exposed by the transition DT as `ri-stock/macaddr@3e`. `/sys/class/net/*/address` is diagnostic evidence only: stock `eth0` can contain the compiled vendor placeholder `00:aa:bb:01:23:40` and is not device identity. Resume fails closed only on conflicting already-RI-bound identities; legacy sysfs-bound metadata may be superseded by authoritative RI metadata. If RI cannot be read, the read-only MD backup still proceeds with `primary_mac=UNKNOWN`, but device binding is not falsely claimed. MF retains its existing sysfs-based identity contract in RC35; this MD field fix does not redefine it.
 
 ## 1.0.0-rc22 — bad-block-aware physical restore contract
 

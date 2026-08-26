@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "version": "1.0.0-rc33",
+  "version": "1.0.0-rc35",
   "product": "Nokia Router MedveFlasher",
-  "semantics": "RC33 keeps the RC32 firmware bytes and reorganizes every firmware payload into data/payloads with model/SoC/role names. MD remains the operator-verified 2026-08-16 OpenWrt r35845+3-3bed4be017 / Linux 6.18.44 set with Fudan-capable production FIP. MF current production/recovery bytes are preserved and exposed as standalone pinned payloads. NAND identity remains diagnostic only; destructive operations are capability/geometry/backup/readback gated.",
+  "semantics": "RC35 keeps the fresh RC32/RC33 OpenWrt 2026-08-16 MD kernel/U-Boot payload content, aligns the complete MD auto transition bundle to 0x20000 for stock mtd14 writes, removes the obsolete unconditional MD handoff stop, makes preflight failure labels family-aware, and binds MD backup identity to RI/mtd7 offset 0x3e instead of stock eth0 while leaving MF identity semantics unchanged. NAND vendor identity remains informational; destructive operations are capability/geometry/backup/readback gated.",
   "md": {
     "CAP_FULL_BACKUP": {
       "status": "YES",

@@ -31,8 +31,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-APP_VERSION = "1.0.0-rc33"
-BUILD_TAG = "medveflasher-1.0.0-rc33"
+APP_VERSION = "1.0.0-rc35"
+BUILD_TAG = "medveflasher-1.0.0-rc35"
 MD_BOOTCMD = "flash read 0xc0000 0x900000 0x92000000; bootm 0x92000000"
 MF_BOOTCMD = "flash read 0xc0000 0x800000 0x92000000; bootm 0x92000000"
 BOOTCMD = MD_BOOTCMD  # compatibility alias; profile-specific writes use transition_bootcmd()
@@ -184,8 +184,8 @@ STOCK_STABLE_RAW_SLICES = frozenset((0, 1, 6, 7, 14, 15))
 # Their own transfer SHA256, gzip integrity and exact size are still mandatory;
 # mtd16 is the canonical restore image.
 STOCK_LIVE_RAW_SLICES = frozenset(STOCK_RAW_SLICES) - STOCK_STABLE_RAW_SLICES
-EXPECTED_BUNDLE_SHA = "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264"
-EXPECTED_BUNDLE_SIZE = 19_955_992
+EXPECTED_BUNDLE_SHA = "ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03"
+EXPECTED_BUNDLE_SIZE = 20_054_016
 EXPECTED_MANUAL_BUNDLE_SHA = "ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512"
 EXPECTED_MANUAL_BUNDLE_SIZE = 9_437_184
 EXPECTED_MF_TRANSITION_BUNDLE_SHA = "9ec21e8f7454011e91f251a0784c0c57b815c39e4defe74cc031eb270e6a9aa3"
@@ -594,8 +594,6 @@ _RU_EN = [
     ("Одно подтверждение разрешает запись transition и последующий автономный stage 2.", "One confirmation authorizes the transition write and the subsequent autonomous stage 2."),
     ("ВНИМАНИЕ: после reboot initramfs автоматически отформатирует stock NAND и установит embedded OpenWrt.", "WARNING: after reboot, initramfs will automatically format the stock NAND and install the embedded OpenWrt image."),
     ("Продолжайте только когда полный проверенный backup сохранён на компьютере, питание стабильно,", "Continue only after a complete verified backup is saved on the PC and power is stable,"),
-    ("а NAND совместима. Явно обнаруженная FudanMicro FM25G02B блокируется;", "and the NAND is compatible. Explicitly detected FudanMicro FM25G02B is blocked;"),
-    ("неопределённая модель допускается только после точной проверки платы и геометрии и остаётся ответственностью пользователя.", "an unidentified model is accepted only after exact board and geometry checks and remains the operator's responsibility."),
     ("Введите точно CONFIRM FORMAT AND FLASH", "Type exactly CONFIRM FORMAT AND FLASH"),
     ("операция отменена", "operation cancelled"),
     ("RAM worker stage 1 не стартовал", "stage 1 RAM worker did not start"),
@@ -3412,10 +3410,26 @@ def _read_transport_sha_sidecar(path: Path) -> str | None:
 
 
 _MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}$")
+_RI_MAC_OFFSET = 0x3E
+_RI_MAC_LENGTH = 6
+_STOCK_PLACEHOLDER_MACS = frozenset({"00:aa:bb:01:23:40"})
+
+
+def _valid_device_mac(mac: str) -> bool:
+    mac = mac.strip().lower()
+    if not _MAC_RE.fullmatch(mac):
+        return False
+    if mac in {"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}:
+        return False
+    try:
+        first = int(mac.split(":", 1)[0], 16)
+    except ValueError:
+        return False
+    return (first & 1) == 0
 
 
 def _stock_interface_macs(telnet: Telnet) -> dict[str, str]:
-    """Read interface MAC addresses from stock Linux without changing device state."""
+    """Read interface MACs as diagnostics only; they are not device identity."""
     command = (
         "for p in /sys/class/net/*/address; do "
         "[ -r \"$p\" ] || continue; "
@@ -3443,6 +3457,7 @@ def _stock_interface_macs(telnet: Telnet) -> dict[str, str]:
 
 
 def _backup_primary_mac(macs: dict[str, str]) -> tuple[str, str]:
+    """Legacy/sysfs identity selector retained for MF only."""
     for interface in ("eth0", "br0", "eth1", "eth2"):
         if interface in macs:
             return interface, macs[interface]
@@ -3452,7 +3467,35 @@ def _backup_primary_mac(macs: dict[str, str]) -> tuple[str, str]:
     return "unknown", "UNKNOWN"
 
 
-def _read_backup_device_mac(path: Path) -> tuple[str, str] | None:
+def _stock_ri_mac(telnet: Telnet) -> str | None:
+    """Read the board base MAC from stock RI/mtd7 offset 0x3e.
+
+    This is the same source the MD transition DT exposes through the raw
+    ``ri-stock`` NVMEM cell ``macaddr@3e``.  Stock eth0 can contain the vendor
+    placeholder 00:aa:bb:01:23:40 and must never be used as device identity.
+    """
+    command = (
+        "d=/dev/mtd7ro; [ -r \"$d\" ] || d=/dev/mtd7; "
+        "printf '__NOKIA_RIMAC__'; "
+        "if [ -r \"$d\" ]; then "
+        f"dd if=\"$d\" bs=1 skip={_RI_MAC_OFFSET} count={_RI_MAC_LENGTH} 2>/dev/null | "
+        "hexdump -v -e '6/1 \"%02x\"'; "
+        "fi; printf '__\\n'"
+    )
+    rc, text = telnet.command(command, timeout=20, echo=False)
+    if rc:
+        return None
+    values = _runtime_marker_values(text, "__NOKIA_RIMAC__")
+    if not values:
+        return None
+    hexmac = re.sub(r"[^0-9a-fA-F]", "", values[-1])
+    if len(hexmac) != 12:
+        return None
+    mac = ":".join(hexmac[i:i + 2] for i in range(0, 12, 2)).lower()
+    return mac if _valid_device_mac(mac) else None
+
+
+def _read_backup_device_identity(path: Path) -> dict[str, str] | None:
     if not path.is_file():
         return None
     values: dict[str, str] = {}
@@ -3464,38 +3507,94 @@ def _read_backup_device_mac(path: Path) -> tuple[str, str] | None:
             values[key.strip()] = value.strip()
     except OSError:
         return None
+    return values
+
+
+def _read_backup_device_mac(path: Path) -> tuple[str, str] | None:
+    values = _read_backup_device_identity(path)
+    if values is None:
+        return None
     mac = values.get("primary_mac", "").lower()
-    interface = values.get("primary_interface", "unknown")
-    if _MAC_RE.fullmatch(mac):
+    interface = values.get("primary_interface", values.get("primary_source", "unknown"))
+    if _valid_device_mac(mac):
         return interface, mac
     return None
 
 
 def _write_backup_device_mac(destination: Path, telnet: Telnet, model_name: str, family: str) -> tuple[str, str]:
     macs = _stock_interface_macs(telnet)
-    interface, mac = _backup_primary_mac(macs)
-    existing = _read_backup_device_mac(destination / "DEVICE_MAC.txt")
-    if existing is not None and mac != "UNKNOWN" and existing[1] != mac:
-        raise Error(tr(
-            f"backup-каталог уже привязан к другому MAC: {existing[1]} != {mac}",
-            f"backup directory is already bound to a different MAC: {existing[1]} != {mac}",
-        ))
+    ri_mac: str | None = None
+    if family == "md":
+        # MD authority is raw RI, not stock eth0.
+        ri_mac = _stock_ri_mac(telnet)
+        primary_source = "stock-ri-mtd7@0x3e" if ri_mac else "stock-ri-mtd7-unavailable"
+        interface = "ri" if ri_mac else "unknown"
+        mac = ri_mac or "UNKNOWN"
+        source_kind = "stock-ri-mtd7"
+    else:
+        # Do not silently change MF identity semantics in an MD regression fix.
+        interface, mac = _backup_primary_mac(macs)
+        primary_source = f"stock-linux-sysfs:{interface}" if mac != "UNKNOWN" else "stock-linux-sysfs-unavailable"
+        source_kind = "stock-linux-sysfs"
+
+    existing_values = _read_backup_device_identity(destination / "DEVICE_MAC.txt")
+    if existing_values is not None and mac != "UNKNOWN":
+        old_mac = existing_values.get("primary_mac", "").lower()
+        old_source = existing_values.get("source", "")
+        if family == "md":
+            # Old RC23/RC33 MD backups used stock eth0/sysfs as authority.  That
+            # can be the compiled vendor placeholder, so RI supersedes it.
+            if old_source == "stock-ri-mtd7" and _valid_device_mac(old_mac) and old_mac != mac:
+                raise Error(tr(
+                    f"backup-каталог уже привязан к другому RI MAC: {old_mac} != {mac}",
+                    f"backup directory is already bound to a different RI MAC: {old_mac} != {mac}",
+                ))
+            if old_source and old_source != "stock-ri-mtd7" and _valid_device_mac(old_mac) and old_mac != mac:
+                print(tr(
+                    f"[INFO] Старый MD MAC metadata {old_mac} ({old_source}) заменён authoritative RI MAC {mac}.",
+                    f"[INFO] Legacy MD MAC metadata {old_mac} ({old_source}) was replaced by authoritative RI MAC {mac}.",
+                ))
+        elif _valid_device_mac(old_mac) and old_mac != mac:
+            raise Error(tr(
+                f"backup-каталог уже привязан к другому MAC: {old_mac} != {mac}",
+                f"backup directory is already bound to a different MAC: {old_mac} != {mac}",
+            ))
+
     lines = [
         f"model={model_name}",
         f"family={family}",
         f"captured_at_local={time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
         f"captured_at_utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
-        "source=stock-linux-sysfs",
+        f"source={source_kind}",
+        f"primary_source={primary_source}",
         f"primary_interface={interface}",
         f"primary_mac={mac}",
     ]
+    if family == "md":
+        lines.extend((f"ri_offset=0x{_RI_MAC_OFFSET:x}", f"ri_length={_RI_MAC_LENGTH}"))
     for name, value in macs.items():
         lines.append(f"interface_{name}={value}")
     write_text(destination / "DEVICE_MAC.txt", "\n".join(lines) + "\n")
-    if mac == "UNKNOWN":
+    if family == "md":
+        if ri_mac is None:
+            print(tr(
+                "[WARNING] RI MAC не удалось прочитать; DEVICE_MAC.txt создан с primary_mac=UNKNOWN. Sysfs MAC записаны только как диагностика.",
+                "[WARNING] RI MAC could not be read; DEVICE_MAC.txt uses primary_mac=UNKNOWN. Sysfs MACs are diagnostic only.",
+            ))
+        else:
+            print(tr(
+                f"[OK] Device MAC из RI mtd7@0x3e: {ri_mac}; сохранён в DEVICE_MAC.txt.",
+                f"[OK] Device MAC from RI mtd7@0x3e: {ri_mac}; saved to DEVICE_MAC.txt.",
+            ))
+            if macs.get("eth0", "").lower() in _STOCK_PLACEHOLDER_MACS:
+                print(tr(
+                    f"[INFO] stock eth0 MAC {macs['eth0']} — vendor placeholder; для MD identity игнорируется.",
+                    f"[INFO] stock eth0 MAC {macs['eth0']} is a vendor placeholder and is ignored for MD identity.",
+                ))
+    elif mac == "UNKNOWN":
         print(tr(
-            "[WARNING] Не удалось определить MAC stock-устройства; DEVICE_MAC.txt создан с primary_mac=UNKNOWN.",
-            "[WARNING] Could not determine the stock device MAC; DEVICE_MAC.txt was created with primary_mac=UNKNOWN.",
+            "[WARNING] Не удалось определить MF stock interface MAC; DEVICE_MAC.txt использует UNKNOWN.",
+            "[WARNING] Could not determine the MF stock interface MAC; DEVICE_MAC.txt uses UNKNOWN.",
         ))
     else:
         print(tr(
@@ -3503,7 +3602,6 @@ def _write_backup_device_mac(destination: Path, telnet: Telnet, model_name: str,
             f"[OK] Backup source MAC: {mac} ({interface}); saved to DEVICE_MAC.txt.",
         ))
     return interface, mac
-
 
 def backup_tftp(
     access: StockAccess,
@@ -4907,7 +5005,7 @@ def run_stage1(telnet: Telnet, remote_dir: str, nand_unknown: bool, manual_trans
         errors = [line.strip() for line in output.splitlines() if re.search(r"(?:ОШИБКА|ERROR|CRITICAL|КРИТИЧ)", line, re.I)]
         if errors:
             print(errors[-1])
-        raise Error(tr("MF preflight не пройден", "MF preflight failed"))
+        raise Error(tr(f"{profile.family.upper()} preflight не пройден", f"{profile.family.upper()} preflight failed"))
 
     print(tr(
         f"[OK] {profile.model}: backup, root, MTD-разметка, transition и environment проверены.",
@@ -9175,6 +9273,46 @@ def _rc23_timestamp_backup_identity_selftest() -> None:
             raise Error(f"RC23 TFTP backup identity token missing: {token}")
 
 
+
+def _rc35_md_preflight_ri_alignment_selftest() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    # MD failures must never be mislabeled as MF failures.
+    run_start = source.index("\ndef run_stage1(")
+    run_end = source.find("\ndef ", run_start + 1)
+    run_body = source[run_start:run_end if run_end != -1 else len(source)]
+    if 'f"{profile.family.upper()} preflight не пройден"' not in run_body:
+        raise Error("rc35 selftest: preflight failure label is not family-aware")
+    if 'raise Error(tr("MF preflight не пройден"' in run_body:
+        raise Error("rc35 selftest: hardcoded MF preflight label returned")
+
+    # The released stock-side auto bundle is written as whole eraseblocks.
+    if BUNDLE.stat().st_size % 0x20000:
+        raise Error("rc35 selftest: MD auto bundle is not 0x20000 aligned")
+    metadata = bundle_release_metadata(BUNDLE)
+    if metadata["production_offset"] + metadata["production_size"] > metadata["bundle_size"]:
+        raise Error("rc35 selftest: production payload extends past aligned bundle")
+
+    # Device identity is RI/NVMEM-derived.  Interface MACs remain diagnostics.
+    for token in ("_stock_ri_mac", "stock-ri-mtd7", "_RI_MAC_OFFSET = 0x3E", "Sysfs MACs are diagnostic only"):
+        if token not in source:
+            raise Error(f"rc35 selftest: RI identity token missing: {token}")
+    writer_start = source.index("\ndef _write_backup_device_mac(")
+    writer_end = source.find("\ndef ", writer_start + 1)
+    writer = source[writer_start:writer_end if writer_end != -1 else len(source)]
+    md_branch = writer[writer.index('if family == "md":'):writer.index('else:', writer.index('if family == "md":'))]
+    if "_backup_primary_mac" in md_branch:
+        raise Error("rc35 selftest: sysfs interface MAC became MD identity authority again")
+    agent = BACKUP_AGENT.read_text(encoding="utf-8")
+    for token in ("RI_MAC_OFFSET=62", "IDENTITY_SOURCE=stock-ri-mtd7", "PRIMARY_SOURCE=stock-ri-mtd7@0x3e"):
+        if token not in agent:
+            raise Error(f"rc35 selftest: USB RI identity token missing: {token}")
+
+    # The obsolete RC32-prep1 unconditional MD stop must never return.
+    stale = "RC32-prep1: MD " + "destructive handoff"
+    scrubbed = source.replace('"RC32-prep1: MD " + "destructive handoff"', "")
+    if stale in scrubbed:
+        raise Error("rc35 selftest: stale unconditional MD destructive handoff block returned")
+
 def _rc24_interactive_navigation_selftest() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     required = (
@@ -11536,12 +11674,6 @@ def install_openwrt_wizard(profile: InstallProfile, from_existing_backup: bool =
             backup_validation = _validate_install_backup(profile, backup_dir)
             _print_install_backup_validation(profile, backup_dir, backup_validation)
 
-        if profile.family == "md":
-            raise Error(tr(
-                "RC32-prep1: MD destructive handoff заблокирован: универсальные SkyHigh+Fudan transition/production/FIP payload еще не импортированы и не закреплены SHA256.",
-                "RC32-prep1: MD destructive handoff is blocked: universal SkyHigh+Fudan transition/production/FIP payloads have not yet been imported and SHA256-pinned.",
-            ))
-
         install_dir, info = personalize_transition(profile, backup_dir, manual_transition=manual)
         print(tr(
             f"[OK] Персональный пакет создан: {install_dir}",
@@ -12886,6 +13018,7 @@ def main(argv: list[str] | None = None) -> int:
             _restore_transport_safety_selftest()
             _uboot_badblock_restore_safety_selftest()
             _rc23_timestamp_backup_identity_selftest()
+            _rc35_md_preflight_ri_alignment_selftest()
             _rc24_interactive_navigation_selftest()
             _stage1_handoff_safety_selftest()
             _stock_slot_tolerance_selftest()
@@ -12899,7 +13032,7 @@ def main(argv: list[str] | None = None) -> int:
             _rc25_lan1_advisory_selftest()
             _rc29_restore_ssh_auth_selftest()
             _rc30_install_rescue_selftest()
-            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RAM worker autonomy + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory + restore SSH auth + install rescue safety selftest: OK")
+            print("BootROM + bad-block restore + restore transport + RC23 timestamp/backup identity + RC35 MD preflight/RI/alignment + RC24 interactive navigation + stage1 handoff + stock slot tolerance + read-only flow + RAM worker autonomy + RC26 console/log split + restore diagnostic + read-by-fact backup + recovery reachability + release identity + LAN1 advisory + restore SSH auth + install rescue safety selftest: OK")
         rc = 0
     except KeyboardInterrupt:
         print(tr("\n[ПРЕДУПРЕЖДЕНИЕ] Остановлено пользователем.", "\n[WARNING] Stopped by user."), file=sys.stderr)

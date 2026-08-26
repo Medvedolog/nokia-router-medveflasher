@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "version": "1.0.0-rc33",
-  "build_tag": "medveflasher-1.0.0-rc33",
+  "version": "1.0.0-rc35",
+  "build_tag": "medveflasher-1.0.0-rc35",
   "product": "Nokia Router MedveFlasher",
   "release": {
-    "version": "1.0.0-rc33",
-    "build_tag": "medveflasher-1.0.0-rc33",
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc33",
-    "date": "2026-08-20"
+    "version": "1.0.0-rc35",
+    "build_tag": "medveflasher-1.0.0-rc35",
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc35",
+    "date": "2026-08-25"
   },
   "supported_devices": [
     {
@@ -37,8 +37,9 @@
       "soc": "AN7581",
       "role": "transition-auto",
       "file": "data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin",
-      "size": 19955992,
-      "sha256": "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264"
+      "size": 20054016,
+      "sha256": "ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03",
+      "status": "PINNED_ERASEBLOCK_ALIGNED"
     },
     {
       "family": "md",
@@ -190,17 +191,19 @@
   ],
   "bundle": {
     "file": "data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin",
-    "size": 19955992,
-    "sha256": "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264",
+    "size": 20054016,
+    "sha256": "ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03",
     "mode": "auto",
     "transition_window_size": 9437184,
     "transition_fit_totalsize": 8782108,
     "transition_fit_sha256": "2a85487dbedf4ddb8df43683e7887f10df3afc887d204831d82832ba255581ba",
     "transition_window_sha256": "992f6f4bf0d1464345b2e4cd9e827d7a68b40c09703247851332a6fd89521629",
-    "behavior": "Fresh OpenWrt 6.18.44 transition; 9 MiB window; LAN2/LAN3/LAN4 control-plane; SkyHigh+Fudan-capable production path; runtime capability-gated.",
+    "behavior": "Fresh OpenWrt 6.18.44 transition; 9 MiB FIT window; exact embedded production sysupgrade at 0x900000; complete stock-written bundle zero-padded to 0x20000 eraseblock; LAN2/LAN3/LAN4 control-plane; SkyHigh+Fudan-capable production path; runtime capability-gated.",
     "production_offset_in_bundle": 9437184,
     "production_size": 10518808,
-    "production_sha256": "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867"
+    "production_sha256": "b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867",
+    "trailing_padding_size": 98024,
+    "eraseblock_size": 131072
   },
   "manual_bundle": {
     "file": "data/payloads/nokia-xg-040g-md-an7581-transition-manual.bin",
@@ -473,6 +476,9 @@
     "master": "data/master.py",
     "manifest": "data/MANIFEST.json",
     "checksums": "data/SHA256SUMS",
-    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc33"
+    "archive_root": "Nokia-Router-MedveFlasher-1.0.0-rc35"
+  },
+  "source_provenance": {
+    "rc35_alignment": "data/payload-refresh/provenance/md-rc35-alignment.json"
   }
 }

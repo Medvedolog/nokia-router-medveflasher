@@ -25,6 +25,6 @@ python3 data/payload-refresh/build_md_snapshot_payloads.py \
   --version 1.0.0-rc32
 ```
 
-The shipped RC33 package keeps the exact RC32 payload bytes. To reproduce those bytes, keep `--version 1.0.0-rc32`; the version string is embedded in the generated transition initramfs. Expected outputs are pinned in `OPENWRT_BASELINE.json` and `provenance/md-rc32-build-report.json`. The MD transition window is 9 MiB. The production sysupgrade remains byte-identical and begins at bundle offset `0x900000` (physical stock NAND offset `0x9c0000`).
+RC35 keeps the exact RC32 FIT and production payload bytes, but the composite MD auto bundle adds zero padding after the exact sysupgrade so the stock-side file is 0x20000 eraseblock-aligned. To reproduce those bytes, keep `--version 1.0.0-rc32`; the version string is embedded in the generated transition initramfs. Expected current outputs are pinned in `OPENWRT_BASELINE.json` and `provenance/md-rc32-build-report.json`; `provenance/md-rc35-alignment.json` records the packaging-only alignment delta. The MD transition window is 9 MiB. The production sysupgrade remains byte-identical and begins at bundle offset `0x900000` (physical stock NAND offset `0x9c0000`).
 
 NAND manufacturer/model identity is diagnostic only. Destructive authorization remains fail-closed on board/SoC, exact physical geometry, live MTD/UBI capability, exact payload pins, backup, write readback, and hash verification.

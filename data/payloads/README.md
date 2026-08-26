@@ -24,3 +24,7 @@ RC33 is a layout/manifest cleanup release. Existing transition/recovery/producti
 payload bytes are unchanged from RC32. The standalone MF production preloader,
 FIP and sysupgrade are byte-exact extracts of the already pinned MF transition
 set and are verified against the pre-existing production SHA256 pins.
+
+## RC35 MD auto-bundle alignment
+
+`nokia-xg-040g-md-an7581-transition-auto.bin` is `20054016` bytes (`0x1320000`) and SHA256 `ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03`. The exact production sysupgrade still starts at `0x900000` and keeps its original size/SHA; only `98024` zero bytes follow it so stock mtd14 whole-bundle writes remain `0x20000`-aligned.

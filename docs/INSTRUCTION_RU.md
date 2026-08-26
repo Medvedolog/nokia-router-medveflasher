@@ -1,8 +1,8 @@
 # Nokia Router MedveFlasher
 
-**Версия:** 1.0.0-rc33 · **Дата:** 20 августа 2026
+**Версия:** 1.0.0-rc35 · **Дата:** 25 августа 2026
 
-> **RC33 layout:** все firmware payload находятся в одном каталоге `data/payloads/`; runtime и проверки используют только новые model/SoC/role имена. Payload bytes не пересобирались относительно RC32. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31.
+> **RC35:** MD auto transition использует свежий RC32/OpenWrt payload set, но полный composite bundle дополнен нулями до `0x1320000` для точного `0x20000` eraseblock alignment. Embedded production sysupgrade и FIT window байт-в-байт не изменены. MD backup identity читается из `RI/mtd7@0x3e`; sysfs MAC — только диагностика. Все firmware payload по-прежнему находятся в canonical `data/payloads/`; MF payload bytes не изменены.
 
 **Установка OpenWrt:** Nokia XG-040G-MD (AN7581) и Nokia XG-040G-MF (AN7583) — обе модели проходят полный цикл.
 **Brick recovery:** XG-040G-MD/AN7581 и XG-040G-MF/AN7583.
@@ -71,7 +71,7 @@ Python 3, около 1 ГБ свободного места и полтора ч
 
 Пункт `6 — проверить прошивочные capabilities (read-only)` заново доказывает stock Web, Telnet, `UID 0`, family/variant и `/proc/mtd == sysfs`, после чего пересекает эти live-факты с hardware-status релиза. Сам отчёт **не разрешает запись NAND** и не заменяет pre-write gates конкретной операции.
 
-Профиль релиза 1.0.0-rc33:
+Профиль релиза 1.0.0-rc35:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -94,12 +94,12 @@ CAP_UART_RECOVERY         YES_RUNTIME_GATED_HW_REGRESSION_PENDING  RC18_SAFE_PEN
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc33.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc35.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — из каталога с архивом
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc33.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc35.zip.sha256
 ```
 
 После распаковки контрольные суммы всех файлов комплекта можно проверить из

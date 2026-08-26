@@ -1,6 +1,6 @@
-# Nokia Router MedveFlasher 1.0.0-rc33 image status
+# Nokia Router MedveFlasher 1.0.0-rc35 image status
 
-> RC33 status: firmware bytes are retained from RC32, while the complete MD/MF payload set is normalized into `data/payloads/` with one naming scheme. The MD production FIP retains operator Fudan hardware evidence; the exact MD `RECOVERY_SAFE` derivative remains static-QA / HW-regression-pending. The public baseline is RC31: against it, RC32 replaced every MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP and the preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), and added an upstream initramfs-recovery. MF payload bytes are identical to RC31. The preloader arrived with the RC32 snapshot and has no separate hardware run.
+> RC35 keeps the fresh 2026-08-16 MD OpenWrt/Linux 6.18.44 payload content and Fudan-capable U-Boot, aligns the complete auto bundle to 0x20000 for stock mtd14 writes, and takes MD backup identity from RI/mtd7@0x3e. MF payload bytes are unchanged.
 
 This file answers one question: **what exactly ships in the release, and which parts of it are confirmed on real hardware.** Per-version chronology lives in [CHANGELOG.md](CHANGELOG.md).
 

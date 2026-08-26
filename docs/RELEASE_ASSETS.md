@@ -1,10 +1,10 @@
-# Canonical firmware payload catalog — MedveFlasher 1.0.0-rc33
+# Canonical firmware payload catalog — MedveFlasher 1.0.0-rc35
 
-RC33 keeps all firmware payload bytes in `data/payloads/`. Existing RC32 bytes are unchanged; MF production components are additionally exposed as standalone byte-exact files extracted from the pinned MF transition set.
+RC35 keeps all firmware payloads in `data/payloads/`. MD production/FIP/kernel payload content remains the fresh RC32/OpenWrt set; only the complete MD `transition-auto` container gained trailing zero padding to satisfy the stock `0x20000` eraseblock write contract. MF payload bytes are unchanged.
 
 | Model | Role | File | Size | SHA256 | Status |
 |---|---|---|---:|---|---|
-| Nokia XG-040G-MD / AN7581 | `transition-auto` | `data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin` | 19955992 | `6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264` | PINNED |
+| Nokia XG-040G-MD / AN7581 | `transition-auto` | `data/payloads/nokia-xg-040g-md-an7581-transition-auto.bin` | 20054016 | `ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03` | PINNED_ERASEBLOCK_ALIGNED |
 | Nokia XG-040G-MD / AN7581 | `transition-manual` | `data/payloads/nokia-xg-040g-md-an7581-transition-manual.bin` | 9437184 | `ed2b813cd09a4bb9e4b75c23a5fcbf97d876f9f1d46f8787faf24f757da74512` | PINNED |
 | Nokia XG-040G-MD / AN7581 | `production-sysupgrade` | `data/payloads/nokia-xg-040g-md-an7581-production-sysupgrade.itb` | 10518808 | `b0556660c1939a9dc1ebbce5b4a3b3c8318c76eacae04de53ce047b43af8d867` | PINNED_RUNTIME_GATED |
 | Nokia XG-040G-MD / AN7581 | `preloader` | `data/payloads/nokia-xg-040g-md-an7581-preloader.bin` | 112195 | `ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30` | PINNED |

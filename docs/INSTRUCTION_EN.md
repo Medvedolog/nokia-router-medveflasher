@@ -1,8 +1,8 @@
 # Nokia Router MedveFlasher
 
-**Version:** 1.0.0-rc33 · **Date:** 20 August 2026
+**Version:** 1.0.0-rc35 · **Date:** 25 August 2026
 
-> **RC33 layout:** all firmware payload bytes live in the single `data/payloads/` directory; runtime and verification use only the new model/SoC/role names. Payload bytes were not rebuilt relative to RC32.
+> **RC35:** MD auto transition keeps the fresh RC32/OpenWrt payload set, while the complete composite bundle is zero-padded to `0x1320000` for exact `0x20000` eraseblock alignment. The embedded production sysupgrade and FIT window are byte-identical. MD backup identity is read from `RI/mtd7@0x3e`; sysfs MACs are diagnostic only. All firmware payloads remain in canonical `data/payloads/`; MF payload bytes are unchanged.
 
 **OpenWrt installation:** Nokia XG-040G-MD (AN7581) and Nokia XG-040G-MF (AN7583) — both models run the full cycle.
 **Brick recovery:** XG-040G-MD/AN7581 and XG-040G-MF/AN7583.
@@ -71,7 +71,7 @@ wrong, see [If an error occurs](#if-an-error-occurs).
 
 Item `6 — probe firmware capabilities (read-only)` re-proves stock Web access, Telnet, `UID 0`, family/variant, and `/proc/mtd == sysfs`, then intersects those live facts with release hardware status. The report **does not authorize NAND writes** and does not replace the pre-write gates of any operation.
 
-Release profile for 1.0.0-rc33:
+Release profile for 1.0.0-rc35:
 
 ```text
                           MD / AN7581            MF / AN7583
@@ -94,12 +94,12 @@ A `…zip.sha256` file ships next to the archive. Check it before unpacking:
 
 ```powershell
 # Windows
-(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc33.zip -Algorithm SHA256).Hash
+(Get-FileHash .\Nokia-Router-MedveFlasher-1.0.0-rc35.zip -Algorithm SHA256).Hash
 ```
 
 ```bash
 # Linux — from the folder holding the archive
-sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc33.zip.sha256
+sha256sum -c Nokia-Router-MedveFlasher-1.0.0-rc35.zip.sha256
 ```
 
 After unpacking, the checksums of every kit file can be verified from the root

@@ -40,6 +40,7 @@ from patch_recovery_clients import (  # type: ignore
 )
 
 WINDOW = 0x900000
+ERASEBLOCK = 0x20000
 EXPECTED = {
     "source_initramfs": "ee88a11e1ff7f232afb8eda38870e65f6625e0d95b97c70ccbe59098bd1ba05a",
     "preloader": "ed42a1d2f2cfca1af08c0ba935a8311260954c7424301d1ff99166f9e10c2f30",
@@ -342,10 +343,15 @@ def main() -> int:
         if len(fit) > WINDOW:
             raise SystemExit(f"ERROR: {kind} transition FIT {len(fit)} exceeds 9 MiB window")
         padded = fit + b"\0" * (WINDOW - len(fit))
+        trailing_padding = 0
         if kind == "auto":
             padded += sysupgrade
+            trailing_padding = (-len(padded)) % ERASEBLOCK
+            if trailing_padding:
+                padded += b"\0" * trailing_padding
         outputs[kind] = padded
         rep.update({"bundle_size": len(padded), "bundle_sha256": sha256(padded), "window_size": WINDOW,
+                    "eraseblock_size": ERASEBLOCK, "trailing_padding_size": trailing_padding,
                     "window_sha256": sha256(padded[:WINDOW]),
                     "production_offset_in_bundle": WINDOW,
                     "production_physical_offset_in_nand": 0x0C0000 + WINDOW,

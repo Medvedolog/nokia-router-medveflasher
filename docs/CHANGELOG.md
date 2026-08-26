@@ -1,3 +1,16 @@
+# 1.0.0-rc35 — MD preflight, RI MAC, and eraseblock-aligned auto bundle
+
+## 1.0.0-rc35 — 25 August 2026
+
+- Fixed the field MD regression where shared `run_stage1()` reported `MF preflight failed` for XG-040G-MD; the message now comes from the actual `profile.family`.
+- Removed the stale unconditional `RC32-prep1` stop that blocked every MD destructive handoff after a valid backup. NAND vendor/model remains INFO/WARN only; write authority comes from board/SoC, geometry, live MTD/UBI, pinned payload, backup, and readback/hash evidence.
+- The fresh 2026-08-16 MD auto bundle was `19955992` (`0x1308118`) bytes and was not divisible by the stock `0x20000` eraseblock. `98024` (`0x17ee8`) zero bytes are now appended after the exact embedded sysupgrade, producing `20054016` (`0x1320000`) bytes, SHA256 `ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03`. FIT window, production offset `0x900000`, production size `10518808`, and production SHA256 `b0556660…8d867` are unchanged. The alignment gate was not weakened.
+- MD device/backup identity no longer comes from `eth0`, which stock can expose as the vendor placeholder `00:aa:bb:01:23:40`. The authoritative base MAC is read from `mtd7/ri` offset `0x3e`, length 6 — the same NVMEM source used by the transition DT. Sysfs interface MACs are diagnostic evidence only.
+- MD TFTP and USB backup now share the RI-MAC contract; MF keeps its existing sysfs identity path. Legacy MD `DEVICE_MAC.txt` metadata sourced from sysfs is superseded by RI metadata; a mismatch between two already RI-bound identities still fails closed.
+- Added a selftest pinning the family-aware preflight label, `0x20000` bundle alignment, RI identity, and absence of the stale MD stop. README/CHANGELOG/ARCHITECTURE/IMAGE_STATUS/RELEASE_ASSETS were synchronized.
+
+---
+
 # 1.0.0-rc33 — canonical payload directory and clean active manifest
 
 ## 1.0.0-rc33 — 20 August 2026

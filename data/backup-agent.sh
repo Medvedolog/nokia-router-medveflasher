@@ -79,32 +79,61 @@ cat /proc/cmdline > "$DEST/cmdline.txt" 2>/dev/null || true
 uname -a > "$DEST/uname.txt" 2>/dev/null || true
 dmesg > "$DEST/dmesg_full.txt" 2>/dev/null || true
 id > "$DEST/id.txt" 2>/dev/null || true
-# Bind every live-stock backup to the source device MAC. This is metadata only:
-# failure to expose eth0 falls back to the first non-loopback sysfs MAC and does
-# not weaken the NAND backup itself.
+# Device identity metadata. MD uses the base MAC in RI/mtd7@0x3e because stock
+# eth0 may be the compiled placeholder 00:aa:bb:01:23:40. MF keeps its existing
+# sysfs identity behavior; this MD field fix does not redefine MF provenance.
+RI_MAC_OFFSET=62
+RI_MAC_LENGTH=6
 PRIMARY_IF=unknown
+PRIMARY_SOURCE=unknown
 PRIMARY_MAC=UNKNOWN
-if [ -r /sys/class/net/eth0/address ]; then
-    PRIMARY_IF=eth0
-    PRIMARY_MAC="$(cat /sys/class/net/eth0/address 2>/dev/null | tr 'A-F' 'a-f')"
+IDENTITY_SOURCE=unknown
+if [ "${NOKIA_BACKUP_FAMILY:-unknown}" = md ]; then
+    RI_DEV=/dev/mtd7ro
+    [ -r "$RI_DEV" ] || RI_DEV=/dev/mtd7
+    if [ -r "$RI_DEV" ]; then
+        RI_HEX="$(dd if="$RI_DEV" bs=1 skip="$RI_MAC_OFFSET" count="$RI_MAC_LENGTH" 2>/dev/null | hexdump -v -e '6/1 "%02x"' | tr 'A-F' 'a-f')"
+        if [ "${#RI_HEX}" -eq 12 ] && [ "$RI_HEX" != 000000000000 ] && [ "$RI_HEX" != ffffffffffff ]; then
+            PRIMARY_MAC="$(printf '%s\n' "$RI_HEX" | sed 's/../&:/g;s/:$//')"
+            PRIMARY_IF=ri
+            PRIMARY_SOURCE=stock-ri-mtd7@0x3e
+        else
+            PRIMARY_SOURCE=stock-ri-mtd7-unavailable
+        fi
+    else
+        PRIMARY_SOURCE=stock-ri-mtd7-unavailable
+    fi
+    IDENTITY_SOURCE=stock-ri-mtd7
 else
-    for p in /sys/class/net/*/address; do
-        [ -r "$p" ] || continue
-        i="${p%/address}"; i="${i##*/}"
-        [ "$i" = lo ] && continue
-        PRIMARY_IF="$i"
-        PRIMARY_MAC="$(cat "$p" 2>/dev/null | tr 'A-F' 'a-f')"
-        break
-    done
+    if [ -r /sys/class/net/eth0/address ]; then
+        PRIMARY_IF=eth0
+        PRIMARY_MAC="$(cat /sys/class/net/eth0/address 2>/dev/null | tr 'A-F' 'a-f')"
+    else
+        for p in /sys/class/net/*/address; do
+            [ -r "$p" ] || continue
+            i="${p%/address}"; i="${i##*/}"
+            [ "$i" = lo ] && continue
+            PRIMARY_IF="$i"
+            PRIMARY_MAC="$(cat "$p" 2>/dev/null | tr 'A-F' 'a-f')"
+            break
+        done
+    fi
+    PRIMARY_SOURCE="stock-linux-sysfs:$PRIMARY_IF"
+    IDENTITY_SOURCE=stock-linux-sysfs
 fi
 {
     printf 'model=%s\n' "$MODEL_NAME"
     printf 'family=%s\n' "${NOKIA_BACKUP_FAMILY:-unknown}"
     printf 'captured_at_local=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z 2>/dev/null || echo unknown)"
     printf 'captured_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
-    printf 'source=stock-linux-sysfs\n'
+    printf 'source=%s\n' "$IDENTITY_SOURCE"
+    printf 'primary_source=%s\n' "$PRIMARY_SOURCE"
     printf 'primary_interface=%s\n' "$PRIMARY_IF"
     printf 'primary_mac=%s\n' "$PRIMARY_MAC"
+    if [ "${NOKIA_BACKUP_FAMILY:-unknown}" = md ]; then
+        printf 'ri_offset=0x3e\n'
+        printf 'ri_length=6\n'
+    fi
     for p in /sys/class/net/*/address; do
         [ -r "$p" ] || continue
         i="${p%/address}"; i="${i##*/}"
@@ -113,7 +142,15 @@ fi
         printf 'interface_%s=%s\n' "$i" "$a"
     done
 } > "$DEST/DEVICE_MAC.txt"
-usb_say2 "[OK] MAC istochnika backup: $PRIMARY_MAC ($PRIMARY_IF)" "[OK] Backup source MAC: $PRIMARY_MAC ($PRIMARY_IF)"
+if [ "${NOKIA_BACKUP_FAMILY:-unknown}" = md ]; then
+    if [ "$PRIMARY_MAC" = UNKNOWN ]; then
+        usb_say2 '[WARNING] RI MAC ne prochitan; sysfs MAC ostalis tolko diagnostikoy.' '[WARNING] RI MAC was not readable; sysfs MACs are diagnostic only.'
+    else
+        usb_say2 "[OK] Device MAC iz RI mtd7@0x3e: $PRIMARY_MAC" "[OK] Device MAC from RI mtd7@0x3e: $PRIMARY_MAC"
+    fi
+else
+    usb_say2 "[OK] Backup source MAC: $PRIMARY_MAC ($PRIMARY_IF)" "[OK] Backup source MAC: $PRIMARY_MAC ($PRIMARY_IF)"
+fi
 RAW="$DEST/.mtd-read-in-progress.bin"
 trap 'rm -f "$RAW"' EXIT INT TERM
 n=0

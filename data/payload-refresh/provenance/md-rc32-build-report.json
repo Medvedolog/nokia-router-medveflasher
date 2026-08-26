@@ -1,11 +1,12 @@
 {
   "auto": {
-    "bundle_sha256": "6031265b0e942b7fb539bf224339a71fa1fc139c188cf36d24068ef045304264",
-    "bundle_size": 19955992,
+    "bundle_sha256": "ac9658f4d099ad0629a068ed579f8ed559857c0e1f151fa1dd6efc0268fb0b03",
+    "bundle_size": 20054016,
     "cpio_archive_size": 13022268,
     "cpio_capacity": 14305797,
     "cpio_end": 26947225,
     "cpio_start": 12641428,
+    "eraseblock_size": 131072,
     "output_fit_sha256": "2a85487dbedf4ddb8df43683e7887f10df3afc887d204831d82832ba255581ba",
     "output_fit_size": 8782108,
     "output_kernel_lzma_size": 8758627,
@@ -17,6 +18,7 @@
     "removed_data_bytes": 1730712,
     "source_fit_size": 8505508,
     "source_kernel_lzma_size": 8481915,
+    "trailing_padding_size": 98024,
     "window_sha256": "992f6f4bf0d1464345b2e4cd9e827d7a68b40c09703247851332a6fd89521629",
     "window_size": 9437184
   },

@@ -1,5 +1,7 @@
 # Архитектура Nokia Router MedveFlasher
 
+> **RC35 / MD field fixes:** complete MD auto bundle теперь `0x20000`-aligned (`0x1320000`) нулевым padding только после exact production sysupgrade; FIT window и production bytes/offset/SHA не изменены. MD device identity берётся из raw stock `RI` (`mtd7@0x3e`, 6 bytes); sysfs MAC — только diagnostics. Family-aware preflight больше не маркирует MD как MF. MF payload/identity semantics этим исправлением не менялись.
+>
 > **RC33 / layout:** firmware payload bytes обеих моделей хранятся только в `data/payloads/`. Имя каждого файла явно содержит модель, SoC и роль; `master.py`, CI, builders и verifier используют только этот canonical путь. RC33 не пересобирает RC32 payload bytes. Публичная база — RC31: относительно неё в RC32 заменены все MD payload — transition auto/manual, stock-recovery initramfs, production BL31+U-Boot FIP, UART RECOVERY_SAFE FIP и preloader (`6c3b2339…7908808` → `ed42a1d2…10c2f30`), плюс добавлен upstream initramfs-recovery. MF payload байт-в-байт совпадают с RC31.
 >
 > **RC32 / payload refresh:** MD использует проверенный набор OpenWrt `r35845+3-3bed4be017` от 2026-08-16, kernel `6.18.44`. Fresh transition FIT требует 9 MiB window (`0x900000`), production sysupgrade начинается с bundle offset `0x900000` / NAND offset `0x9c0000`. Permanent FIP `8625d786…540f1` аппаратно поднял Fudan MD; отдельный UART `RECOVERY_SAFE` FIP детерминированно получен из тех же BL31/U-Boot bytes.
@@ -120,6 +122,8 @@ transition OpenWrt из NAND в RAM. UART при этом не нужен — в
 ---
 
 ## Ноу-хау: transition-образ со встроенным snapshot
+
+**Eraseblock alignment composite bundle (RC35).** Stock stage пишет весь auto bundle в `mtd14/nsb_master`, поэтому размер файла обязан делиться на физический eraseblock `0x20000`. Fresh snapshot увеличил production sysupgrade так, что `0x900000 + 10518808 = 0x1308118`; вместо снятия safety gate после точного sysupgrade добавляется `0x17ee8` нулей, получая `0x1320000`. FIT totalsize/window, sysupgrade offset/size/SHA остаются точными и проверяются независимо; padding существует только для физически корректной whole-bundle записи/readback.
 
 `nokia-xg-040g-md-an7581-transition-auto.bin` — это не просто initramfs. Внутри него FIT-образ
 OpenWrt initramfs, а в него **встроен полный production sysupgrade** (SNAPSHOT
@@ -516,7 +520,7 @@ Safety invariant: меню не является разрешением на des
 
 Operator console contract: каждая непустая строка и prompt, проходящие через общий `master.py` print/input layer, получают абсолютный локальный prefix `[YYYY-MM-DD HH:MM:SS]`. Timestamp добавляется только к presentation layer и не меняет protocol markers, hashes, UART commands или NAND state-machine. Prompt завершается отдельным newline только в PC log, чтобы следующий timestamp не слипался с prompt; console не получает лишнюю пустую строку.
 
-Backup identity contract: live-stock TFTP/USB backup создаёт `DEVICE_MAC.txt` до финального `SHA256SUMS`. Предпочтительный source — `/sys/class/net/eth0/address`; fallback — первый non-loopback sysfs interface. Файл содержит model/family, local+UTC capture time, primary interface/MAC и все найденные interface MACs. Если каталог resume уже привязан к другому известному MAC, TFTP backup fail-closed блокирует смешивание устройств. Отсутствие файла в legacy backup не является compatibility failure.
+MD backup identity contract (RC35): live-stock TFTP/USB backup для MD создаёт `DEVICE_MAC.txt` до финального `SHA256SUMS`, но authoritative identity теперь берётся из stock `RI` — `mtd7`, offset `0x3e`, length 6. Это тот же base-MAC/NVMEM source, который transition DT публикует как `ri-stock/macaddr@3e`. `/sys/class/net/*/address` сохраняется только как diagnostic evidence: stock `eth0` может содержать compiled vendor placeholder `00:aa:bb:01:23:40` и не является identity. Resume fail-closed сравнивает уже RI-bound MAC; legacy sysfs-bound metadata разрешено заменить authoritative RI metadata. Если RI MAC прочитать нельзя, MD backup не становится разрушительной операцией и продолжается с `primary_mac=UNKNOWN`, но device binding не притворяется доказанным. MF в RC35 сохраняет прежний sysfs-based identity contract; этот MD field-fix его не меняет.
 
 ## 1.0.0-rc22 — bad-block-aware physical restore contract
 

@@ -1,6 +1,42 @@
 
 # 🐻 Nokia Router MedveFlasher
 
+> [!IMPORTANT]
+> **MedveFlasher — исторический проект. Его дальнейшее развитие не планируется.** Он положил начало семейству «медвежьих» инструментов для Nokia XG-040G-MD/MF; актуальные проекты и их роли указаны ниже.
+
+### 🇷🇺 Продолжение семейства
+
+- **[UrsusFlasher](https://github.com/Medvedolog/airoha-router-ursusflasher)** — программа на ПК для установки OpenWrt, создания и проверки резервных копий, обновления и восстановления. Определяет состояние роутера и ведёт оператора по подходящему маршруту, в том числе через UrsusBoot.
+- **[UrsusBoot](https://github.com/Medvedolog/airoha-ursusboot)** — загрузчик с режимом восстановления внутри роутера: проверяет образы, позволяет устанавливать и обновлять OpenWrt, загружать initramfs в RAM и восстанавливать загрузку. Работает и самостоятельно, и вместе с UrsusFlasher.
+- **[UrsidoRescue](https://github.com/Medvedolog/airoha-ursidorescue)** — отдельный инструмент аварийного восстановления через USB-UART и BootROM, когда веб-интерфейс, SSH и загрузчик недоступны. Загружает U-Boot в RAM, помогает восстановить NAND и собрать данные для переноса на новое оборудование.
+
+Обычный путь — **UrsusFlasher на ПК ↔ UrsusBoot в роутере**; при тяжёлом «кирпиче» подключается **UrsidoRescue**. Проверяйте статус поддержки и аппаратных испытаний в соответствующих репозиториях.
+
+### 🇬🇧 The Ursus family continues
+
+> [!IMPORTANT]
+> **MedveFlasher is a historical project and will not receive further development.** It laid the foundation for the bear family of tools for Nokia XG-040G-MD/MF.
+
+- **[UrsusFlasher](https://github.com/Medvedolog/airoha-router-ursusflasher)** is the PC-side installer, backup and recovery tool. It detects the router's state and guides the operator through the appropriate route, including UrsusBoot.
+- **[UrsusBoot](https://github.com/Medvedolog/airoha-ursusboot)** is the router's recovery-capable bootloader. It validates images, installs and updates OpenWrt, boots initramfs in RAM and helps recover a broken system. It also works independently of UrsusFlasher.
+- **[UrsidoRescue](https://github.com/Medvedolog/airoha-ursidorescue)** is the USB-UART and BootROM rescue tool for a router that no longer offers web access, SSH or a working bootloader. It loads U-Boot into RAM, helps restore NAND and collects hardware porting data.
+
+The usual pairing is **UrsusFlasher on the PC ↔ UrsusBoot on the router**. For a severe brick, use **UrsidoRescue**. Check each repository for support and hardware validation status.
+
+### 🇨🇳 Ursus 系列的后续项目
+
+> [!IMPORTANT]
+> **MedveFlasher 是历史项目，今后不再继续开发。** 它是面向 Nokia XG-040G-MD/MF 的“熊家族”工具的起点。
+
+- **[UrsusFlasher](https://github.com/Medvedolog/airoha-router-ursusflasher)** 是电脑端的 OpenWrt 安装、备份和恢复工具。它识别路由器状态，指导用户选择合适的操作流程，也可配合 UrsusBoot 使用。
+- **[UrsusBoot](https://github.com/Medvedolog/airoha-ursusboot)** 是运行在路由器上的恢复型引导程序，可校验固件、安装或更新 OpenWrt、从 RAM 启动 initramfs，以及修复无法启动的系统；也能独立使用。
+- **[UrsidoRescue](https://github.com/Medvedolog/airoha-ursidorescue)** 是通过 USB-UART 和 BootROM 救援的独立工具，适用于网页、SSH 和引导程序均无法使用的严重故障。它将 U-Boot 加载到 RAM，协助恢复 NAND，并采集新硬件移植所需的信息。
+
+通常由**电脑上的 UrsusFlasher ↔ 路由器中的 UrsusBoot**协同工作；遇到严重变砖时使用 **UrsidoRescue**。支持范围和实机验证状态请查看各项目仓库。
+
+---
+
+
 **OpenWrt на Nokia XG-040G-MD / MF — без паяльника, без разборки корпуса и без UART**
 
 `1.0.0-rc35` · Airoha AN7581 (MD) · Airoha AN7583 (MF)

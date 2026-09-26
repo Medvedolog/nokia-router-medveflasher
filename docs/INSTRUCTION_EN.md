@@ -51,7 +51,7 @@ If this is your first time, here is the short version; each step is detailed
 below.
 
 **You need:** a router on stock firmware, an Ethernet cable, a computer with
-Python 3, about 1 GB of free space and around 90 minutes. USB-UART is only for
+Python 3, about 1 GB of free space and around 30 minutes. USB-UART is only for
 brick recovery — a normal install does not use it.
 
 **Steps:**
